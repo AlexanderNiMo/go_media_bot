@@ -143,3 +143,60 @@ func TestReleaseIdentityPrefersInfoHash(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestStoppedDownloadsAreStalled covers a state that only exists in
+// qBittorrent 5.x and that was found in a real library: a download sitting at
+// 98.6% with the client reporting it as stopped.
+//
+// This project only ever adds torrents running, so a stopped download is a
+// state nobody asked for. Classifying it as "still downloading" would leave
+// the request waiting out the full two-day deadline for something that is not
+// moving, instead of abandoning it and looking for another release.
+func TestStoppedDownloadsAreStalled(t *testing.T) {
+	for _, tc := range []struct {
+		state   string
+		stalled bool
+		done    bool
+		failed  bool
+	}{
+		// The 5.x spelling, and the 4.x one for the same state.
+		{"stoppeddl", true, false, false},
+		{"pauseddl", true, false, false},
+		// Already covered, listed so the whole family is in one table.
+		{"stalleddl", true, false, false},
+		{"metadl", true, false, false},
+		{"forcedmetadl", true, false, false},
+		// A stopped *upload* is a finished download, not a stalled one: the
+		// payload is complete and present.
+		{"stoppedup", false, true, false},
+		{"pausedup", false, true, false},
+		// Ordinary progress.
+		{"downloading", false, false, false},
+	} {
+		s := TorrentStatus{State: tc.state, Progress: 0.5}
+
+		if got := s.Stalled(); got != tc.stalled {
+			t.Errorf("state %q: Stalled = %v, want %v", tc.state, got, tc.stalled)
+		}
+		if got := s.Done(); got != tc.done {
+			t.Errorf("state %q: Done = %v, want %v", tc.state, got, tc.done)
+		}
+		if got := s.Failed(); got != tc.failed {
+			t.Errorf("state %q: Failed = %v, want %v", tc.state, got, tc.failed)
+		}
+	}
+}
+
+// TestStoppedIsStalledRegardlessOfProgress — the case in the real library was
+// at 98.6%, so progress is not what decides this.
+func TestStoppedIsStalledRegardlessOfProgress(t *testing.T) {
+	for _, progress := range []float64{0, 0.5, 0.986, 0.999} {
+		s := TorrentStatus{State: "stoppeddl", Progress: progress}
+		if !s.Stalled() {
+			t.Errorf("progress %.3f: a stopped download should count as stalled", progress)
+		}
+		if s.Done() {
+			t.Errorf("progress %.3f: a stopped download is not done", progress)
+		}
+	}
+}

@@ -507,7 +507,13 @@ func TestStatusNormalisation(t *testing.T) {
 		{"pausedUP", true, false, false},
 		// 5.x naming: the rename that breaks naive state switches
 		{"stoppedUP", true, false, false},
-		{"stoppedDL", false, false, false},
+		// A stopped *download* counts as stalled, not as still running. This
+		// project only ever adds torrents running, so a stopped one is a state
+		// nobody asked for, and waiting out the two-day deadline for something
+		// that is not moving would end in the same deletion, just later. See
+		// domain.TorrentStatus.Stalled.
+		{"stoppedDL", false, false, true},
+		{"pausedDL", false, false, true},
 	} {
 		fake := newFakeQBittorrent()
 		fake.torrents["h"] = torrent("h", "x", tc.state, 0.5, "")

@@ -180,6 +180,11 @@ exercised the code:
   got an error instead of a clean outcome.
 - **The download deadline was recorded but never checked.** A torrent that ran
   for two days while still reporting progress was waited on indefinitely.
+- **A stopped download was treated as still running.** A real library had one
+  sitting at 98.6%, and the download loop would have waited out the full
+  two-day deadline for something that was not moving. This project only ever
+  adds torrents running, so a stopped one is a state nobody asked for; it now
+  takes the ordinary stall path — abandon, blacklist, search again.
 - **`LooksLikeVersion` did not exist**, and this one was found by accident
   rather than by a test: pointed at port 8080, which on the development machine
   is an unrelated web service, the client logged a successful connection and
@@ -304,6 +309,19 @@ rather than an error — which is the read path the idempotent add depends on.
 It also turned up the states that matter in practice: four torrents in
 `missingFiles` and one in `error`, both of which this project already treats as
 failures worth abandoning.
+
+The write path is covered too, with a synthetic magnet — a random infohash
+belonging to nothing, added stopped so no peer is ever contacted and no file is
+created. It confirms that a second `Add` recognises the torrent the first one
+added, which is the property Temporal's activity retries depend on, that the
+version-derived pause option actually takes effect on a real 5.x server (a
+torrent added stopped really does come back as `stoppedDL`), and that `Delete`
+removes it. The test sweeps its own tag before and after, so an interrupted run
+cannot leave anything behind.
+
+One consequence of testing against a real library: creating a category leaves
+one there permanently, because qBittorrent keeps empty categories. The live
+test therefore sets only a tag, which is what identifies a torrent anyway.
 
 ## Requirements
 

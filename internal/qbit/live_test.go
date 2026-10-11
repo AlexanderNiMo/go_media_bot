@@ -2,6 +2,8 @@ package qbit
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"os"
 	"testing"
@@ -234,4 +236,144 @@ func TestLiveAbsentTagReturnsEmpty(t *testing.T) {
 	if len(found) != 0 {
 		t.Errorf("an invented tag matched %d torrents", len(found))
 	}
+}
+
+// TestLiveAddIsIdempotentAndDeleteRemoves is the write path, and the one
+// property the whole download flow rests on.
+//
+// Temporal retries an activity whose result was lost, so Add will be called
+// twice for the same release sooner or later. A second copy of a
+// twenty-gigabyte download is not an acceptable outcome, and the only thing
+// preventing it is the tag lookup.
+//
+// The torrent it adds is synthetic: a magnet carrying a random infohash that
+// belongs to nothing, added stopped so the client does not even try to fetch
+// metadata. Nothing is downloaded and no files are created. The test cleans up
+// after itself on the way in as well as on the way out, so an interrupted run
+// cannot leave anything behind.
+func TestLiveAddIsIdempotentAndDeleteRemoves(t *testing.T) {
+	c := liveClient(t)
+	ctx := context.Background()
+
+	// A tag no real request can carry: request ids start at one.
+	const testRequestID = int64(-1)
+	tag := TagFor(testRequestID)
+
+	cleanup := func() {
+		// Best effort, and deliberately not fatal: this runs from a deferred
+		// call where a failure would mask the real result.
+		found, err := c.FindByTag(context.Background(), tag)
+		if err != nil {
+			return
+		}
+		for _, s := range found {
+			_ = c.Delete(context.Background(), s.Hash, false)
+		}
+	}
+
+	// Sweep anything a previous interrupted run left behind, so that finding
+	// the tag later proves this run added it.
+	cleanup()
+	t.Cleanup(cleanup)
+
+	infohash := randomInfoHash(t)
+	magnet := "magnet:?xt=urn:btih:" + infohash + "&dn=mediad-live-test"
+	t.Logf("adding a stopped synthetic torrent with infohash %s", infohash)
+
+	// No category. qBittorrent keeps categories even when nothing is filed
+	// under them, so setting one here would leave a trace on a real library
+	// that nothing removes — production only ever uses a category it expects
+	// to persist. The tag is what identifies the torrent, and that is fully
+	// exercised.
+	hash, already, err := c.Add(ctx, AddSpec{
+		Link: magnet,
+		Tags: []string{tag},
+		// Stopped, so the client never contacts a peer. This is also what
+		// exercises the version-dependent option name against a real 5.x
+		// server: sending the 4.x spelling would be silently ignored and the
+		// torrent would start downloading.
+		Paused: true,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if already {
+		t.Fatal("Add reported the torrent was already present, but the tag was swept first")
+	}
+	if hash == "" {
+		t.Fatal("Add returned an empty hash")
+	}
+	t.Logf("added, client hash %s", hash)
+
+	// The tag is what makes the retry safe, so this is the assertion that
+	// matters most.
+	hash2, already2, err := c.Add(ctx, AddSpec{
+		Link:   magnet,
+		Tags:   []string{tag},
+		Paused: true,
+	})
+	if err != nil {
+		t.Fatalf("second Add: %v", err)
+	}
+	if !already2 {
+		t.Fatal("a second Add did not recognise the torrent it had already added; " +
+			"a retried activity would download the release twice")
+	}
+	if hash2 != hash {
+		t.Errorf("second Add returned hash %q, first returned %q", hash2, hash)
+	}
+	t.Logf("a second add was recognised as already present, as it must be")
+
+	// The torrent is visible under the tag, which is how the download watcher
+	// will find it.
+	found, err := c.FindByTag(ctx, tag)
+	if err != nil {
+		t.Fatalf("FindByTag: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("the tag matched %d torrents, want exactly 1", len(found))
+	}
+	s := found[0]
+
+	// A stopped torrent must read as stalled rather than as still downloading.
+	// This is the behaviour that stops a stopped download from being waited on
+	// for the full two-day deadline.
+	if !s.Stalled() {
+		t.Errorf("the client reports state %q, which this project does not treat as stalled", s.State)
+	}
+	if s.Done() {
+		t.Errorf("a stopped torrent at %.1f%% must not read as done", s.Progress*100)
+	}
+	t.Logf("state %q, progress %.1f%%, stalled=%v", s.State, s.Progress*100, s.Stalled())
+
+	// And removing it works. deleteFiles is false: nothing was downloaded, so
+	// there is nothing to remove, and true would be a destructive default to
+	// point at a real library.
+	if err := c.Delete(ctx, hash, false); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	gone, err := c.FindByTag(ctx, tag)
+	if err != nil {
+		t.Fatalf("FindByTag after delete: %v", err)
+	}
+	if len(gone) != 0 {
+		t.Fatalf("the torrent is still there after Delete: %+v", gone)
+	}
+	t.Logf("deleted, and the tag no longer matches anything")
+}
+
+// randomInfoHash returns a random 40-character hex infohash.
+//
+// A random one rather than a fixed one, so that a run that was interrupted
+// before its cleanup cannot make the next run find a torrent it did not add —
+// which would make the idempotency check pass for the wrong reason.
+func randomInfoHash(t *testing.T) string {
+	t.Helper()
+
+	buf := make([]byte, 20)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("generate an infohash: %v", err)
+	}
+	return hex.EncodeToString(buf)
 }

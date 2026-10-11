@@ -86,9 +86,22 @@ func (t TorrentStatus) Failed() bool {
 // Being in a stalled state is not by itself a verdict — a torrent can stall
 // briefly and recover. It is the caller's job to apply the time bound
 // (ZeroStallAfter); this only answers "is it stalled right now".
+//
+// stoppeddl is included, and that is a deliberate choice rather than an
+// oversight. This project only ever adds torrents running, never stopped, so a
+// stopped download is a state nobody asked for — the user paused it by hand,
+// or the client stopped it on a policy. Waiting the full two-day download
+// deadline for something that is not moving would end in the same deletion,
+// just later, and in the meantime the request is not looking for another
+// release. Treating it as stalled instead lets the ordinary stall path handle
+// it: abandon, blacklist, search again.
+//
+// Both spellings are listed because qBittorrent 4.x called the state pausedDL.
 func (t TorrentStatus) Stalled() bool {
 	switch t.State {
 	case "stalleddl", "metadl", "forcedmetadl":
+		return true
+	case "stoppeddl", "pauseddl":
 		return true
 	}
 	return false

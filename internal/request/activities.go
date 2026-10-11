@@ -380,6 +380,12 @@ func (a *Activities) CheckDownload(ctx context.Context, in CheckDownloadInput) (
 	case zeroSince != nil && time.Since(*zeroSince) > in.StallAfter:
 		// Time-based rather than poll-count-based: a count would depend on the
 		// poll cadence and would survive a restart differently.
+		//
+		// zero_since is set by the download watcher whenever the torrent stops
+		// moving, which includes the client reporting it as stalled or stopped
+		// — see domain.TorrentStatus.Stalled. That is what makes a stopped
+		// download abandon after this window rather than after the two-day
+		// deadline.
 		result.State = DownloadStalled
 		result.Detail = fmt.Sprintf("no progress for %s", time.Since(*zeroSince).Round(time.Minute))
 

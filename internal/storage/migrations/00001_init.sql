@@ -129,7 +129,12 @@ CREATE TABLE requests (
     progress    REAL   NOT NULL DEFAULT 0,
     dl_speed    BIGINT NOT NULL DEFAULT 0,
     eta_seconds BIGINT,
-    -- Non-NULL while progress is below 1%; cleared as soon as it moves.
+    -- When the download last stopped making progress; NULL while it is moving.
+    --
+    -- It is set for a torrent whose progress is at zero and for one the client
+    -- has stalled or stopped, because the question the download loop asks is
+    -- "is this moving", not "is this at zero". A stopped torrent at 98% is not
+    -- moving either.
     zero_since  TIMESTAMPTZ,
 
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
