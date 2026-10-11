@@ -49,6 +49,51 @@ type queueSpec struct {
 	maxConcurrentActivities int
 }
 
+// WatcherWorkflowID is the fixed identity of the singleton download watcher.
+//
+// A fixed id is what makes it a singleton: starting it twice attaches to the
+// running one rather than creating a rival, and a restarted process resumes
+// the existing execution instead of beginning a second.
+const WatcherWorkflowID = "download-watcher"
+
+// startWatcher starts the download watcher, or leaves the running one alone.
+//
+// It is called from the worker's start hook. The watcher is what notices a
+// finished download, so a deployment without one leaves every request waiting
+// on a torrent that finished hours ago.
+func startWatcher(ctx context.Context, c client.Client, cfg *config.Config, log *slog.Logger) error {
+	options := client.StartWorkflowOptions{
+		ID:        WatcherWorkflowID,
+		TaskQueue: cfg.Temporal.TaskQueue,
+		// A running watcher is reused; the policy for a *closed* id is
+		// AllowDuplicate so that one that ended — a worker that shut down
+		// mid-run, say — does not block a new one from starting.
+		WorkflowIDConflictPolicy: enums.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
+		WorkflowIDReusePolicy:    enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+	}
+
+	interval := cfg.QBittorrent.PollInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	run, err := c.ExecuteWorkflow(ctx, options, DownloadWatcherWorkflow, WatcherInput{
+		Interval: interval,
+		// An hour per activity invocation. It bounds the history the watcher
+		// accumulates and keeps the start-to-close timeout comfortably larger
+		// than the work.
+		MaxRun:          time.Hour,
+		ContinueAsNewAt: cfg.Search.ContinueAsNewAt,
+	})
+	if err != nil {
+		return fmt.Errorf("start the download watcher: %w", err)
+	}
+
+	log.Info("download watcher running",
+		"workflow_id", run.GetID(), "interval", interval)
+	return nil
+}
+
 // registerWorker builds one worker per task queue and ties them to the
 // application lifecycle.
 //
@@ -125,6 +170,8 @@ func registerWorker(lc fx.Lifecycle, c client.Client, cfg *config.Config, acts *
 
 		if spec.name == cfg.Temporal.TaskQueue {
 			w.RegisterWorkflowWithOptions(Workflow, workflow.RegisterOptions{Name: WorkflowType})
+			w.RegisterWorkflowWithOptions(DownloadWatcherWorkflow,
+				workflow.RegisterOptions{Name: DownloadWatcherWorkflowType})
 		}
 
 		// Registering the struct registers every exported method as an
@@ -153,6 +200,16 @@ func registerWorker(lc fx.Lifecycle, c client.Client, cfg *config.Config, acts *
 				}
 			}
 			log.Info("worker started", "queues", len(workers), "namespace", cfg.Temporal.Namespace)
+
+			// Started separately from the workers, and after them: the watcher
+			// immediately schedules an activity, and that activity needs a
+			// worker polling its queue or it would wait for the first poll to
+			// begin.
+			startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := startWatcher(startCtx, c, cfg, log); err != nil {
+				return err
+			}
 			return nil
 		},
 		OnStop: func(context.Context) error {
@@ -396,6 +453,7 @@ func (s *Service) policy() Policy {
 		ContinueAsNewAt:  s.cfg.Search.ContinueAsNewAt,
 		DownloadDeadline: s.cfg.Download.Deadline,
 		ZeroStallAfter:   s.cfg.Download.ZeroStallAfter,
+		MissingGrace:     s.cfg.Download.MissingGrace,
 		MaxStalls:        s.cfg.Download.MaxStalls,
 	}
 }

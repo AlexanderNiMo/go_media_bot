@@ -247,38 +247,13 @@ func (s *Store) ListRequests(ctx context.Context, state State, limit int) ([]*Re
 	return out, rows.Err()
 }
 
-// ActiveDownloadHashes returns the torrent hashes of every downloading request.
-//
-// The download watcher polls these in one batch instead of one request per
-// download, which is what keeps the traffic to qBittorrent bounded.
-func (s *Store) ActiveDownloadHashes(ctx context.Context) ([]string, error) {
-	const q = `
-		SELECT DISTINCT qbit_hash
-		  FROM requests
-		 WHERE state = 'downloading' AND qbit_hash IS NOT NULL AND qbit_hash <> ''`
-
-	rows, err := s.pool.Query(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("list active downloads: %w", err)
-	}
-	defer rows.Close()
-
-	var out []string
-	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
-			return nil, err
-		}
-		out = append(out, h)
-	}
-	return out, rows.Err()
-}
-
 // RequestState is the subset of the projection the workflow itself writes.
 //
 // It is deliberately narrow. The workflow owns the process — which phase a
 // request is in, when the next attempt is due, which release was chosen — and
-// nothing else about the row is its business.
+// nothing else about the row is its business. Progress and the rest of what
+// the torrent client reports belong to the download watcher; see
+// UpdateDownloadFacts.
 type RequestState struct {
 	ID          int64
 	State       State
@@ -335,11 +310,12 @@ func updateStateTx(ctx context.Context, q querier, st RequestState) error {
 			selected_score    = $15,
 			selected_at       = CASE WHEN $11 <> '' THEN now() ELSE selected_at END,
 			qbit_hash         = $16,
-			content_path      = $17,
-			progress          = $18,
-			dl_speed          = $19,
-			eta_seconds       = $20,
-			zero_since        = $21,
+			-- progress, dl_speed, eta_seconds, zero_since, missing_since,
+			-- qbit_state and content_path are deliberately absent: the download
+			-- watcher owns them, and this statement runs on every state change
+			-- with a struct that never sets them. Writing them here would reset
+			-- the progress of an in-flight download to zero every time the
+			-- workflow recorded anything.
 			completed_at      = CASE WHEN $2 IN ('completed','failed','canceled','skipped')
 			                         THEN COALESCE(completed_at, now())
 			                         ELSE completed_at END,
@@ -352,58 +328,12 @@ func updateStateTx(ctx context.Context, q querier, st RequestState) error {
 		nullString(st.SelectedTitle), nullString(st.SelectedIndexer),
 		nullString(st.SelectedGUID), nullString(st.SelectedInfoHash),
 		nullInt64(st.SelectedSize), nullInt(st.SelectedSeeders), st.SelectedScore,
-		nullString(st.QbitHash), nullString(st.ContentPath),
-		st.Progress, st.DlSpeed, nullInt64(st.ETASeconds), st.ZeroSince,
+		nullString(st.QbitHash),
 	)
 	if err != nil {
 		return fmt.Errorf("update request %d: %w", st.ID, err)
 	}
 	return nil
-}
-
-// UpdateProgress writes only the progress columns.
-//
-// Kept separate from UpdateState because it runs on a thirty-second cadence
-// for every active download, while a state change happens a handful of times
-// per request. Folding them together would rewrite the whole row — including
-// the state and the selected release — four times a minute for no reason.
-func (s *Store) UpdateProgress(ctx context.Context, id int64, progress float64, speed, eta int64, zeroSince *time.Time) error {
-	const q = `
-		UPDATE requests SET
-			progress    = $2,
-			dl_speed    = $3,
-			eta_seconds = $4,
-			zero_since  = $5,
-			updated_at  = now()
-		WHERE id = $1`
-
-	if _, err := s.pool.Exec(ctx, q, id, progress, speed, nullInt64(eta), zeroSince); err != nil {
-		return fmt.Errorf("update progress for request %d: %w", id, err)
-	}
-	return nil
-}
-
-// ProgressSnapshot reads the columns the workflow's download loop needs.
-//
-// The workflow does not talk to qBittorrent at all: the download watcher owns
-// that, writes progress here, and the workflow reads its own row. That is what
-// keeps a two-day download from costing a workflow history event per poll.
-func (s *Store) ProgressSnapshot(ctx context.Context, id int64) (State, float64, *time.Time, error) {
-	const q = `SELECT state, progress, zero_since FROM requests WHERE id = $1`
-
-	var (
-		state     State
-		progress  float64
-		zeroSince *time.Time
-	)
-	err := s.pool.QueryRow(ctx, q, id).Scan(&state, &progress, &zeroSince)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, nil, fmt.Errorf("request %d: %w", id, ErrNotFound)
-	}
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("read progress for request %d: %w", id, err)
-	}
-	return state, progress, zeroSince, nil
 }
 
 // SetRunID records the Temporal run id on a request.
@@ -416,10 +346,10 @@ func (s *Store) ProgressSnapshot(ctx context.Context, id int64) (State, float64,
 func (s *Store) SetRunID(ctx context.Context, requestID int64, runID, workflowID string) error {
 	const q = `
 		UPDATE requests
-		   SET run_id = $2,
+		   SET run_id       = $2,
 		       first_run_id = COALESCE(first_run_id, $2),
-		       workflow_id = $3,
-		       updated_at = now()
+		       workflow_id  = $3,
+		       updated_at   = now()
 		 WHERE id = $1`
 
 	if _, err := s.pool.Exec(ctx, q, requestID, nullString(runID), workflowID); err != nil {

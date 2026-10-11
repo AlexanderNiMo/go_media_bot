@@ -26,6 +26,10 @@ import (
 // otherwise break every execution already in flight, and these last two years.
 const (
 	WorkflowType = "RequestWorkflow"
+	// DownloadWatcherWorkflowType is the singleton that polls the torrent
+	// client. Its name is pinned for the same reason as the other: a rename
+	// would break the execution already running under the old one.
+	DownloadWatcherWorkflowType = "DownloadWatcherWorkflow"
 
 	// QueryState reports the workflow's own view of a request. It is answered
 	// from workflow state and cannot change it.
@@ -81,10 +85,14 @@ type Policy struct {
 	// finished in two days is treated as dead.
 	DownloadDeadline time.Duration
 
-	// ZeroStallAfter is how long a download may sit at zero before the release
-	// is abandoned. It is a duration rather than a poll count so that it does
-	// not depend on the poll cadence or survive a restart differently.
+	// ZeroStallAfter is how long a download may go without progress before the
+	// release is abandoned. It is a duration rather than a poll count so that
+	// it does not depend on the poll cadence or survive a restart differently.
 	ZeroStallAfter time.Duration
+
+	// MissingGrace is how long a torrent may be absent from the client before
+	// that counts as gone.
+	MissingGrace time.Duration
 
 	// MaxStalls is how many releases may be abandoned before the request
 	// fails. Three dead releases in a row means the content is not actually
@@ -277,9 +285,13 @@ type AddTorrentResult struct {
 // CheckDownloadInput asks how the current torrent is doing.
 type CheckDownloadInput struct {
 	RequestID int64
-	// StallAfter is how long progress may sit at zero before the release is
-	// abandoned.
+	// StallAfter is how long a download may go without progress before the
+	// release is abandoned.
 	StallAfter time.Duration
+	// MissingGrace is how long a torrent may be absent from the client before
+	// that counts. A single miss proves nothing: an add is asynchronous, and a
+	// client that is restarting reports nothing for a moment.
+	MissingGrace time.Duration
 }
 
 // DownloadState is the workflow's view of a download.
@@ -309,6 +321,14 @@ type CheckDownloadResult struct {
 	// needs. It rides along with the poll rather than being fetched by an
 	// activity of its own: this call already reads the row it lives in.
 	ContentPath string
+	// Blacklist reports whether the release should be remembered as unusable.
+	//
+	// The decision is made where the evidence is and passed to the workflow
+	// rather than re-derived there, because the reason differs by case: a
+	// torrent that errored is always the release's fault, a stalled one
+	// usually is, and one that vanished without ever starting is the
+	// infrastructure's.
+	Blacklist bool
 }
 
 // DeleteTorrentInput removes a torrent as compensation.

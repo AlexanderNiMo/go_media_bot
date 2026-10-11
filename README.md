@@ -152,6 +152,44 @@ It also means exactly one caller talks to qBittorrent, which matters because
 its authentication is a session cookie with server-side invalidation and an IP
 ban after repeated failed logins.
 
+### The download watcher
+
+A singleton workflow with a fixed ID, started by the worker and kept running
+for the lifetime of the deployment. Each iteration runs one activity that lasts
+an hour and polls the client every thirty seconds inside itself, so the fast
+polling costs no history at all — the workflow sees roughly twenty-four events
+a day.
+
+It re-reads the list of active downloads on every cycle rather than being
+handed one, which is what means a torrent added a second after the last poll is
+picked up on the next one.
+
+**The watcher writes facts and decides nothing.** How far along a download is,
+what the client calls it, when it stopped moving — those go into the
+projection. Every decision about what a fact *means* lives in one pure
+function, `interpretDownload`, and that split is deliberate: the three
+interesting cases differ in a way that is easy to get wrong.
+
+| The client says | The release is | Why |
+|---|---|---|
+| `error`, `missingFiles` | blacklisted | it failed for a reason that will repeat |
+| stalled or stopped, past the window | blacklisted | it is not going to finish at a usable rate |
+| absent, having made progress | blacklisted | it got partway and died |
+| absent, never having started | **not** blacklisted | that is the infrastructure's fault, and remembering it would let a client restart permanently poison good releases |
+
+The last row is the one worth stating out loud. A torrent that vanishes without
+ever starting usually means the client restarted with a wiped session, or the
+add raced something — and blacklisting every release that was in flight when
+that happened would quietly remove perfectly good releases from consideration
+forever.
+
+Separately, the workflow that asks for a release and the watcher that reports
+on it write to the same row, so the columns are divided by ownership: the
+workflow owns the process — phase, schedule, which release was chosen — and the
+watcher owns what the client reported. `UpdateState` deliberately does not
+write progress, because the workflow never sets it and doing so would have
+reset an in-flight download's progress to zero on every state change.
+
 ### Task queues are the rate limit
 
 One worker per queue, each with its own limits. The indexer queue is capped

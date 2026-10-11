@@ -348,63 +348,105 @@ func (a *Activities) DeleteTorrent(ctx context.Context, in DeleteTorrentInput) e
 // cookie used by exactly one caller, given that qBittorrent bans an IP after
 // repeated failed logins.
 func (a *Activities) CheckDownload(ctx context.Context, in CheckDownloadInput) (CheckDownloadResult, error) {
-	state, progress, zeroSince, err := a.store.ProgressSnapshot(ctx, in.RequestID)
+	p, err := a.store.ReadDownloadProgress(ctx, in.RequestID)
 	if err != nil {
 		return CheckDownloadResult{}, err
 	}
 
-	req, err := a.store.GetRequest(ctx, in.RequestID)
-	if err != nil {
-		return CheckDownloadResult{}, err
-	}
+	result := interpretDownload(p, time.Now(), in.StallAfter, in.MissingGrace)
 
+	// Heartbeat so that a cancellation reaches this activity promptly. Without
+	// it a cancelled workflow would wait for the full start-to-close timeout.
+	activity.RecordHeartbeat(ctx, p.Progress)
+
+	return result, nil
+}
+
+// interpretDownload turns what the watcher recorded into what the request
+// workflow should do.
+//
+// It is a pure function so that the mapping can be read and tested in one
+// place. The split matters: the watcher writes facts and decides nothing,
+// while every decision about what a fact means lives here. Reading the
+// activity is then not necessary to know how a stalled download, a failed one
+// and a vanished one are treated — and those three differ in a way that is
+// easy to get wrong. A torrent that errored is the release's fault, a stalled
+// one usually is, and one that vanished without ever starting is the
+// infrastructure's, which is why only the first two are remembered as bad.
+func interpretDownload(
+	p storage.DownloadProgress,
+	now time.Time,
+	stallAfter time.Duration,
+	missingGrace time.Duration,
+) CheckDownloadResult {
 	result := CheckDownloadResult{
-		Hash: req.QbitHash,
-		// The download path comes from the client rather than from a configured
-		// guess, because the client owns that decision: this project never
-		// sends a save path.
-		ContentPath: req.ContentPath,
+		Hash:        p.QbitHash,
+		ContentPath: p.ContentPath,
 	}
 
 	switch {
-	case state == storage.StateCompleted:
+	case p.State == storage.StateCompleted:
 		result.State = DownloadDone
 
-	case state == storage.StateFailed:
+	case p.State == storage.StateFailed:
+		// The request already ended. Reporting a failure lets the loop exit
+		// rather than poll a finished request.
 		result.State = DownloadFailed
-		result.Detail = req.LastError
+		result.Detail = p.LastError
 
-	case progress >= 1.0:
+	case p.Progress >= 1.0:
 		result.State = DownloadDone
 
-	case zeroSince != nil && time.Since(*zeroSince) > in.StallAfter:
+	case isClientFailure(p.QbitState):
+		// The client has given up, so there is nothing to wait for. The
+		// release failed for a reason that will repeat.
+		result.State = DownloadFailed
+		result.Detail = "the torrent client reported " + p.QbitState
+		result.Blacklist = true
+
+	case p.MissingSince != nil && now.Sub(*p.MissingSince) > missingGrace:
+		// Gone from the client. Whether the release is to blame depends on how
+		// far it got: a torrent that never started was an infrastructure
+		// problem and may be retried, while one that got partway and vanished
+		// means the release itself is dead.
+		result.State = DownloadMissing
+		result.Detail = fmt.Sprintf("absent from the torrent client for %s",
+			now.Sub(*p.MissingSince).Round(time.Minute))
+		result.Blacklist = p.Progress > 0
+
+	case p.ZeroSince != nil && now.Sub(*p.ZeroSince) > stallAfter:
 		// Time-based rather than poll-count-based: a count would depend on the
 		// poll cadence and would survive a restart differently.
 		//
-		// zero_since is set by the download watcher whenever the torrent stops
-		// moving, which includes the client reporting it as stalled or stopped
-		// — see domain.TorrentStatus.Stalled. That is what makes a stopped
-		// download abandon after this window rather than after the two-day
-		// deadline.
+		// This also covers a torrent the client reports as stopped. This
+		// project only ever adds torrents running, so a stopped one is a state
+		// nobody asked for, and waiting out the two-day deadline for something
+		// that is not moving ends in the same deletion, only later.
 		result.State = DownloadStalled
-		result.Detail = fmt.Sprintf("no progress for %s", time.Since(*zeroSince).Round(time.Minute))
-
-	case req.QbitHash == "":
-		// The watcher has not recorded a hash yet, so the torrent has not been
-		// seen in the client. That is normal for the first minute after adding
-		// and a problem after that.
-		result.State = DownloadMissing
-		result.Detail = "the torrent has not appeared in the client"
+		result.Detail = fmt.Sprintf("no progress for %s",
+			now.Sub(*p.ZeroSince).Round(time.Minute))
+		result.Blacklist = true
 
 	default:
 		result.State = DownloadRunning
 	}
 
-	// Heartbeat so that a cancellation reaches this activity promptly. Without
-	// it a cancelled workflow would wait for the full start-to-close timeout.
-	activity.RecordHeartbeat(ctx, progress)
+	return result
+}
 
-	return result, nil
+// isClientFailure reports whether a torrent client state means the torrent is
+// not going to complete.
+//
+// The state strings are qBittorrent's. They are matched here rather than in the
+// domain package because this is where the decision is made — the domain type
+// exposes Done, Failed and Stalled for the cases that need classifying
+// everywhere, and this covers the rest.
+func isClientFailure(state string) bool {
+	switch state {
+	case "error", "missingfiles":
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

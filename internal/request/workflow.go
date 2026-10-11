@@ -304,8 +304,9 @@ func pollDownload(ctx workflow.Context, in *Input, state *State) (*Result, error
 
 		var status CheckDownloadResult
 		if err := workflow.ExecuteActivity(actCtx, (*Activities).CheckDownload, CheckDownloadInput{
-			RequestID:  in.RequestID,
-			StallAfter: in.Policy.ZeroStallAfter,
+			RequestID:    in.RequestID,
+			StallAfter:   in.Policy.ZeroStallAfter,
+			MissingGrace: in.Policy.MissingGrace,
 		}).Get(actCtx, &status); err != nil {
 			if cancellationIsDue(ctx, err) {
 				return cancelRequest(ctx, in, state)
@@ -334,6 +335,11 @@ func pollDownload(ctx workflow.Context, in *Input, state *State) (*Result, error
 				Hash:  state.QbitHash,
 				Detail: fmt.Sprintf("the download did not finish within %s",
 					in.Policy.DownloadDeadline),
+				// Two days on one torrent without finishing means the release
+				// is not going to arrive at a usable rate, whatever the client
+				// says about its progress. That is the release's problem, so it
+				// is remembered as bad.
+				Blacklist: true,
 			}
 		}
 
@@ -379,15 +385,27 @@ func abandonRelease(
 		"request", in.RequestID, "state", status.State, "detail", status.Detail,
 		"release", infohash)
 
-	// Remove the torrent and its files. A release the client never finished
-	// has not been filed into the library, so this cannot destroy anything the
-	// user is watching.
+	// Remove the torrent and its files. A release the client never finished has
+	// not been filed into the library, so this cannot destroy anything the user
+	// is watching.
+	//
+	// Whether to blacklist comes from the activity rather than being decided
+	// here, because the evidence is there: a torrent that errored is the
+	// release's fault, a stalled one usually is, and one that vanished without
+	// ever starting is the infrastructure's — and blacklisting that last case
+	// would make a client restart permanently poison releases that are
+	// perfectly good.
+	blacklistFor := ""
+	if status.Blacklist {
+		blacklistFor = infohash
+	}
+
 	delCtx := withOptions(ctx, deleteOptions())
 	_ = workflow.ExecuteActivity(delCtx, (*Activities).DeleteTorrent, DeleteTorrentInput{
 		RequestID:    in.RequestID,
 		Hash:         state.QbitHash,
 		DeleteFiles:  true,
-		BlacklistFor: infohash,
+		BlacklistFor: blacklistFor,
 		Reason:       string(status.State) + ": " + status.Detail,
 	}).Get(delCtx, nil)
 

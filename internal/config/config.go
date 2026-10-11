@@ -142,7 +142,12 @@ type Search struct {
 type Download struct {
 	Deadline       time.Duration `koanf:"deadline"          yaml:"deadline"`
 	ZeroStallAfter time.Duration `koanf:"zero_stall_after"  yaml:"zero_stall_after"`
-	MaxStalls      int           `koanf:"max_stalls"        yaml:"max_stalls"`
+	// MissingGrace is how long a torrent may be absent from the client before
+	// that counts as gone. A single miss proves nothing: an add is
+	// asynchronous, and a client that is restarting reports nothing for a
+	// moment.
+	MissingGrace time.Duration `koanf:"missing_grace" yaml:"missing_grace"`
+	MaxStalls    int           `koanf:"max_stalls"    yaml:"max_stalls"`
 }
 
 // Quality is the release acceptance policy.
@@ -271,6 +276,7 @@ func defaults() Config {
 		Download: Download{
 			Deadline:       48 * time.Hour,
 			ZeroStallAfter: 45 * time.Minute,
+			MissingGrace:   3 * time.Minute,
 			MaxStalls:      3,
 		},
 		Quality: Quality{

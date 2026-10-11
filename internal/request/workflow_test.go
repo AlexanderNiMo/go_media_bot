@@ -34,6 +34,7 @@ func testPolicy() Policy {
 		ContinueAsNewAt:  5000,
 		DownloadDeadline: 48 * time.Hour,
 		ZeroStallAfter:   45 * time.Minute,
+		MissingGrace:     3 * time.Minute,
 		MaxStalls:        3,
 	}
 }
@@ -450,10 +451,14 @@ func (s *WorkflowSuite) TestStalledReleaseIsAbandonedAndSearchedAgain() {
 			// under test.
 			polls++
 			if polls <= 2 {
+				// Blacklist is set because the real activity sets it for a
+				// stall: the decision comes from where the evidence is, and
+				// this mock stands in for that.
 				return CheckDownloadResult{
-					State:  DownloadStalled,
-					Hash:   "abc123def456",
-					Detail: "no progress for 45m",
+					State:     DownloadStalled,
+					Hash:      "abc123def456",
+					Detail:    "no progress for 45m",
+					Blacklist: true,
 				}, nil
 			}
 			return CheckDownloadResult{State: DownloadDone, Hash: "abc123def456"}, nil
