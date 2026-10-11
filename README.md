@@ -22,11 +22,10 @@ Under construction, being built in stages:
 | 1 | Database: pool, migrations, schema | done |
 | 2 | Clients: TMDB, Plex, indexer, qBittorrent | done |
 | 3 | Release selection: quality and Russian-audio scoring | done |
-| 4 | Workflow, activities, task queues | next |
-| 4 | Workflow, activities, task queues | |
-| 5 | Download watcher | |
-| 6 | Determinism checks in CI | |
-| 7 | Repositories and CLI commands | |
+| 4 | Workflow, activities, task queues | done |
+| 5 | Download watcher | done |
+| 6 | Determinism checks in CI | done |
+| 7 | Repositories and CLI commands | next |
 | 8 | Web UI | |
 | 9 | Telegram bot | |
 | 10 | Packaging, backups, alerts | |
