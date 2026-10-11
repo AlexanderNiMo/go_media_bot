@@ -276,6 +276,35 @@ anything was added, and the tag lookup is the only real confirmation.
 The save path is deliberately never sent: the client decides where downloads
 go.
 
+Authentication prefers an API key (`qbittorrent.api_key`, added in qBittorrent
+5.1) over a username and password. With a key no login request is made at all,
+which also removes the failure mode where repeated failed logins get the
+client's IP banned.
+
+### Verified against a real client
+
+The unit tests for this package run against a stub this project wrote, and a
+stub cannot disagree with you: every field name, state string and version
+difference it encodes is an assumption. `live_test.go` checks those assumptions
+against a real server, read-only, and is skipped unless one is configured:
+
+```bash
+MEDIAD_TEST_QBIT_URL=http://host:8112 \
+MEDIAD_TEST_QBIT_API_KEY=qbt_... \
+  go test ./internal/qbit/ -run TestLive -v
+```
+
+Run against qBittorrent 5.2.4 and a library of 56 torrents, it confirmed that
+the version gate accepts a real client and picks `stopped` over `paused`, that
+every torrent decodes, that all six states present in a real library are ones
+the domain layer classifies, that the batched hash lookup returns real rows and
+omits an invented hash, and that a tag matching nothing is an empty result
+rather than an error — which is the read path the idempotent add depends on.
+
+It also turned up the states that matter in practice: four torrents in
+`missingFiles` and one in `error`, both of which this project already treats as
+failures worth abandoning.
+
 ## Requirements
 
 - Go 1.26 or newer (the Temporal SDK requires it; this project is built on 1.27)

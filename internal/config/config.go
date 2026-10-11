@@ -101,9 +101,17 @@ type Indexer struct {
 //
 // SavePath is deliberately absent: the client owns the download location.
 type QBittorrent struct {
-	URL          string        `koanf:"url"           yaml:"url"`
-	Username     string        `koanf:"username"      yaml:"username"`
-	Password     string        `koanf:"password"      yaml:"password"`
+	URL string `koanf:"url" yaml:"url"`
+
+	// APIKey authenticates with a bearer token, which qBittorrent 5.1 added.
+	// When set it takes precedence over the username and password, and no
+	// login request is made at all — which also removes the failure mode where
+	// repeated failed logins get the client's IP banned.
+	APIKey string `koanf:"api_key" yaml:"api_key"`
+
+	Username string `koanf:"username" yaml:"username"`
+	Password string `koanf:"password" yaml:"password"`
+
 	Category     string        `koanf:"category"      yaml:"category"`
 	PollInterval time.Duration `koanf:"poll_interval" yaml:"poll_interval"`
 }
@@ -304,6 +312,7 @@ func (c Config) Redacted() Config {
 	c.Plex.Token = redact(c.Plex.Token)
 	c.Indexer.APIKey = redact(c.Indexer.APIKey)
 	c.QBittorrent.Password = redact(c.QBittorrent.Password)
+	c.QBittorrent.APIKey = redact(c.QBittorrent.APIKey)
 	if c.Telegram.Token != "" {
 		c.Telegram.Token = redact(c.Telegram.Token)
 	}

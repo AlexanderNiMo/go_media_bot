@@ -90,6 +90,7 @@ func New(cfg *config.Config, log *slog.Logger) *Client {
 
 	qb := qbittorrent.NewClient(qbittorrent.Config{
 		Host:     cfg.QBittorrent.URL,
+		APIKey:   cfg.QBittorrent.APIKey,
 		Username: cfg.QBittorrent.Username,
 		Password: cfg.QBittorrent.Password,
 		Timeout:  timeout,
