@@ -1,0 +1,37 @@
+{{define "content"}}
+<h1>Все запросы</h1>
+
+<form method="get" action="/requests" class="filters">
+  <label>Состояние
+    <select name="state" onchange="this.form.submit()">
+      <option value="" {{if not .State}}selected{{end}}>активные</option>
+      <option value="all" {{if eq .State "all"}}selected{{end}}>все</option>
+      {{range .States}}
+        <option value="{{.}}" {{if eq $.State .}}selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+  </label>
+  <noscript><button type="submit">Показать</button></noscript>
+</form>
+
+{{if .Requests}}
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Что</th><th>Состояние</th><th>Когда</th><th>Кто смотрит</th></tr>
+    </thead>
+    <tbody>
+    {{range .Requests}}
+      <tr>
+        <td class="muted">{{.ID}}</td>
+        <td><a href="/requests/{{.ID}}">{{.Title}}</a></td>
+        <td><span class="state {{.State}}">{{.State}}</span></td>
+        <td class="muted">{{.When}}</td>
+        <td class="muted">{{.Watchers}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{else}}
+  <p class="muted">Ничего нет.</p>
+{{end}}
+{{end}}

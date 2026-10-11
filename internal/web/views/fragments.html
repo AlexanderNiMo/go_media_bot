@@ -1,0 +1,13 @@
+{{/* Shared between pages. Every page template is parsed together with this
+     file and layout.html, because html/template resolves {{template}} at
+     execution time within one template set — a fragment left in the page that
+     happened to define it first is not visible from any other page. */}}
+
+{{define "progress"}}
+{{if .IsDownloading}}
+  <div class="bar"><i style="width: {{.ProgressPct}}%"></i></div>
+  <span class="muted">{{.ProgressText}}</span>
+{{else}}
+  <span class="muted">{{.SearchText}}</span>
+{{end}}
+{{end}}

@@ -109,7 +109,7 @@ func (s *Store) UpsertMedia(ctx context.Context, spec domain.MediaSpec) (int64, 
 	err := s.pool.QueryRow(ctx, q,
 		spec.Ref.Type, spec.Ref.TMDBID, spec.Ref.Season,
 		spec.Title, nullString(spec.TitleRU), nullString(spec.OriginalTitle),
-		nullInt(spec.Year), nil, nil,
+		nullInt(spec.Year), nullString(spec.PosterPath), nullString(spec.Overview),
 		nullInt(spec.RuntimeMin), spec.ReleasedAt,
 		nullString(spec.IMDBID), nullInt64(spec.TVDBID),
 	).Scan(&id)
@@ -157,7 +157,7 @@ func (s *Store) GetMedia(ctx context.Context, id int64) (*Media, error) {
 	err := s.pool.QueryRow(ctx, q, id).Scan(
 		&m.ID, &m.Spec.Ref.Type, &m.Spec.Ref.TMDBID, &season,
 		&m.Spec.Title, &m.Spec.TitleRU, &m.Spec.OriginalTitle, &m.Spec.Year,
-		&m.PosterPath, &m.Overview,
+		&m.Spec.PosterPath, &m.Spec.Overview,
 		&m.Spec.RuntimeMin, &m.Spec.IMDBID, &m.Spec.TVDBID,
 		&releasedAt,
 		&m.InPlex, &m.PlexRatingKey, &m.PlexSection,
@@ -172,6 +172,11 @@ func (s *Store) GetMedia(ctx context.Context, id int64) (*Media, error) {
 
 	m.Spec.Ref.Season = season
 	m.Spec.ReleasedAt = releasedAt
+
+	// Kept as separate fields too, for the callers that want the poster of a
+	// film without reaching through the spec.
+	m.PosterPath = m.Spec.PosterPath
+	m.Overview = m.Spec.Overview
 
 	return &m, nil
 }

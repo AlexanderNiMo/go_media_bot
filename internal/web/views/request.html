@@ -1,0 +1,53 @@
+{{define "content"}}
+{{/* $.CSRF rather than .CSRF: inside this block "." is the request, and the
+     token belongs to the page one level out. */}}
+{{with .Request}}
+<h1>{{.Title}} <span class="state {{.State}}">{{.State}}</span></h1>
+
+<dl class="facts">
+  <dt>Plex</dt><dd>{{.PlexText}}</dd>
+  <dt>Поиск</dt><dd>{{.SearchText}}</dd>
+  {{if .ReleaseText}}<dt>Релиз</dt><dd>{{.ReleaseText}}</dd>{{end}}
+  {{if .IsDownloading}}<dt>Прогресс</dt><dd>{{template "progress" .}}</dd>{{end}}
+  {{if .QbitHash}}<dt>Торрент</dt><dd class="mono">{{.QbitHash}}</dd>{{end}}
+  {{if .ContentPath}}<dt>Путь</dt><dd class="mono">{{.ContentPath}}</dd>{{end}}
+  <dt>Сроки</dt><dd>{{.Deadlines}}</dd>
+  {{if .LastError}}<dt>Ошибка</dt><dd class="warn">{{.LastError}}</dd>{{end}}
+  {{if .Abandoned}}<dt>Бракованных</dt><dd>{{.Abandoned}}</dd>{{end}}
+  <dt>Создан</dt><dd>{{.Created}}</dd>
+  {{if .CompletedAt}}<dt>Завершён</dt><dd>{{.CompletedAt}}</dd>{{end}}
+  <dt>Workflow</dt><dd class="mono">{{.WorkflowID}}</dd>
+</dl>
+
+<div class="actions">
+  {{if .Active}}
+    <form method="post" action="/requests/{{.ID}}/cancel">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <button type="submit">Отменить</button>
+    </form>
+  {{else}}
+    <form method="post" action="/requests/{{.ID}}/retry">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <button type="submit">Запустить снова</button>
+    </form>
+  {{end}}
+</div>
+
+{{if .Events}}
+  <h2>Что происходило</h2>
+  <table class="events">
+    <thead><tr><th>Когда</th><th>Событие</th><th>Кто</th><th>Подробности</th></tr></thead>
+    <tbody>
+    {{range .Events}}
+      <tr>
+        <td class="muted mono">{{.At}}</td>
+        <td class="mono">{{.Event}}</td>
+        <td class="muted">{{.Actor}}</td>
+        <td class="muted">{{.Detail}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{end}}
+{{end}}
+{{end}}

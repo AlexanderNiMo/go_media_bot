@@ -1,0 +1,20 @@
+{{define "content"}}
+<h1>Первый запуск</h1>
+
+<p>
+  Аккаунтов ещё нет. Создайте администратора — под ним же можно будет выдать
+  приглашения остальным.
+</p>
+
+<form method="post" action="/setup" class="stack narrow">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <label>Имя
+    <input type="text" name="username" autocomplete="username" autofocus required minlength="3">
+  </label>
+  <label>Пароль
+    <input type="password" name="password" autocomplete="new-password" required minlength="10">
+  </label>
+  <button type="submit">Создать</button>
+</form>
+<p class="muted">Пароль длиной от десяти символов. Больше правил нет.</p>
+{{end}}

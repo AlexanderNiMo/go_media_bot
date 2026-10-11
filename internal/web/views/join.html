@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>Регистрация по приглашению</h1>
+
+<form method="post" action="/join" class="stack narrow">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <input type="hidden" name="code" value="{{.Code}}">
+  <label>Имя
+    <input type="text" name="username" autocomplete="username" autofocus required minlength="3">
+  </label>
+  <label>Пароль
+    <input type="password" name="password" autocomplete="new-password" required minlength="10">
+  </label>
+  <button type="submit">Создать аккаунт</button>
+</form>
+{{end}}

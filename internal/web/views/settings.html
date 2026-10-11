@@ -1,0 +1,64 @@
+{{define "content"}}
+<h1>Настройки</h1>
+
+<h2>Аккаунт</h2>
+<dl class="facts">
+  <dt>Имя</dt><dd>{{.User.Username}}</dd>
+  <dt>Права</dt><dd>{{if .User.IsAdmin}}администратор{{else}}пользователь{{end}}</dd>
+</dl>
+
+<h3>Сменить пароль</h3>
+<form method="post" action="/settings/password" class="stack">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <label>Текущий пароль
+    <input type="password" name="current" autocomplete="current-password" required>
+  </label>
+  <label>Новый пароль
+    <input type="password" name="password" autocomplete="new-password" required minlength="10">
+  </label>
+  <button type="submit">Сменить</button>
+</form>
+<p class="muted">Смена пароля завершает все сессии, включая эту.</p>
+
+{{if .User.IsAdmin}}
+  <h2>Приглашения</h2>
+  <p class="muted">
+    Регистрация закрыта: аккаунт можно создать только по коду. Код действует
+    {{.InviteTTL}}.
+  </p>
+
+  <form method="post" action="/settings/invites">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button type="submit">Выдать код</button>
+  </form>
+
+  {{if .Invites}}
+    <table>
+      <thead><tr><th>Код</th><th>Создан</th><th>Действует до</th><th>Состояние</th></tr></thead>
+      <tbody>
+      {{range .Invites}}
+        <tr>
+          <td class="mono">{{.Code}}</td>
+          <td class="muted mono">{{.CreatedAt}}</td>
+          <td class="muted mono">{{.ExpiresAt}}</td>
+          <td>{{.State}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{end}}
+
+  <h2>Пользователи</h2>
+  <table>
+    <thead><tr><th>Имя</th><th>Права</th></tr></thead>
+    <tbody>
+    {{range .Users}}
+      <tr>
+        <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">без имени</span>{{end}}</td>
+        <td>{{if .IsAdmin}}администратор{{else}}пользователь{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{end}}
+{{end}}

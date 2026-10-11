@@ -1,0 +1,29 @@
+{{define "content"}}
+<h1>Поиск</h1>
+
+<form method="get" action="/search" class="search">
+  <input type="search" name="q" value="{{.Query}}" placeholder="Название фильма или сериала"
+         autofocus autocomplete="off">
+  <button type="submit">Найти</button>
+</form>
+
+{{if .Query}}
+  {{if .Results}}
+    <p class="muted">Совпадений: {{len .Results}}</p>
+    <div class="cards">
+    {{range .Results}}
+      <a class="card" href="/add/{{.Type}}/{{.TMDBID}}">
+        {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{else}}<span class="noposter"></span>{{end}}
+        <span class="card-title">{{.Title}}</span>
+        <span class="card-meta">
+          {{if .Year}}{{.Year}} · {{end}}{{.Kind}}
+          {{if .Original}}<br><span class="muted">{{.Original}}</span>{{end}}
+        </span>
+      </a>
+    {{end}}
+    </div>
+  {{else}}
+    <p class="muted">Ничего не нашлось.</p>
+  {{end}}
+{{end}}
+{{end}}

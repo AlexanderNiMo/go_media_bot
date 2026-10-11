@@ -130,6 +130,13 @@ type MediaSpec struct {
 	IMDBID        string
 	TVDBID        int64
 	RuntimeMin    int
+	// PosterPath is TMDB's relative path, not a URL: the image host and the
+	// size are presentation choices, and baking one into a value that travels
+	// through a two-year workflow would fix it forever.
+	PosterPath string
+	// Overview is the synopsis, kept so that a request can be described
+	// without asking TMDB again — which is the point of the spec.
+	Overview string
 	// ReleasedAt is nil when TMDB has no date, which is common for announced
 	// titles. The search loop treats "unknown" as "not yet released" and backs
 	// off rather than searching fruitlessly.

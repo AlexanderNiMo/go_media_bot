@@ -1,0 +1,40 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{block "title" .}}mediad{{end}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">mediad</a>
+    {{if .User}}
+      <nav>
+        <a href="/" {{if eq .Nav "dashboard"}}class="on"{{end}}>Запросы</a>
+        <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Поиск</a>
+        <a href="/notifications" {{if eq .Nav "notifications"}}class="on"{{end}}>
+          Уведомления{{if .Unread}} <span class="badge">{{.Unread}}</span>{{end}}
+        </a>
+        <a href="/settings" {{if eq .Nav "settings"}}class="on"{{end}}>Настройки</a>
+      </nav>
+      <form method="post" action="/logout" class="who">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <span>{{.User.Username}}</span>
+        <button type="submit" class="link">выйти</button>
+      </form>
+    {{end}}
+  </header>
+
+  <main>
+    {{if .Flash}}<p class="flash {{.FlashKind}}">{{.Flash}}</p>{{end}}
+    {{if .Error}}<p class="flash bad">{{.Error}}</p>{{end}}
+    {{template "content" .}}
+  </main>
+
+  <footer>
+    <span>{{.Version}}</span>
+  </footer>
+</body>
+</html>{{end}}

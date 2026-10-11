@@ -157,6 +157,21 @@ func (s *Store) CreateNotifications(
 		return nil, err
 	}
 
+	// A nil payload becomes an empty object rather than NULL.
+	//
+	// This matters more than it looks. The column is NOT NULL DEFAULT '{}',
+	// but a DEFAULT only applies when the column is *omitted* — passing an
+	// explicit NULL overrides it and violates the constraint. Every caller
+	// that has nothing to attach passes nil, which is most of them, so the
+	// whole notification path failed. And because the activity that calls this
+	// retries forever by design, a completed download would have retried the
+	// same doomed insert every five minutes for the rest of its two-year
+	// lifetime instead of ever finishing.
+	payloadValue := payload
+	if payloadValue == nil {
+		payloadValue = map[string]any{}
+	}
+
 	var created []Notification
 
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
@@ -175,7 +190,7 @@ func (s *Store) CreateNotifications(
 				createdAt time.Time
 			)
 			if err := tx.QueryRow(ctx, q,
-				w.UserID, requestID, kind, title, nullString(body), payload,
+				w.UserID, requestID, kind, title, nullString(body), payloadValue,
 			).Scan(&id, &createdAt); err != nil {
 				return fmt.Errorf("create notification for user %d: %w", w.UserID, err)
 			}

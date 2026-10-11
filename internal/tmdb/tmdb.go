@@ -205,6 +205,8 @@ func (t Title) ToSpec() domain.MediaSpec {
 		ReleasedAt:    t.ReleasedAt,
 		IMDBID:        t.IMDBID,
 		TVDBID:        t.TVDBID,
+		PosterPath:    t.PosterPath,
+		Overview:      t.Overview,
 	}
 	if t.Title != "" && t.Title != t.OriginalTitle {
 		spec.TitleRU = t.Title

@@ -1,0 +1,59 @@
+{{define "content"}}
+<h1>Что качается</h1>
+
+{{/* The one piece of live behaviour in the interface.
+     It polls a fragment that reads the projection, so nothing on the
+     render path touches Temporal: SQL-backed visibility has no ORDER BY
+     at all, is eventually consistent, and a query needs a live worker. */}}
+<div hx-get="/fragments/active" hx-trigger="every 3s" hx-swap="innerHTML">
+  {{template "active_table" .}}
+</div>
+
+{{if .Recent}}
+  <h2>Недавно</h2>
+  <table>
+    <thead><tr><th>Что</th><th>Состояние</th><th>Итог</th></tr></thead>
+    <tbody>
+    {{range .Recent}}
+      <tr>
+        <td><a href="/requests/{{.ID}}">{{.Title}}</a></td>
+        <td><span class="state {{.State}}">{{.State}}</span></td>
+        <td class="muted">{{.Detail}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+{{end}}
+{{end}}
+
+{{define "active_table"}}
+{{if .Active}}
+<table>
+  <thead>
+    <tr><th>Что</th><th>Состояние</th><th>Прогресс</th><th></th></tr>
+  </thead>
+  <tbody>
+  {{range .Active}}
+    <tr>
+      <td>
+        <a href="/requests/{{.ID}}">{{.Title}}</a>
+        {{if .Watchers}}<span class="muted"> · {{.Watchers}}</span>{{end}}
+      </td>
+      <td><span class="state {{.State}}">{{.State}}</span></td>
+      <td>{{template "progress" .}}</td>
+      <td class="actions">
+        <form method="post" action="/requests/{{.ID}}/cancel">
+          {{/* $, not ., because inside the range "." is the row: the token
+               belongs to the page, which is one level out. */}}
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <button type="submit" class="link">отменить</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">Ничего не качается.</p>
+{{end}}
+{{end}}

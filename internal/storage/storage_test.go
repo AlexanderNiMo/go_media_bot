@@ -881,3 +881,95 @@ func TestFindUserByCLIDoesNotCreate(t *testing.T) {
 		t.Errorf("a read created %d users", count)
 	}
 }
+
+// TestNotificationsCarryNoPayload is a regression test for a bug that would
+// have wedged every request that ever finished.
+//
+// The payload column is NOT NULL DEFAULT '{}', and a DEFAULT only applies when
+// the column is omitted — passing an explicit NULL overrides it and violates
+// the constraint. Every caller with nothing to attach passes nil, including
+// the workflow, which never sets one.
+//
+// The reason it was severe rather than cosmetic is the retry policy on the
+// notification activity: it retries forever by design, because being told the
+// thing you asked for is ready is the entire point of the project. So a
+// completed download would retry the same doomed insert every five minutes for
+// the rest of its two-year lifetime, and the request would never complete.
+func TestNotificationsCarryNoPayload(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	mediaID := insertMedia(t, pool, "movie", 603, nil, "The Matrix")
+	userID := insertUser(t, pool, "alex")
+
+	var requestID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+		VALUES ($1, 'movie-603', 'downloading', now() + interval '2 years')
+		RETURNING id`, mediaID).Scan(&requestID); err != nil {
+		t.Fatalf("insert request: %v", err)
+	}
+	if err := store.AddWatcher(ctx, requestID, userID); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+
+	// A nil payload, which is what the workflow passes.
+	created, err := store.CreateNotifications(ctx, requestID,
+		NotificationCompleted, "Матрица готова", "", nil)
+	if err != nil {
+		t.Fatalf("CreateNotifications with no payload: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created %d notifications, want 1", len(created))
+	}
+
+	// And the payload is stored as an object rather than as SQL NULL.
+	var payload []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT payload FROM notifications WHERE id = $1`, created[0].ID).Scan(&payload); err != nil {
+		t.Fatalf("read the payload: %v", err)
+	}
+	if string(payload) != "{}" {
+		t.Errorf("payload = %q, want {}", payload)
+	}
+}
+
+// TestNotificationsSkipWatchersWhoOptedOut — the mask is what stops a
+// notification kind from being delivered to somebody who does not want it,
+// while the kinds that always go out still do.
+func TestNotificationsSkipWatchersWhoOptedOut(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	mediaID := insertMedia(t, pool, "movie", 603, nil, "The Matrix")
+	quiet := insertUser(t, pool, "quiet")
+	normal := insertUser(t, pool, "normal")
+
+	var requestID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+		VALUES ($1, 'movie-603', 'downloading', now() + interval '2 years')
+		RETURNING id`, mediaID).Scan(&requestID); err != nil {
+		t.Fatalf("insert request: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO request_watchers (request_id, user_id, notify_mask)
+		VALUES ($1, $2, 0), ($1, $3, 7)`, requestID, quiet, normal); err != nil {
+		t.Fatalf("insert watchers: %v", err)
+	}
+
+	created, err := store.CreateNotifications(ctx, requestID,
+		NotificationCompleted, "Готово", "", nil)
+	if err != nil {
+		t.Fatalf("CreateNotifications: %v", err)
+	}
+
+	// Only the watcher who wants this kind.
+	if len(created) != 1 {
+		t.Fatalf("created %d notifications, want 1", len(created))
+	}
+	if created[0].UserID != normal {
+		t.Errorf("the notification went to user %d, want %d", created[0].UserID, normal)
+	}
+}

@@ -1,0 +1,26 @@
+{{define "content"}}
+<h1>Запросить</h1>
+
+<div class="confirm">
+  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="">{{end}}
+  <div>
+    <h2>{{.Title}}</h2>
+    <p class="muted">{{.Kind}}{{if .Year}} · {{.Year}}{{end}}{{if .Runtime}} · {{.Runtime}} мин{{end}}</p>
+    {{if .Overview}}<p>{{.Overview}}</p>{{end}}
+  </div>
+</div>
+
+<form method="post" action="/requests">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <input type="hidden" name="media_type" value="{{.MediaType}}">
+  <input type="hidden" name="tmdb_id" value="{{.TMDBID}}">
+  {{if .HasSeason}}<input type="hidden" name="season" value="{{.Season}}">{{end}}
+
+  <button type="submit">Искать и скачать</button>
+</form>
+
+<p class="muted">
+  Сначала проверим, нет ли этого в Plex. Если нет — запрос будет искать релиз
+  в хорошем качестве с русским звуком до двух лет.
+</p>
+{{end}}

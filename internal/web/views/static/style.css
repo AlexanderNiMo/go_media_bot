@@ -1,0 +1,233 @@
+/* The whole stylesheet. It is hand-written because the interface is a handful
+   of tables and forms: a framework would be more bytes than the HTML it
+   styles, and keeping it here means the deployed instance fetches nothing
+   from anywhere.
+
+   The palette is two neutrals, one accent, and a set of state colours that are
+   the only saturated things on the page — so the state of a request is what
+   the eye lands on rather than the chrome. */
+
+:root {
+  --bg: #14161a;
+  --panel: #1c1f26;
+  --line: #2a2f38;
+  --text: #e6e8ec;
+  --muted: #8d95a3;
+  --accent: #5b9dff;
+  --ok: #4cc38a;
+  --warn: #e5a44a;
+  --bad: #e5645f;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --line: #e2e5ea;
+    --text: #1b1f27;
+    --muted: #69707d;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* --- chrome ------------------------------------------------------------- */
+
+header.top {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  flex-wrap: wrap;
+}
+
+.brand { font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
+
+header.top nav { display: flex; gap: 1rem; flex: 1; }
+header.top nav a { color: var(--muted); }
+header.top nav a.on { color: var(--text); font-weight: 500; }
+
+.who { display: flex; align-items: center; gap: 0.75rem; color: var(--muted); font-size: 0.9em; }
+
+.badge {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 0.45em;
+  font-size: 0.8em;
+  font-weight: 600;
+}
+
+main { max-width: 68rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+
+footer {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 0 1.25rem 2rem;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+h1 { font-size: 1.5rem; margin: 0 0 1rem; }
+h2 { font-size: 1.15rem; margin: 2rem 0 0.75rem; }
+h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+
+.muted { color: var(--muted); }
+.warn { color: var(--warn); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+
+.flash {
+  background: var(--panel);
+  border-left: 3px solid var(--ok);
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius);
+  margin: 0 0 1rem;
+}
+.flash.bad { border-left-color: var(--bad); }
+
+/* --- tables ------------------------------------------------------------- */
+
+table { width: 100%; border-collapse: collapse; margin: 0.5rem 0 1rem; }
+
+th {
+  text-align: left;
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+}
+
+td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tbody tr:hover { background: var(--panel); }
+
+tr.unread td { font-weight: 500; }
+.events td { font-size: 0.9em; }
+
+.actions { text-align: right; white-space: nowrap; }
+.actions form { display: inline; }
+
+/* --- state -------------------------------------------------------------- */
+
+.state {
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  padding: 0.15em 0.5em;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.state.pending, .state.searching, .state.adding { color: var(--muted); }
+.state.downloading { color: var(--accent); }
+.state.completed { color: var(--ok); }
+.state.skipped { color: var(--warn); }
+.state.failed, .state.canceled { color: var(--bad); }
+
+/* --- progress ----------------------------------------------------------- */
+
+.bar {
+  height: 6px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  min-width: 8rem;
+  margin-bottom: 0.25rem;
+}
+.bar i { display: block; height: 100%; background: var(--accent); }
+
+/* --- forms -------------------------------------------------------------- */
+
+form.search { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+form.search input { flex: 1; }
+
+input, select, button {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.65rem;
+}
+
+input:focus, select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+}
+
+form.stack { display: flex; flex-direction: column; gap: 0.75rem; max-width: 26rem; }
+form.stack.narrow { max-width: 20rem; }
+form.stack label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--muted); font-size: 0.9em; }
+form.stack input { color: var(--text); font-size: 1rem; }
+
+.filters { margin-bottom: 0.5rem; color: var(--muted); }
+.filters label { display: inline-flex; align-items: center; gap: 0.5rem; }
+
+/* --- cards -------------------------------------------------------------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6rem;
+  color: var(--text);
+}
+.card:hover { border-color: var(--accent); text-decoration: none; }
+
+.card img, .noposter {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--line);
+  display: block;
+}
+
+.card-title { font-weight: 500; line-height: 1.3; }
+.card-meta { font-size: 0.85em; color: var(--muted); }
+
+.cards.seasons { grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); }
+
+.confirm { display: flex; gap: 1.25rem; margin-bottom: 1.5rem; }
+.confirm img { width: 9rem; border-radius: var(--radius); }
+.confirm h2 { margin-top: 0; }
+
+dl.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  margin: 0 0 1.5rem;
+}
+dl.facts dt { color: var(--muted); font-size: 0.9em; }
+dl.facts dd { margin: 0; }

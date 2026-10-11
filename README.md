@@ -26,8 +26,8 @@ Under construction, being built in stages:
 | 5 | Download watcher | done |
 | 6 | Determinism checks in CI | done |
 | 7 | CLI commands | done |
-| 8 | Web UI | next |
-| 9 | Telegram bot | |
+| 8 | Web UI | done |
+| 9 | Telegram bot | next |
 | 10 | Packaging, backups, alerts | |
 
 ## Choosing a release
@@ -385,8 +385,9 @@ make config    # print the effective configuration, secrets redacted
 make all       # worker and API in one process
 ```
 
-The Temporal Web UI is at <http://localhost:8233>; the application's own UI
-will be at <http://localhost:8080> once stage 8 lands.
+The Temporal Web UI is at <http://localhost:8233>, and mediad's own interface at
+<http://localhost:8081>. Opening it for the first time shows a setup wizard that
+creates the administrator account.
 
 During development it is usually easier to run the binary on the host and only
 the infrastructure in Docker:
@@ -491,6 +492,112 @@ should not clear what somebody has not seen on their phone yet.
 `--json` is available on the read commands and on `add`, `search` and `retry`.
 The shapes are defined in the CLI rather than mirrored from the storage layer,
 so adding a column does not silently change the output.
+
+## Web interface
+
+`mediad api` serves it, and `mediad all` serves it alongside the worker. First
+run shows a setup wizard that creates the administrator; after that the door is
+closed and accounts exist only by invite.
+
+| Page | What it is for |
+|---|---|
+| Dashboard | what is being downloaded right now, with a progress bar that updates every three seconds |
+| Search | TMDB search, then a season picker for a series, then a confirmation |
+| Requests | everything, filterable by state |
+| One request | the release, the torrent, the deadlines, and the audit trail |
+| Notifications | the same rows the Telegram bot delivers from |
+| Settings | password change; invites and users for an administrator |
+
+**Nothing on a render path talks to Temporal.** Every page reads the
+projection. That is not an optimisation: SQL-backed visibility has no
+`ORDER BY` at all — asking for one is a hard `InvalidArgument` — it is
+eventually consistent by seconds, and a workflow query needs a live worker
+polling the queue. An interface built on it shows an empty page whenever the
+worker is restarting, which is exactly when somebody is looking.
+
+**One piece of live behaviour, and it is HTMX.** The dashboard polls
+`/fragments/active` every three seconds and swaps the table. Everything else is
+a plain form post and a redirect, so the interface works with JavaScript
+disabled except for the progress bar. `htmx.min.js` is vendored into
+`internal/web/views/static` rather than loaded from a CDN — a self-hosted
+instance should not need the internet to render its own pages, and it fetches
+nothing from anywhere else.
+
+**Accounts, and why there is no registration form.** This is somebody's home
+server, and an open signup would be an open signup for their Plex library. The
+first account is created by the setup wizard and is an administrator; every
+later one needs a code an administrator generates, valid for seven days and
+single-use.
+
+**Sessions are stored hashed.** The cookie carries a random token and the
+database holds its SHA-256, so a leaked backup or a `pg_dump` in a ticket does
+not hand over live sessions. Changing a password deletes every session for that
+account, including the one that made the change — a password change that leaves
+other sessions alive does not do the thing it is for.
+
+**Every form carries a CSRF token** (double submit: a cookie plus a matching
+field). The session cookie is `SameSite=Lax`, which already blocks cross-site
+POSTs in current browsers; the token is the layer that keeps working when that
+stops being true. A test walks every rendered page and fails if a POST form has
+no token, because the failure mode is a form that is rejected at submit and
+looks like a broken button.
+
+**Binding to the network over plain HTTP logs a warning.** It is a warning and
+not a refusal because running behind a reverse proxy that terminates TLS is
+normal, and the point is that doing it by accident is visible.
+
+### Two things the interface will not do
+
+**It will not start a workflow on a guess.** A series always needs a season
+chosen explicitly, and the confirmation page is rendered from metadata re-read
+from TMDB rather than from anything the browser posted. The form carries an
+identity — type, tmdb id, season — and nothing else, because this spec is
+frozen into a two-year workflow, and a client that could post the title could
+post a wrong one.
+
+**It will not show you a lie about a stuck request.** Which brings us to the
+reconciler.
+
+## The reconciler
+
+A background loop in the worker, every ten minutes, comparing rows that claim
+to be in progress against what the workflow engine says is running.
+
+It exists because the two can disagree and the disagreement is **silent**. A
+workflow that was terminated, or that was never claimable because no worker
+registered its type, leaves a row reading `searching` with nothing behind it.
+And `searching` is an active state, so the partial unique index refuses both a
+new request for that media and a retry of the stuck one. Nothing but a
+hand-written `UPDATE` can move it.
+
+This is not hypothetical. It is how the defect in stage 7 was finally seen:
+every request was being started under a workflow type no worker had registered,
+so six executions existed that had never run once. The reconciler is the
+instrument that would have said so on its own.
+
+Three details decide whether it does more good than harm:
+
+**It asks the engine, not the visibility store.** `DescribeWorkflowExecution`
+is strongly consistent; listing workflows is eventually consistent, has no
+ordering, and would report a workflow that started a second ago as absent.
+
+**It only fires on rows older than fifteen minutes.** A request row is written
+*before* its workflow is started, so there is a window in which a perfectly
+healthy request has an active state and no execution. Without the grace period
+the reconciler would eventually land in that window and mark somebody's
+brand-new request as failed. The age is `updated_at`, which the workflow and
+the download watcher both touch.
+
+**A transient error is not a stale row.** `isNotFound` matches one concrete
+service error type and nothing else. Widening it to "any Temporal error" reads
+as defensive and inverts the failure: one blip would mark every in-flight
+request as failed at once. A test pins each case.
+
+A row it repairs goes to `failed` with the observed reason in `last_error`, and
+an event with actor `reconciler` — a value the schema's vocabulary already had
+room for. Failed rather than canceled: nobody decided it, and a user who sees
+`failed` knows to retry, where a silent `canceled` looks like something they
+did.
 
 ## Architecture
 

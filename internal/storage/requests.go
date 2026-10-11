@@ -752,13 +752,15 @@ func upsertMediaTx(ctx context.Context, tx pgx.Tx, spec domain.MediaSpec) (int64
 	const q = `
 		INSERT INTO media (
 			media_type, tmdb_id, season, title, title_ru, original_title,
-			year, runtime_min, released_at, imdb_id, tvdb_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			year, poster_path, overview, runtime_min, released_at, imdb_id, tvdb_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (media_type, tmdb_id, COALESCE(season, -1)) DO UPDATE SET
 			title          = EXCLUDED.title,
 			title_ru       = COALESCE(EXCLUDED.title_ru, media.title_ru),
 			original_title = COALESCE(EXCLUDED.original_title, media.original_title),
 			year           = COALESCE(EXCLUDED.year, media.year),
+			poster_path    = COALESCE(EXCLUDED.poster_path, media.poster_path),
+			overview       = COALESCE(EXCLUDED.overview, media.overview),
 			runtime_min    = COALESCE(EXCLUDED.runtime_min, media.runtime_min),
 			released_at    = COALESCE(EXCLUDED.released_at, media.released_at),
 			imdb_id        = COALESCE(EXCLUDED.imdb_id, media.imdb_id),
@@ -770,7 +772,8 @@ func upsertMediaTx(ctx context.Context, tx pgx.Tx, spec domain.MediaSpec) (int64
 	err := tx.QueryRow(ctx, q,
 		spec.Ref.Type, spec.Ref.TMDBID, spec.Ref.Season,
 		spec.Title, nullString(spec.TitleRU), nullString(spec.OriginalTitle),
-		nullInt(spec.Year), nullInt(spec.RuntimeMin), spec.ReleasedAt,
+		nullInt(spec.Year), nullString(spec.PosterPath), nullString(spec.Overview),
+		nullInt(spec.RuntimeMin), spec.ReleasedAt,
 		nullString(spec.IMDBID), nullInt64(spec.TVDBID),
 	).Scan(&id)
 	if err != nil {

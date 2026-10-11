@@ -1,0 +1,25 @@
+{{define "content"}}
+<h1>Уведомления</h1>
+
+{{if .Items}}
+  <form method="post" action="/notifications/read">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <table>
+      <thead><tr><th>Когда</th><th>Что</th><th>Текст</th><th></th></tr></thead>
+      <tbody>
+      {{range .Items}}
+        <tr class="{{if .Unread}}unread{{end}}">
+          <td class="muted mono">{{.When}}</td>
+          <td><a href="/requests/{{.RequestID}}">{{.Title}}</a></td>
+          <td class="muted">{{.Body}}</td>
+          <td><input type="checkbox" name="id" value="{{.ID}}"></td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    <button type="submit">Отметить выбранные прочитанными</button>
+  </form>
+{{else}}
+  <p class="muted">Ничего нет.</p>
+{{end}}
+{{end}}

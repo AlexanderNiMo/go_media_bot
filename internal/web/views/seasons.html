@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>{{.Show.Title}}{{if .Show.Year}} <span class="muted">{{.Show.Year}}</span>{{end}}</h1>
+<p class="muted">Сериал. Запрос ставится на один сезон — «весь сериал» запросить нельзя.</p>
+
+{{if .Seasons}}
+  <div class="cards seasons">
+  {{range .Seasons}}
+    <a class="card" href="/add/tv/{{$.Show.TMDBID}}/{{.Number}}">
+      <span class="card-title">Сезон {{.Number}}</span>
+      <span class="card-meta">
+        {{if .Episodes}}{{.Episodes}} серий<br>{{end}}
+        {{if .AirDate}}{{.AirDate}}{{else}}<span class="muted">дата неизвестна</span>{{end}}
+        {{if .Upcoming}}<br><span class="warn">ещё не вышел</span>{{end}}
+      </span>
+    </a>
+  {{end}}
+  </div>
+{{else}}
+  <p class="muted">У этого сериала на TMDB нет сезонов.</p>
+{{end}}
+{{end}}

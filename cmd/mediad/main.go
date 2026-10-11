@@ -37,6 +37,7 @@ import (
 	"github.com/alex/mediad/internal/storage"
 	"github.com/alex/mediad/internal/temporalx"
 	"github.com/alex/mediad/internal/tmdb"
+	"github.com/alex/mediad/internal/web"
 )
 
 // Build information, injected with -ldflags at release time.
@@ -108,7 +109,7 @@ func apiCmd(configFile *string) *cobra.Command {
 		Use:   "api",
 		Short: "Run the HTTP API and web UI",
 		RunE: func(*cobra.Command, []string) error {
-			return runApp(configFile)
+			return runAPI(configFile)
 		},
 	}
 }
@@ -118,7 +119,7 @@ func allCmd(configFile *string) *cobra.Command {
 		Use:   "all",
 		Short: "Run the worker and the API in one process",
 		RunE: func(*cobra.Command, []string) error {
-			return runWorker(configFile)
+			return runAll(configFile)
 		},
 	}
 }
@@ -211,16 +212,45 @@ func graph(configFile *string) fx.Option {
 	)
 }
 
-// clientsModule groups the connectivity checks.
+// The connectivity checks, split by who actually needs what.
 //
-// None of these are part of `graph` because they make a service unreachable
-// into a startup failure: `mediad migrate` must work with Temporal, Plex and
-// qBittorrent all switched off, and a deploy that brings the schema up before
-// the rest of the stack is a normal ordering rather than a mistake.
-func clientsModule() fx.Option {
+// None of them are part of `graph`, because each one turns an unreachable
+// dependency into a startup failure: `mediad migrate` must work with Temporal
+// and qBittorrent both switched off, and bringing the schema up before the
+// rest of the stack is a normal deploy order rather than a mistake.
+//
+// They are split rather than grouped because the grouping is what a process
+// *uses*, and getting it wrong is not a small thing: `mediad api` refuses to
+// start when the torrent client is down even though it never talks to it, so
+// the interface you would check to find out what is going on is unavailable
+// exactly when something is wrong.
+
+// temporalConnectivity forces the client to be built and the namespace to
+// exist. Needed by anything that starts or queries a workflow.
+func temporalConnectivity() fx.Option {
+	return temporalx.ConnectivityModule
+}
+
+// qbitConnectivity logs in at startup, which is what validates the credentials
+// and the version before a torrent is handed over.
+//
+// Only the worker: adding and removing torrents is its job, and a login
+// attempt from a process that will never add one is a session it does not
+// need against a client that bans IPs after repeated failures.
+func qbitConnectivity() fx.Option {
+	return qbit.ConnectivityModule
+}
+
+// webModule adds the HTTP interface.
+//
+// It is a module of its own rather than part of the base graph because the CLI
+// commands must not start an HTTP listener: `mediad list` opening a port would
+// be surprising, and on a host where `mediad api` is already running it would
+// fail to bind and take the command down with it.
+func webModule() fx.Option {
 	return fx.Options(
-		temporalx.ConnectivityModule,
-		qbit.ConnectivityModule,
+		web.Module,
+		fx.Invoke(func(s *web.Server) { s.SetVersion(version) }),
 	)
 }
 
@@ -255,8 +285,29 @@ func runOnce(configFile *string) error {
 }
 
 // runWorker builds the graph with the worker attached and runs it.
+//
+// The reconciler comes with it: it needs a Temporal client that can describe
+// executions, and the worker is the process already expected to be running
+// continuously.
 func runWorker(configFile *string) error {
-	return runApp(configFile, workerModule())
+	return runApp(configFile,
+		temporalConnectivity(), qbitConnectivity(),
+		workerModule(), request.ReconcilerModule)
+}
+
+// runAPI builds the graph with the HTTP interface attached.
+//
+// Temporal is required and qBittorrent is not: the interface starts and
+// cancels workflows, and reads progress from the projection the worker writes.
+func runAPI(configFile *string) error {
+	return runApp(configFile, temporalConnectivity(), webModule())
+}
+
+// runAll builds the graph with both, for a small self-hosted deployment.
+func runAll(configFile *string) error {
+	return runApp(configFile,
+		temporalConnectivity(), qbitConnectivity(),
+		workerModule(), request.ReconcilerModule, webModule())
 }
 
 // runApp builds the graph and runs it until SIGINT/SIGTERM.
@@ -264,8 +315,7 @@ func runWorker(configFile *string) error {
 // Extra modules are appended after the base graph, so a mode can add the
 // worker without the migration command having to know about it.
 func runApp(configFile *string, extra ...fx.Option) error {
-	options := []fx.Option{graph(configFile), clientsModule()}
-	options = append(options, extra...)
+	options := append([]fx.Option{graph(configFile)}, extra...)
 
 	app := fx.New(options...)
 

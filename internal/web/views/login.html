@@ -1,0 +1,14 @@
+{{define "content"}}
+<h1>Вход</h1>
+
+<form method="post" action="/login" class="stack narrow">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <label>Имя
+    <input type="text" name="username" autocomplete="username" autofocus required>
+  </label>
+  <label>Пароль
+    <input type="password" name="password" autocomplete="current-password" required>
+  </label>
+  <button type="submit">Войти</button>
+</form>
+{{end}}
