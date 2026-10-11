@@ -487,6 +487,7 @@ that it grew.
 ```bash
 make check     # format, vet, build, test
 make test-db   # the same, including the tests that need Postgres
+make check-ci  # everything CI runs, including the determinism checks
 ```
 
 Database tests are skipped unless `MEDIAD_TEST_DSN` is set, so `go test ./...`
@@ -494,6 +495,103 @@ stays green on a machine with nothing running. `make test-db` reads the DSN out
 of `.env` and runs them. Each of those tests creates its own throwaway database
 and drops it afterwards — the `mediad` role is granted `CREATEDB` for exactly
 that reason, so a test run never touches your data.
+
+## Changing workflow code
+
+This is the one part of the project where a mistake is invisible until it is
+expensive, so it gets its own section.
+
+### The rule
+
+Workflow code is replayed from history, so it has to make the same decisions it
+made before. In practice:
+
+**Forbidden in a workflow:** `time.Now`, `time.Sleep`, `math/rand`,
+`crypto/rand`, `uuid.New()`, `os.Getenv`, the `go` statement, native channels,
+native `select`, `sync.Mutex`, ranging over a map, and any I/O.
+
+**Use instead:** `workflow.Now`, `workflow.NewTimer`, `workflow.Go`,
+`workflow.NewChannel`, `workflow.NewSelector`, `workflow.GetLogger`,
+`workflow.DeterministicKeys`. For a random value, `workflow.SideEffect` records
+it in history so replay returns the same one — `workflow.NewRandom` does not
+exist.
+
+One that catches people out: **`workflow.Context` is not `context.Context`.**
+Its `Done()` returns a `workflow.Channel`, not a `<-chan struct{}`, and it
+cannot be converted. A shared helper that takes a `context.Context` therefore
+cannot be called from a workflow at all — which is the reason scoring, parsing
+and delay computation live in activities rather than in helper functions the
+workflow calls.
+
+### What to do when you have to change one
+
+Most changes never need to touch a workflow. The list is worth keeping short,
+because everything in it is a decision that cannot be taken back:
+
+1. **Change the activity, not the workflow.** Almost everything belongs here —
+   selection rules, delays, parsing, thresholds. An activity's implementation
+   can change freely; a history records its *result*, not how it got there.
+2. **Let `ContinueAsNew` carry it.** A workflow that restarts its history picks
+   up the new code on the next run. These restart roughly every ten days, so a
+   change that can wait that long needs no versioning at all — this is the
+   documented approach for long-running workflows with `ContinueAsNew`, and it
+   is why the project uses one.
+3. **`workflow.GetVersion` for the rest.** When a change genuinely cannot wait
+   for a restart, it has to be gated:
+
+   ```go
+   v := workflow.GetVersion(ctx, "search-fanout", workflow.DefaultVersion, 1)
+   if v == workflow.DefaultVersion {
+       // the old path, for executions that already made that decision
+   } else {
+       // the new path
+   }
+   ```
+
+   Keep the call site, raise the maximum, and never reorder the branches.
+
+### The three checks
+
+Each catches something the others cannot.
+
+**`make workflowcheck`** — static analysis. It traces through the call graph
+and flags a forbidden call in workflow code at the moment it is written, which
+is the cheapest possible place to catch it. It cannot see a change in the
+*order* of commands, and it deliberately ignores a timer's duration.
+
+**`make replay`** — replays every history in `internal/request/testdata/histories`
+against the current code. This is the only thing that catches what the static
+check cannot: a reordered activity, an added timer, a changed branch. The
+corpus is recorded from real runs; capture more with:
+
+```bash
+make capture IDS="download-watcher movie-603"
+make inspect-histories        # decode what you just captured
+```
+
+**Read what you capture before committing it, and do not do it by grepping.**
+The Temporal CLI writes payloads as base64-encoded JSON, so a search for a title
+or a path finds nothing — the values are there, just not in a form you can read.
+`make inspect-histories` decodes every payload that crossed the workflow
+boundary: the input, and the arguments to and results from every activity.
+
+What matters for replay is the *sequence* of commands, not the values, so a
+history naming something you would rather not publish should be scrubbed rather
+than dropped — the corpus is only useful if it still replays. The committed
+corpus here names one film and nothing else: no paths, no tracker names, no
+credentials.
+
+CI fails if the corpus is empty. A fresh clone may legitimately have none,
+which is why the test skips locally — but a repository that is supposed to have
+them and does not has quietly lost this coverage, and that is worth failing
+over.
+
+**An alert on `temporal_workflow_task_execution_failed{failure_reason="NonDeterminismError"}`.**
+The last line of defence, and not optional: because the default policy leaves a
+workflow **stuck rather than failed**, nothing else will tell you. It will not
+appear in a list of failures, it will not return an error to its caller, and it
+will not complete. It just stops, and with a two-year execution timeout it
+stops for two years.
 
 ### Two things that will bite you
 

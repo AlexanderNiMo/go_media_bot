@@ -7,7 +7,7 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 .DEFAULT_GOAL := help
-.PHONY: help up down clean logs ui psql psql-temporal worker api all migrate config build test test-db tidy fmt vet check
+.PHONY: help up down clean logs ui psql psql-temporal worker api all migrate config build test test-db tidy fmt vet workflowcheck replay capture inspect-histories check check-ci
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -79,5 +79,29 @@ fmt: ## Format the tree
 vet: ## Run go vet
 	go vet ./...
 
+WORKFLOWCHECK := $(shell go env GOPATH)/bin/workflowcheck
+
+workflowcheck: ## Static check for non-deterministic calls in workflow code
+	@test -x "$(WORKFLOWCHECK)" || go install go.temporal.io/sdk/contrib/tools/workflowcheck@latest
+	@# Run through go vet rather than invoking workflowcheck directly, and that
+	@# is not cosmetic: workflowcheck exits 0 even when it reports a problem, so
+	@# a CI job calling it directly would pass on a broken workflow. go vet
+	@# turns the diagnostics into a non-zero exit.
+	go vet -vettool "$(WORKFLOWCHECK)" ./...
+
+replay: ## Replay every recorded history against the current workflow code
+	go test ./internal/request/ -run TestReplay -count=1 -v
+
+capture: ## Record histories into the replay corpus (pass ids: make capture IDS="a b")
+	@test -n "$(IDS)" || { echo 'usage: make capture IDS="download-watcher movie-603"'; exit 2; }
+	./scripts/capture-histories.sh $(IDS)
+
+inspect-histories: ## Decode the corpus so it can be reviewed before committing
+	./scripts/inspect-history.sh 'internal/request/testdata/histories/*.json' 
+
 check: fmt vet build test ## Format, vet, build and test
 	@echo "all checks passed"
+
+check-ci: workflowcheck check test-db ## What CI runs: determinism, build, tests
+	@MEDIAD_REQUIRE_REPLAY=1 go test ./internal/request/ -run TestReplay -count=1
+	@echo "all CI checks passed"

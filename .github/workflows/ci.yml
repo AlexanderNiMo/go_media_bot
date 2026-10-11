@@ -1,0 +1,98 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel a run that is superseded by a newer push to the same branch. Without
+# this, a burst of pushes queues a burst of identical runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.27"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      # Both databases live in one server: temporal and temporal_visibility
+      # belong to the workflow engine, mediad to the application. The tests
+      # create and drop their own databases inside it.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mediad
+          POSTGRES_PASSWORD: mediad
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mediad -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      MEDIAD_TEST_DSN: postgres://mediad:mediad@localhost:5432/postgres?sslmode=disable
+      # Turns an empty replay corpus from a skip into a failure. A fresh clone
+      # may legitimately have no histories; a repository that is supposed to
+      # have them and does not has lost its determinism coverage.
+      MEDIAD_REQUIRE_REPLAY: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # The module cache is the slowest part of a cold run.
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # Runs before the tests because it is fast and by far the most valuable
+      # gate: it catches a non-deterministic call in workflow code at the point
+      # it is written, rather than years later when a running request wedges.
+      - name: Install workflowcheck
+        run: go install go.temporal.io/sdk/contrib/tools/workflowcheck@latest
+
+      - name: Check workflow determinism
+        run: go vet -vettool "$(go env GOPATH)/bin/workflowcheck" ./...
+
+      - name: Test
+        run: go test ./... -count=1 -race -timeout 10m
+
+      # Replaying recorded histories is the only thing that catches a
+      # determinism break the static check cannot see — one that comes from a
+      # change in the *order* of commands rather than from a forbidden call.
+      - name: Replay recorded histories
+        run: |
+          go test ./internal/request/ -run TestReplay -count=1 -v
+
+      # The live qBittorrent tests are skipped without a server, which is the
+      # right default: they point at a real client, and CI has none. Noted here
+      # so the omission is deliberate rather than forgotten.
+      - name: Note on live tests
+        run: |
+          echo "The live qBittorrent tests are skipped: MEDIAD_TEST_QBIT_URL is not set."
+          echo "Run them by hand against a real client — see the README."
