@@ -8,7 +8,9 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/storage"
@@ -683,14 +685,50 @@ func (s *WorkflowSuite) TestCancelBeforeAnyDownloadNeedsNoCompensation() {
 // The server warns at 10 240 events and terminates at 51 200, and termination
 // loses the request rather than reporting an error. A long search loop has to
 // restart its own history well before that.
+//
+// This was written expecting the trigger to be untestable, on the grounds that
+// the environment does not grow a history and GetCurrentHistoryLength
+// therefore reports nothing useful. That is true and beside the point:
+// SetContinueAsNewSuggested supplies the server's own signal, and the workflow
+// treats it identically to the length comparison. Reaching for the cheaper of
+// two equivalent branches is the whole reason the branch is written as an or.
+func (s *WorkflowSuite) TestContinueAsNewBoundsHistory() {
+	// Registered before expectNoise, because testify matches the first
+	// expectation that fits and the bookkeeping stub would otherwise swallow
+	// every call before this one saw it.
+	var events []string
+	s.env.OnActivity("SaveState", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in SaveStateInput) error {
+			events = append(events, in.Event)
+			return nil
+		})
+	s.env.OnActivity("NotifyWatchers", mock.Anything, mock.Anything).
+		Return(nil).Maybe()
+	s.expectPlexAbsent()
+
+	s.env.SetContinueAsNewSuggested(true)
+
+	s.env.ExecuteWorkflow(Workflow, movieInput())
+
+	var restart *workflow.ContinueAsNewError
+	s.Require().ErrorAs(s.env.GetWorkflowError(), &restart,
+		"the workflow ignored the server's suggestion to restart, so it would "+
+			"run into the history limit and be terminated — which loses the request "+
+			"rather than reporting anything")
+
+	// The restart is recorded before it happens, because afterwards this
+	// history is gone. Without the event, a request that restarts is
+	// indistinguishable from one that was never touched.
+	s.Contains(events, "workflow.continued_as_new",
+		"the restart left no trace in the audit trail")
+}
+
 // TestContinueAsNewCarriesState is the part of the history limit that can
 // actually go wrong.
 //
-// The trigger itself is a comparison against a configured event count, and the
-// test environment does not simulate history growth — GetCurrentHistoryLength
-// there reports nothing useful, so a restart cannot be provoked from a test.
-// What can be tested, and what matters, is the other half: a workflow that
-// starts from a carried-over state must resume rather than start over.
+// A restart passes its arguments and nothing else, so everything the next run
+// needs has to be in them. Nothing observable happens when that is wrong: the
+// workflow keeps running, having quietly forgotten something.
 //
 // Getting this wrong is invisible until it matters. A request that restarts
 // mid-download and forgets its torrent would add a second copy of the same
@@ -758,3 +796,92 @@ func errSimulated(msg string) error { return &simulatedError{msg} }
 type simulatedError struct{ msg string }
 
 func (e *simulatedError) Error() string { return e.msg }
+
+// TestContinueAsNewKeepsSearchDeadline is the difference between a request that
+// ends and one that disappears.
+//
+// A ContinueAsNew passes its arguments and nothing else, so the search window
+// has to travel in them. When it does not, the restarted workflow computes a
+// fresh one from the policy — and every history reset silently buys the request
+// another two years.
+//
+// What that costs is not a late failure but no failure at all. The window is
+// then bounded only by WorkflowExecutionTimeout, which terminates the execution
+// rather than returning from it: the projection row stays "searching" forever
+// and nobody is told anything. The workflow's own deadline is the only ending
+// that produces a result.
+func (s *WorkflowSuite) TestContinueAsNewKeepsSearchDeadline() {
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	// Counted rather than left unmocked. An unmocked activity runs for real
+	// here, so a workflow that wrongly searches fails as a thirty-second
+	// heartbeat timeout — which is a failure, but one that says nothing about
+	// why. Recording the call turns it into an assertion that names the
+	// problem.
+	var searches int
+	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
+		Return(func(context.Context, SearchInput) (SearchResult, error) {
+			searches++
+			return SearchResult{Considered: 3, Summary: "nothing acceptable"}, nil
+		}).Maybe()
+
+	in := movieInput()
+	in.StartSearchDeadline = s.env.Now().Add(-time.Hour)
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	s.True(s.env.IsWorkflowCompleted())
+
+	var result Result
+	s.NoError(s.env.GetWorkflowResult(&result))
+	s.Equal(storage.StateFailed, result.Outcome)
+	s.Contains(result.Reason, "deadline")
+	s.Zero(searches, "a restarted workflow forgot the search deadline it was given "+
+		"and searched again, which is how a two-year request becomes an eternal one")
+}
+
+// TestContinueAsNewHandsOverSearchDeadline tests the other half of the
+// deadline: not that a restarted workflow honours the value, but that the
+// restart passes it on in the first place.
+//
+// Both halves are needed and neither implies the other. A workflow that reads
+// a deadline nobody set is as broken as one that sets a deadline nobody reads,
+// and the second is the quieter of the two — the request simply never ends,
+// until the server terminates it with a timeout that produces no result and no
+// notification.
+//
+// The restart is provoked deliberately. It does not happen on its own here:
+// the test environment does not grow a history, so the event-count comparison
+// in the workflow never fires. SetContinueAsNewSuggested is the server's own
+// signal, which the workflow treats identically — same branch, same
+// consequences.
+func (s *WorkflowSuite) TestContinueAsNewHandsOverSearchDeadline() {
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	s.env.SetContinueAsNewSuggested(true)
+
+	in := movieInput()
+	want := s.env.Now().Add(in.Policy.SearchDeadline)
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	// The environment ends a top-level run at the restart rather than
+	// following it, so the arguments it was handed are the thing to inspect.
+	var restart *workflow.ContinueAsNewError
+	s.Require().ErrorAs(s.env.GetWorkflowError(), &restart,
+		"the workflow did not restart, so nothing about the hand-over was tested")
+
+	var next Input
+	s.Require().NoError(converter.GetDefaultDataConverter().FromPayloads(restart.Input, &next),
+		"the arguments of the restarted workflow could not be decoded")
+
+	// Compared as instants rather than as time.Time values: the deadline makes
+	// a JSON round trip to reach the next run, which drops the location. The
+	// instant is what the workflow acts on, so that is what the test asserts.
+	s.True(want.Equal(next.StartSearchDeadline),
+		"the restarted workflow was not told when the search ends, so it would "+
+			"give itself a fresh two years and the request would never reach its deadline: "+
+			"want %s, got %s", want, next.StartSearchDeadline)
+}

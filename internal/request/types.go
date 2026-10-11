@@ -135,6 +135,16 @@ type Input struct {
 	// StartDownloadDeadline carries the current attempt's deadline, so a
 	// restart does not hand the download a fresh two days.
 	StartDownloadDeadline time.Time
+	// StartSearchDeadline carries the end of the search.
+	//
+	// It is carried for the same reason as the download deadline, and the
+	// consequence of dropping it is worse. A ContinueAsNew that recomputed the
+	// window would give the request a fresh two years on every history reset,
+	// so the product's deadline would never actually arrive: the only thing
+	// left bounding the request would be WorkflowExecutionTimeout, which
+	// *terminates* the execution — no result, no notification, and a
+	// projection row that stays "searching" forever.
+	StartSearchDeadline time.Time
 }
 
 // State is the workflow's own state, carried across ContinueAsNew.

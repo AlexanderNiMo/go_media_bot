@@ -673,6 +673,16 @@ func initialState(ctx workflow.Context, in Input) State {
 		deadline = now.Add(in.Policy.DownloadDeadline)
 	}
 
+	// The search window, for the same reason and with a worse failure if it is
+	// dropped. Recomputing it here would mean every ContinueAsNew bought the
+	// request another two years, so the deadline would never arrive and the
+	// only thing left bounding the execution would be
+	// WorkflowExecutionTimeout — which terminates rather than returns.
+	searchDeadline := in.StartSearchDeadline
+	if searchDeadline.IsZero() {
+		searchDeadline = now.Add(in.Policy.SearchDeadline)
+	}
+
 	return State{
 		Phase:            phase,
 		Attempt:          in.StartAttempt,
@@ -683,7 +693,7 @@ func initialState(ctx workflow.Context, in Input) State {
 		Selected:         in.StartSelected,
 		QbitHash:         in.StartQbitHash,
 		DownloadDeadline: deadline,
-		SearchDeadline:   now.Add(in.Policy.SearchDeadline),
+		SearchDeadline:   searchDeadline,
 	}
 }
 
@@ -791,6 +801,10 @@ func continueAsNewIfNeeded(ctx workflow.Context, in Input, state State) (bool, e
 	next.StartSelected = state.Selected
 	next.StartQbitHash = state.QbitHash
 	next.StartDownloadDeadline = state.DownloadDeadline
+	// Carried, not recomputed. Without this the restarted workflow would give
+	// itself a fresh two-year window and the request would never reach its
+	// deadline at all.
+	next.StartSearchDeadline = state.SearchDeadline
 	// The iteration count has to survive too, or the log line above would
 	// report a number that resets at every restart.
 	next.StartIteration = state.Iteration
