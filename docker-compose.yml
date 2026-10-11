@@ -1,0 +1,278 @@
+# Infrastructure for mediad: PostgreSQL and a self-hosted Temporal server.
+#
+# Version pins matter here. `temporalio/auto-setup`, which used to create the
+# schema for you, is deprecated and the temporalio/docker-compose repository
+# that shipped it was archived in January 2026; schema creation is now a
+# one-shot admin-tools container (see temporal-schema-setup below). Any guide
+# using auto-setup is stale.
+#
+# Ports that cross the container boundary:
+#   7233  Temporal frontend gRPC — the only one the application needs
+#   8233  Temporal Web UI
+#   5432  PostgreSQL, published on loopback only, for psql and dumps
+#
+# Ports 6933/6934/6935/6939 are internode membership (ringpop). They are never
+# published: the four Temporal services run in one process here and talk to
+# themselves.
+
+name: mediad
+
+services:
+  postgresql:
+    image: postgres:16
+    container_name: mediad-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # PGDATA points at a SUBDIRECTORY, and that is load-bearing rather than
+      # cosmetic.
+      #
+      # The image runs initdb into PGDATA on first start, and refuses to
+      # proceed if the directory is not empty:
+      #   directory "/var/lib/postgresql/data" exists but is not empty
+      # A directory bind-mounted from the host is almost never empty — a
+      # .DS_Store on macOS, lost+found when mounting the root of an ext4 disk,
+      # or just a file someone left there. Naming a subdirectory lets Postgres
+      # create it itself, so whatever is in the mount point stops mattering.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # A local directory rather than a named volume, so the data is visible,
+      # rsync-able, and survives `docker compose down -v`.
+      #
+      # Two consequences to know about. On Linux the directory must be owned by
+      # uid 999 (the postgres user in the image): sudo chown -R 999:999 ./data/postgres
+      # And this must be a LOCAL disk: Postgres relies on locking and fsync
+      # semantics that NFS and SMB do not guarantee, and the failure mode is
+      # silent corruption rather than a startup error.
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-temporal} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  # Creates both Temporal databases and brings their schema up to date.
+  #
+  # A separate one-shot container rather than part of the server's entrypoint
+  # because upgrading Temporal is then a two-line change: bump the admin-tools
+  # tag, let this run, then bump the server tag. Schema first, always.
+  temporal-schema-setup:
+    image: temporalio/admin-tools:1.32.1
+    container_name: mediad-temporal-schema
+    restart: on-failure:10
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgresql
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # temporal-sql-tool reads SQL_USER and SQL_PASSWORD, not POSTGRES_*.
+      # Both pairs are set because the two tools read different names.
+      SQL_USER: ${POSTGRES_USER:-temporal}
+      SQL_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    entrypoint: ["/bin/sh", "-c"]
+    # $$VAR, not ${VAR}: a single dollar would be substituted by Compose from
+    # the host environment and blanked out, because these are meant for the
+    # shell inside the container.
+    command:
+      - |
+        set -eu
+        echo "waiting for postgres at $$POSTGRES_SEEDS:$$DB_PORT"
+        until nc -z -w 5 "$$POSTGRES_SEEDS" "$$DB_PORT"; do sleep 2; done
+
+        for DB in temporal temporal_visibility; do
+          temporal-sql-tool --plugin postgres12 --ep "$$POSTGRES_SEEDS" \
+            -u "$$SQL_USER" -p "$$DB_PORT" --db "$$DB" create || true
+          temporal-sql-tool --plugin postgres12 --ep "$$POSTGRES_SEEDS" \
+            -u "$$SQL_USER" -p "$$DB_PORT" --db "$$DB" setup-schema -v 0.0 || true
+        done
+
+        temporal-sql-tool --plugin postgres12 --ep "$$POSTGRES_SEEDS" \
+          -u "$$SQL_USER" -p "$$DB_PORT" --db temporal \
+          update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+
+        temporal-sql-tool --plugin postgres12 --ep "$$POSTGRES_SEEDS" \
+          -u "$$SQL_USER" -p "$$DB_PORT" --db temporal_visibility \
+          update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+
+        echo "temporal schema is up to date"
+
+  temporal:
+    image: temporalio/server:1.32.1
+    container_name: mediad-temporal
+    restart: unless-stopped
+    depends_on:
+      temporal-schema-setup:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgresql
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+      # Required. The config template binds to 127.0.0.1 by default, which
+      # means nothing outside this container can reach 7233.
+      BIND_ON_IP: 0.0.0.0
+
+      # Immutable once the server has started against a database: changing it
+      # later is unsupported. 4 is the default and is far more than this
+      # workload needs, but it is pinned here so the value lives in git.
+      NUM_HISTORY_SHARDS: "4"
+
+      # The defaults are 20 and 10 PER SERVICE, and all four services share
+      # this process — against Postgres's own max_connections of 100 that is a
+      # restart storm waiting to happen.
+      SQL_MAX_CONNS: "8"
+      SQL_VIS_MAX_CONNS: "8"
+
+      LOG_LEVEL: info
+      # Caps the history cache. Without this the history service grows its
+      # mutable-state cache toward the built-in budget of ~1 GiB, which is the
+      # difference between a 300 MB container and a 1.3 GB one.
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/home-lab.yaml
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    ports:
+      - "127.0.0.1:7233:7233"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+
+  # Creates the namespace. `default` is only created automatically by the CLI
+  # dev server; with a real server every namespace is explicit.
+  temporal-namespace-setup:
+    image: temporalio/admin-tools:1.32.1
+    container_name: mediad-temporal-namespace
+    restart: on-failure:10
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        until temporal operator cluster health --address "$$TEMPORAL_ADDRESS" >/dev/null 2>&1; do
+          sleep 2
+        done
+
+        if temporal operator namespace describe -n "$$DEFAULT_NAMESPACE" \
+             --address "$$TEMPORAL_ADDRESS" >/dev/null 2>&1; then
+          echo "namespace $$DEFAULT_NAMESPACE already exists"
+        else
+          # Retention applies to CLOSED executions only. Our workflows stay
+          # open for up to two years, so it does not touch them; ContinueAsNew
+          # is what keeps their history bounded, not this.
+          temporal operator namespace create -n "$$DEFAULT_NAMESPACE" \
+            --retention 7d --address "$$TEMPORAL_ADDRESS"
+          echo "namespace $$DEFAULT_NAMESPACE created"
+        fi
+
+  temporal-ui:
+    image: temporalio/ui:2.55.0
+    container_name: mediad-temporal-ui
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_UI_PORT: "8080"
+      TEMPORAL_DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
+      # Must match how you actually reach the UI, or the UI's own API calls
+      # are blocked by CORS.
+      TEMPORAL_CORS_ORIGINS: http://localhost:8233
+    ports:
+      - "8233:8080"
+
+  # The application. Not started by `docker compose up` by default — run it
+  # from the host with `make worker` / `make api` while developing, or bring it
+  # up explicitly with `docker compose --profile app up -d`.
+  mediad:
+    build: .
+    container_name: mediad-app
+    profiles: ["app"]
+    restart: unless-stopped
+    depends_on:
+      # Depends on the namespace container, not on temporal being healthy:
+      # "the server is up" and "the namespace exists" are different conditions,
+      # and namespace registration takes up to 15 seconds.
+      temporal-namespace-setup:
+        condition: service_completed_successfully
+      postgresql:
+        condition: service_healthy
+    command: ["all"]
+    environment:
+      MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@postgresql:5432/mediad?sslmode=disable
+      MEDIAD_TEMPORAL_HOST: temporal:7233
+      MEDIAD_TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
+      MEDIAD_TMDB_API_KEY: ${TMDB_API_KEY:-}
+      MEDIAD_PLEX_URL: ${PLEX_URL:-}
+      MEDIAD_PLEX_TOKEN: ${PLEX_TOKEN:-}
+      MEDIAD_INDEXER_BASE_URL: ${INDEXER_BASE_URL:-}
+      MEDIAD_INDEXER_API_KEY: ${INDEXER_API_KEY:-}
+      MEDIAD_QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+      MEDIAD_QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
+      MEDIAD_QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+      MEDIAD_TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
+    ports:
+      - "8081:8081"
+
+  # Creates the application's own database. Runs once, before anything opens a
+  # connection to it; migrations are applied by the application itself.
+  mediad-db-setup:
+    image: postgres:16
+    container_name: mediad-db-setup
+    restart: on-failure:10
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      APP_DB: mediad
+      APP_USER: mediad
+      APP_PASSWORD: ${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}
+      SUPERUSER: ${POSTGRES_USER:-temporal}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        exists=$$(psql -h postgresql -U "$$SUPERUSER" -d postgres -tAc \
+          "SELECT 1 FROM pg_database WHERE datname = '$$APP_DB'")
+        if [ "$$exists" = "1" ]; then
+          echo "database $$APP_DB already exists"
+        else
+          psql -h postgresql -U "$$SUPERUSER" -d postgres -c \
+            "CREATE DATABASE $$APP_DB"
+          echo "database $$APP_DB created"
+        fi
+
+        psql -h postgresql -U "$$SUPERUSER" -d postgres -tAc \
+          "SELECT 1 FROM pg_roles WHERE rolname = '$$APP_USER'" | grep -q 1 || \
+          psql -h postgresql -U "$$SUPERUSER" -d postgres -c \
+            "CREATE ROLE $$APP_USER LOGIN PASSWORD '$$APP_PASSWORD'"
+
+        # CREATEDB so the test suite can build throwaway databases instead of
+        # running against the development one and truncating it.
+        psql -h postgresql -U "$$SUPERUSER" -d postgres -c \
+          "ALTER ROLE $$APP_USER CREATEDB"
+
+        # The application owns its schema and nothing else. It is deliberately
+        # not granted anything on the temporal databases.
+        psql -h postgresql -U "$$SUPERUSER" -d postgres -c \
+          "GRANT ALL PRIVILEGES ON DATABASE $$APP_DB TO $$APP_USER"
+        psql -h postgresql -U "$$SUPERUSER" -d "$$APP_DB" -c \
+          "GRANT ALL ON SCHEMA public TO $$APP_USER"

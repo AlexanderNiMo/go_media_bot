@@ -1,0 +1,41 @@
+# Dynamic configuration for the home-lab Temporal server.
+#
+# The only reason this file exists is memory. The history service will grow its
+# mutable-state cache toward history.hostLevelCacheMaxSizeBytes, whose built-in
+# default is 256000 * 4 * 1024 bytes — about 1 GiB — and
+# history.hostLevelCacheMaxSize, which defaults to 128000 entries. On a machine
+# that is also running Plex that is most of the budget, for a workload of a few
+# hundred open workflows.
+#
+# Capping it at 128 MiB and 20000 entries is the difference between a Temporal
+# container that settles around 300 MB and one that creeps past 1.3 GB.
+#
+# Two operational notes: the file is re-read every 60 seconds, but the cache
+# keys below require a service restart to take effect.
+
+# Turn on the byte-based limit, so the cap below is the one that applies.
+history.cacheSizeBasedLimit:
+  - value: true
+    constraints: {}
+
+# 128 MiB, down from ~1 GiB.
+history.hostLevelCacheMaxSizeBytes:
+  - value: 134217728
+    constraints: {}
+
+# 20000 entries, down from 128000.
+history.hostLevelCacheMaxSize:
+  - value: 20000
+    constraints: {}
+
+# 30 minutes, down from 1 hour.
+history.cacheTTL:
+  - value: 30m
+    constraints: {}
+
+# Workflow IDs here are short and readable by design ("movie-603",
+# "tv-1399-s2"), so the default 1000 is irrelevant — but an explicit limit
+# catches a bug that would otherwise only surface as a server-side rejection.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
