@@ -106,6 +106,98 @@ Every rejection carries a machine-readable reason, recorded in the event log.
 That is what makes "there were results, why did nothing download" answerable
 without reproducing anything.
 
+## The workflow
+
+One workflow is one film or one season of a series. There is no "the whole
+series" request by design: a flat model keeps the workflow, the deduplication
+key and the UI card all describing the same thing.
+
+```
+Plex check ─→ in the library? → done, skipped
+     │
+     └─→ loop
+          wait until the next attempt is due     ← interruptible, so a cancel is instant
+          search the indexer on a rate-limited queue
+          score and pick a release               ← pure logic, an activity
+          Plex check again                       ← cheap insurance before an irreversible step
+          add to the client on its own queue
+          poll the download every five minutes
+          rescan Plex, notify the watchers
+```
+
+### What lives where, and why
+
+The workflow contains orchestration and nothing else. Scoring, parsing and
+delay computation live in activities or in the packages they call.
+
+That is not tidiness. Editing logic *inside* a workflow breaks the replay of
+every execution already running, and these run for two years. Worse, the
+failure **looks like a hang rather than an error**: the default
+`WorkflowPanicPolicy` is `BlockWorkflow`, so the task fails once and is then
+retried forever. The workflow never completes and never appears in a list of
+failures — with a two-year execution timeout, that means two years of silence.
+Release selection is exactly the code that will change most often, so it is an
+activity.
+
+### The workflow never touches the torrent client
+
+It polls its own row in the projection, which a separate download watcher keeps
+current. That gap is what makes a two-day download affordable: the interface
+needs progress every thirty seconds, but the workflow only needs to know
+done / stalled / expired, and polling a workflow at the progress cadence would
+cost about fifty thousand history events — the termination limit — for a single
+download.
+
+It also means exactly one caller talks to qBittorrent, which matters because
+its authentication is a session cookie with server-side invalidation and an IP
+ban after repeated failed logins.
+
+### Task queues are the rate limit
+
+One worker per queue, each with its own limits. The indexer queue is capped
+server-side, which is what distinguishes it from a per-process limiter: the
+limit holds across every replica.
+
+**The limit is set below the real target.** Prowlarr fans every request out
+across all configured trackers, and the server spreads activity tasks over
+several partitions of a queue and can burst above the configured average. A
+limit set exactly at a tracker's tolerance will occasionally exceed it, and the
+consequence of that is a banned IP rather than a slow request.
+
+Every activity names its queue explicitly. An activity scheduled without one
+runs on the workflow's queue, silently bypassing the limit that queue exists to
+enforce.
+
+### What the failing tests found
+
+Four real bugs, three of which were invisible until the tests actually
+exercised the code:
+
+- **A cancellation arriving while an activity was in flight was treated as a
+  failure.** The activity is cancelled too, and its error looks like any other.
+  The workflow then tried to write state with a context that was already done,
+  that write failed, and the failure propagated out — so a user who cancelled
+  got an error instead of a clean outcome.
+- **The download deadline was recorded but never checked.** A torrent that ran
+  for two days while still reporting progress was waited on indefinitely.
+- **`LooksLikeVersion` did not exist**, and this one was found by accident
+  rather than by a test: pointed at port 8080, which on the development machine
+  is an unrelated web service, the client logged a successful connection and
+  read an HTML page as the torrent client's version. The add-option name
+  depends on the major version, so an unrecognised string silently falls back
+  to the 4.x spelling and a torrent starts downloading when it was meant to
+  wait. Startup now refuses a service that is not qBittorrent.
+- Two test bugs that mattered for the same reason: a catch-all mock registered
+  before a specific one silently won (testify matches the first), and a poll
+  counter shared across download attempts made the second release stall too.
+
+One thing to know when extending these tests: **mocking an activity by method
+expression does not deliver its arguments.** `OnActivity((*Activities).Foo, …)`
+hands the mock closure a zero value, while `OnActivity("Foo", …)` with a
+`func(context.Context, In)` closure receives the real input. This is verified
+by a probe rather than inferred, and it is the kind of thing that makes a test
+pass for the wrong reason.
+
 ## External services
 
 Four integrations, each with one decision worth knowing about.

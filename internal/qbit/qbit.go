@@ -117,13 +117,55 @@ func (c *Client) Start(ctx context.Context) error {
 
 	v, err := c.qb.GetAppVersionCtx(ctx)
 	if err != nil {
-		c.log.Warn("could not read qbittorrent version; assuming 4.x option names", "error", err)
-	} else {
-		c.version = v
+		// Fail rather than warn. Pointing this at the wrong port is an easy
+		// mistake — 8080 is a very common default — and the failure is silent:
+		// an unrelated web service answers the login with a 200, so the client
+		// reports a successful connection and then misbehaves on every later
+		// call. Refusing to start turns that into one obvious error.
+		return fmt.Errorf("read the qbittorrent version from %s: %w "+
+			"(is qbittorrent.url pointing at the Web API, not another service?)",
+			c.cfg.QBittorrent.URL, err)
+	}
+	if !looksLikeVersion(v) {
+		return fmt.Errorf("the service at %s answered with %q, which is not a qbittorrent version "+
+			"(the Web API usually listens on a different port than other services)",
+			c.cfg.QBittorrent.URL, truncate(v, 60))
+	}
+	c.version = v
+
+	c.log.Info("connected to qbittorrent", "url", c.cfg.QBittorrent.URL, "version", v)
+	return nil
+}
+
+// looksLikeVersion reports whether a string is a plausible qBittorrent version.
+//
+// The check exists because the add-option name depends on the major version,
+// and an unrecognised string silently falls back to the 4.x spelling. A client
+// that is not qBittorrent at all returns whatever its own version endpoint
+// produces, so validating the shape here is what turns "connected to the wrong
+// service" into a startup failure instead of a torrent that quietly starts
+// downloading when it was meant to wait.
+func looksLikeVersion(v string) bool {
+	v = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "v"))
+	if v == "" {
+		return false
 	}
 
-	c.log.Info("connected to qbittorrent", "url", c.cfg.QBittorrent.URL, "version", c.version)
-	return nil
+	major, rest, found := strings.Cut(v, ".")
+	if !found {
+		return false
+	}
+	if _, err := strconv.Atoi(major); err != nil {
+		return false
+	}
+	// The minor component has to start with a digit too; a service returning
+	//something like "1.0 (build abc)" would still pass, which is fine.
+	minor := rest
+	if i := strings.IndexAny(minor, ".-+ "); i >= 0 {
+		minor = minor[:i]
+	}
+	_, err := strconv.Atoi(minor)
+	return err == nil
 }
 
 // Version returns the server version string, or "" if it could not be read.
@@ -381,4 +423,16 @@ func toStatus(t qbittorrent.Torrent) domain.TorrentStatus {
 	}
 
 	return s
+}
+
+// truncate shortens a string for an error message.
+//
+// It exists because the string being truncated is whatever a misconfigured URL
+// returned, which in practice is an entire HTML page.
+func truncate(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

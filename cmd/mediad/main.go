@@ -30,6 +30,7 @@ import (
 	"github.com/alex/mediad/internal/logging"
 	"github.com/alex/mediad/internal/plex"
 	"github.com/alex/mediad/internal/qbit"
+	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
 	"github.com/alex/mediad/internal/temporalx"
 	"github.com/alex/mediad/internal/tmdb"
@@ -88,7 +89,7 @@ func workerCmd(configFile *string) *cobra.Command {
 The worker holds no state: kill it mid-flight and the workflows resume from
 the event history when it comes back.`,
 		RunE: func(*cobra.Command, []string) error {
-			return runApp(configFile)
+			return runWorker(configFile)
 		},
 	}
 }
@@ -108,7 +109,7 @@ func allCmd(configFile *string) *cobra.Command {
 		Use:   "all",
 		Short: "Run the worker and the API in one process",
 		RunE: func(*cobra.Command, []string) error {
-			return runApp(configFile)
+			return runWorker(configFile)
 		},
 	}
 }
@@ -191,11 +192,13 @@ func graph(configFile *string) fx.Option {
 		config.Module,
 		logging.Module,
 		storage.Module,
+		storage.StoreModule,
 		temporalx.Module,
 		tmdb.Module,
 		plex.Module,
 		indexer.Module,
 		qbit.Module,
+		request.Module,
 	)
 }
 
@@ -210,6 +213,17 @@ func clientsModule() fx.Option {
 		temporalx.ConnectivityModule,
 		qbit.ConnectivityModule,
 	)
+}
+
+// workerModule registers the workflow and its activities on the task queues.
+//
+// It is added only by the modes that actually execute work. The API starts
+// workflows and queries them but never runs them, so giving it a worker would
+// mean two processes polling the same queues and competing for the same
+// activities — which works, but makes the rate limits harder to reason about
+// and doubles the number of callers hitting qBittorrent.
+func workerModule() fx.Option {
+	return request.WorkerModule
 }
 
 // runOnce builds the graph, tears it down immediately, and returns.
@@ -231,12 +245,20 @@ func runOnce(configFile *string) error {
 	return app.Stop(ctx)
 }
 
+// runWorker builds the graph with the worker attached and runs it.
+func runWorker(configFile *string) error {
+	return runApp(configFile, workerModule())
+}
+
 // runApp builds the graph and runs it until SIGINT/SIGTERM.
-func runApp(configFile *string) error {
-	app := fx.New(
-		graph(configFile),
-		clientsModule(),
-	)
+//
+// Extra modules are appended after the base graph, so a mode can add the
+// worker without the migration command having to know about it.
+func runApp(configFile *string, extra ...fx.Option) error {
+	options := []fx.Option{graph(configFile), clientsModule()}
+	options = append(options, extra...)
+
+	app := fx.New(options...)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

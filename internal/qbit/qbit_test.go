@@ -133,6 +133,23 @@ func hasTag(t map[string]any, tag string) bool {
 	return false
 }
 
+// newTestClientVersion is newTestClient without the startup login, for tests
+// that exercise Start itself.
+func newTestClientVersion(t *testing.T, fake *fakeQBittorrent) *Client {
+	t.Helper()
+
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{}
+	cfg.QBittorrent.URL = srv.URL
+	cfg.QBittorrent.Username = "admin"
+	cfg.QBittorrent.Password = "secret"
+	cfg.QBittorrent.PollInterval = 30 * time.Second
+
+	return New(cfg, slog.New(slog.DiscardHandler))
+}
+
 func newTestClient(t *testing.T, fake *fakeQBittorrent) *Client {
 	t.Helper()
 
@@ -340,9 +357,12 @@ func TestPauseOptionNameTracksClientVersion(t *testing.T) {
 		{"4.6.4", "paused"},
 		{"v5.0.3", "stopped"},
 		{"5.2.4", "stopped"},
-		{"", "paused"}, // unreadable version falls back to the older name
-		{"garbage", "paused"},
+		{"4.6", "paused"},
 	} {
+		// A version that is not a version at all never reaches this point any
+		// more: Start refuses it, because a service answering with something
+		// unrecognisable is not qBittorrent. The fallback below still exists
+		// for a client constructed without Start.
 		fake := newFakeQBittorrent()
 		fake.version = tc.version
 		c := newTestClient(t, fake)
