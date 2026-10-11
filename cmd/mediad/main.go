@@ -9,6 +9,9 @@
 //	mediad config   print the effective configuration with secrets redacted
 //	mediad version  print build information
 //
+// and the commands a person types: search, add, list, status, cancel, retry and
+// notifications.
+//
 // The CLI commands talk to Postgres and Temporal directly, so they work
 // whether or not the api process is running.
 package main
@@ -65,10 +68,16 @@ you can ask for something that does not exist yet and forget about it.`,
 		versionCmd(),
 		configCmd(&configFile),
 		migrateCmd(&configFile),
+	)
+
+	// The long-running modes, then the commands a person actually types.
+	root.AddCommand(
 		workerCmd(&configFile),
 		apiCmd(&configFile),
 		allCmd(&configFile),
 	)
+
+	root.AddCommand(cliCommands(&configFile)...)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

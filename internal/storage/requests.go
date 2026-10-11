@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -213,20 +214,219 @@ func (s *Store) GetRequest(ctx context.Context, id int64) (*Request, error) {
 	return r, nil
 }
 
-// ListRequests returns requests, newest first.
+// FindRequestByWorkflowID resolves a workflow id to its request row.
 //
-// state filters to one state when non-empty; limit is clamped to something
-// sane so a caller cannot ask for the whole table by accident.
-func (s *Store) ListRequests(ctx context.Context, state State, limit int) ([]*Request, error) {
+// A workflow id is derived from the media — "movie-603", "tv-1399-s2" — and is
+// what the Temporal UI shows, so it is the identifier an operator has to hand
+// when something has gone wrong. An active request wins over an older closed
+// one, because that is the row a person asking about "movie-603" almost always
+// means; rows created before a force re-request share the id.
+func (s *Store) FindRequestByWorkflowID(ctx context.Context, workflowID string) (*Request, error) {
+	const q = `
+		SELECT ` + requestViewColumns + `
+		  FROM request_view
+		 WHERE workflow_id = $1
+		 ORDER BY (state IN ('pending','searching','adding','downloading')) DESC,
+		          created_at DESC
+		 LIMIT 1`
+
+	r, err := scanRequest(s.pool.QueryRow(ctx, q, workflowID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("workflow %s: %w", workflowID, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find request by workflow id %s: %w", workflowID, err)
+	}
+	return r, nil
+}
+
+// RestartInput is what a deliberate retry changes about a request.
+type RestartInput struct {
+	ID int64
+	// FromState, PreviousAttempts and PreviousError describe what the request
+	// is being restarted *from*.
+	//
+	// They come from the caller, which read the row before starting the
+	// replacement workflow, rather than being re-read here. By the time this
+	// runs the new workflow may already have written its own state — its first
+	// search is due immediately — and the point of these values is to record
+	// the outcome the retry is a response to, not whatever the row happens to
+	// say a moment later.
+	FromState        State
+	PreviousAttempts int
+	PreviousError    string
+
+	// NextRunAt is when the restarted workflow should first search. It is now,
+	// or near it: a retry is a person asking for this to happen again, not a
+	// schedule to be resumed.
+	NextRunAt time.Time
+	// SearchDeadline is the new end of the search.
+	SearchDeadline time.Time
+	// Actor is the interface that asked, and is pinned to the schema's
+	// vocabulary — "cli", "api", "telegram" — rather than naming a person.
+	// It is required: the column is constrained to that vocabulary, so an
+	// empty value is refused when the row is written.
+	Actor string
+	// RequestedBy is the person, recorded on the event detail.
+	RequestedBy string
+}
+
+// RestartRequest returns a stopped request to the search loop.
+//
+// Everything the process accumulated is cleared — the counters, the selected
+// release, the address of a torrent that is no longer being downloaded — and
+// the search window is replaced. Keeping the selected release would make the
+// row claim a download that the retry is not doing, and `status` would report
+// a release the workflow has forgotten about; the audit trail keeps what
+// happened, and the blacklist keeps the releases that were found wanting.
+//
+// There is deliberately no check that the request is stopped. Two calls that
+// both try to restart the same request are separated by the workflow engine
+// rather than here — only one execution can be running under a workflow id, so
+// the second start fails — and the check would be wrong as often as it was
+// right, because a restarted workflow can legitimately have written its own
+// state by the time this runs.
+func (s *Store) RestartRequest(ctx context.Context, in RestartInput) (*Request, error) {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		const reset = `
+			UPDATE requests SET
+				state             = 'pending',
+				attempt_count     = 0,
+				error_streak      = 0,
+				stall_count       = 0,
+				last_error        = NULL,
+				next_run_at       = $2,
+				search_deadline   = $3,
+				download_deadline = NULL,
+				selected_title    = NULL,
+				selected_indexer  = NULL,
+				selected_guid     = NULL,
+				selected_infohash = NULL,
+				selected_size     = NULL,
+				selected_seeders  = NULL,
+				selected_score    = NULL,
+				selected_at       = NULL,
+				qbit_hash         = NULL,
+				content_path      = NULL,
+				progress          = 0,
+				dl_speed          = 0,
+				eta_seconds       = NULL,
+				zero_since        = NULL,
+				missing_since     = NULL,
+				qbit_state        = NULL,
+				completed_at      = NULL,
+				updated_at        = now()
+			WHERE id = $1`
+
+		tag, err := tx.Exec(ctx, reset, in.ID, in.NextRunAt, in.SearchDeadline)
+		if err != nil {
+			return fmt.Errorf("restart request %d: %w", in.ID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("request %d: %w", in.ID, ErrNotFound)
+		}
+
+		// The previous outcome is recorded on the event because the reset
+		// clears the columns that held it, so this is the only place it
+		// survives.
+		detail := map[string]any{
+			"previous_attempts": in.PreviousAttempts,
+			"previous_error":    in.PreviousError,
+		}
+		if in.RequestedBy != "" {
+			detail["requested_by"] = in.RequestedBy
+		}
+
+		return s.recordEvent(ctx, tx, Event{
+			RequestID: in.ID,
+			Event:     "request.retried",
+			FromState: in.FromState,
+			ToState:   StatePending,
+			Actor:     in.Actor,
+			Detail:    detail,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return s.GetRequest(ctx, in.ID)
+}
+
+// RequestFilter narrows a listing.
+type RequestFilter struct {
+	// States selects one or more states. Empty means every state, which is
+	// deliberately not the default anywhere in the interface: the interesting
+	// list is the work in progress, and "everything ever" is a report.
+	States []State
+	// MediaType restricts to films or series. Empty means both.
+	MediaType domain.MediaType
+	// WatcherUserID restricts to requests this user is watching. Zero means
+	// everyone's.
+	WatcherUserID int64
+	// Limit is clamped to something sane so a caller cannot ask for the whole
+	// table by accident.
+	Limit int
+}
+
+// ActiveStates is the set of states that mean a request is still being worked
+// on.
+func ActiveStates() []State {
+	return []State{StatePending, StateSearching, StateAdding, StateDownloading}
+}
+
+// AllStates is every state a request can be in, for callers that have to
+// validate or document the set. It is derived from the same constants the
+// schema's CHECK constraint mirrors, so a state added here and not there is
+// caught by the database rather than by an interface that cannot render it.
+func AllStates() []State {
+	return []State{
+		StatePending, StateSearching, StateAdding, StateDownloading,
+		StateCompleted, StateFailed, StateCanceled, StateSkipped,
+	}
+}
+
+// Known reports whether the value is one of the states the schema accepts.
+//
+// Exists so that a mistyped filter is an error rather than an empty list: a
+// command that quietly returns nothing looks like a system with no work in it.
+func (s State) Known() bool {
+	for _, known := range AllStates() {
+		if s == known {
+			return true
+		}
+	}
+	return false
+}
+
+// ListRequests returns requests, newest first.
+func (s *Store) ListRequests(ctx context.Context, f RequestFilter) ([]*Request, error) {
+	limit := f.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 
 	q := `SELECT ` + requestViewColumns + ` FROM request_view`
-	args := []any{}
-	if state != "" {
-		q += ` WHERE state = $1`
-		args = append(args, state)
+	var (
+		args  []any
+		where []string
+	)
+	if len(f.States) > 0 {
+		args = append(args, f.States)
+		where = append(where, fmt.Sprintf("state = ANY($%d)", len(args)))
+	}
+	if f.MediaType != "" {
+		args = append(args, f.MediaType)
+		where = append(where, fmt.Sprintf("media_type = $%d", len(args)))
+	}
+	if f.WatcherUserID != 0 {
+		args = append(args, f.WatcherUserID)
+		where = append(where, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM request_watchers w WHERE w.request_id = request_view.id AND w.user_id = $%d)",
+			len(args)))
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, " AND ")
 	}
 	q += fmt.Sprintf(` ORDER BY created_at DESC LIMIT %d`, limit)
 

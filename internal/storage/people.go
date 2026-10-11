@@ -330,6 +330,48 @@ type User struct {
 // The identity row is the link between the three interfaces: one user, one
 // account, reachable from the bot, the web UI and the CLI alike.
 func (s *Store) EnsureUserByTelegram(ctx context.Context, telegramID, username string) (*User, error) {
+	return s.ensureUser(ctx, "telegram", telegramID, username)
+}
+
+// EnsureUserByCLI finds or creates the user behind a command-line session.
+//
+// The identity is the operating-system user name, so running the CLI as
+// yourself attributes the request to you and the notifications land in your
+// inbox — the same account the web UI and the bot reach through their own
+// identities. It does mean a request started by a cron job belongs to whoever
+// the job runs as, which is the honest answer to "who asked for this".
+//
+// Created without administrative rights. The first administrator is made
+// deliberately, through the web setup, rather than by whoever happens to run
+// the CLI first.
+func (s *Store) EnsureUserByCLI(ctx context.Context, name string) (*User, error) {
+	return s.ensureUser(ctx, "cli", name, name)
+}
+
+// FindUserByCLI looks up a CLI user without creating one.
+//
+// Reads do not create users: a typo in a user name should report that nobody
+// is called that, not silently bring an account into existence and then show
+// an empty inbox.
+func (s *Store) FindUserByCLI(ctx context.Context, name string) (*User, error) {
+	const q = `
+		SELECT u.id, COALESCE(u.username, ''), u.is_admin
+		  FROM users u
+		  JOIN user_identities i ON i.user_id = u.id
+		 WHERE i.provider = 'cli' AND i.external_id = $1`
+
+	var u User
+	err := s.pool.QueryRow(ctx, q, name).Scan(&u.ID, &u.Username, &u.IsAdmin)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("cli user %q: %w", name, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find cli user %q: %w", name, err)
+	}
+	return &u, nil
+}
+
+func (s *Store) ensureUser(ctx context.Context, provider, externalID, username string) (*User, error) {
 	var out *User
 
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -337,35 +379,55 @@ func (s *Store) EnsureUserByTelegram(ctx context.Context, telegramID, username s
 			SELECT u.id, COALESCE(u.username, ''), u.is_admin
 			  FROM users u
 			  JOIN user_identities i ON i.user_id = u.id
-			 WHERE i.provider = 'telegram' AND i.external_id = $1`
+			 WHERE i.provider = $1 AND i.external_id = $2`
 
 		var u User
-		err := tx.QueryRow(ctx, find, telegramID).Scan(&u.ID, &u.Username, &u.IsAdmin)
+		err := tx.QueryRow(ctx, find, provider, externalID).Scan(&u.ID, &u.Username, &u.IsAdmin)
 		switch {
 		case err == nil:
 			out = &u
 			return nil
 		case !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("find user by telegram id: %w", err)
+			return fmt.Errorf("find user by %s id: %w", provider, err)
 		}
 
 		const createUser = `
 			INSERT INTO users (username, is_admin)
 			VALUES ($1, FALSE)
+			ON CONFLICT (username) DO NOTHING
 			RETURNING id, COALESCE(username, ''), is_admin`
 
-		if err := tx.QueryRow(ctx, createUser, nullString(username)).
-			Scan(&u.ID, &u.Username, &u.IsAdmin); err != nil {
+		err = tx.QueryRow(ctx, createUser, nullString(username)).
+			Scan(&u.ID, &u.Username, &u.IsAdmin)
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The user name is unique, and it can legitimately be taken: the
+			// same person may already exist from Telegram or the web under the
+			// same name. The account is created without one rather than failing
+			// the command, and deliberately *without* adopting the existing
+			// user — linking two identities is something a person does
+			// explicitly, with a code, because doing it by name would let
+			// anyone who can run the CLI as a given user take over that
+			// account.
+			//
+			// On conflict rather than catching the error, because Postgres
+			// aborts the entire transaction on a failed statement: a second
+			// attempt after a unique violation would fail with "current
+			// transaction is aborted" rather than inserting anything.
+			err = tx.QueryRow(ctx, createUser, nil).
+				Scan(&u.ID, &u.Username, &u.IsAdmin)
+		}
+		if err != nil {
 			return fmt.Errorf("create user: %w", err)
 		}
 
 		const link = `
 			INSERT INTO user_identities (user_id, provider, external_id)
-			VALUES ($1, 'telegram', $2)
+			VALUES ($1, $2, $3)
 			ON CONFLICT (provider, external_id) DO UPDATE SET user_id = EXCLUDED.user_id`
 
-		if _, err := tx.Exec(ctx, link, u.ID, telegramID); err != nil {
-			return fmt.Errorf("link telegram identity: %w", err)
+		if _, err := tx.Exec(ctx, link, u.ID, provider, externalID); err != nil {
+			return fmt.Errorf("link %s identity: %w", provider, err)
 		}
 
 		out = &u

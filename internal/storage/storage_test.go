@@ -3,8 +3,11 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -431,3 +434,450 @@ func insertUser(t *testing.T, pool *pgxpool.Pool, name string) int64 {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// ---------------------------------------------------------------------------
+// Restarting a request
+// ---------------------------------------------------------------------------
+
+// newStoreFor builds a Store over a throwaway database.
+func newStoreFor(t *testing.T) (*Store, *pgxpool.Pool) {
+	t.Helper()
+
+	pool := newTestDB(t)
+	return NewStore(pool, slog.New(slog.DiscardHandler)), pool
+}
+
+// failedRequest returns a request left in the state a retry has to clean up.
+func failedRequest(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int64 {
+	t.Helper()
+
+	mediaID := insertMedia(t, pool, "movie", 603, nil, "The Matrix")
+
+	var id int64
+	err := pool.QueryRow(ctx, `
+		INSERT INTO requests (
+			media_id, workflow_id, state, attempt_count, error_streak, stall_count,
+			last_error, next_run_at, search_deadline, download_deadline,
+			selected_title, selected_indexer, selected_guid, selected_infohash,
+			selected_size, selected_seeders, selected_score, selected_at,
+			qbit_hash, content_path, progress, dl_speed, eta_seconds, zero_since,
+			missing_since, qbit_state, completed_at
+		) VALUES (
+			$1, 'movie-603', 'failed', 47, 3, 3,
+			'three releases stalled', now() - interval '1 hour', now() + interval '1 day',
+			now() - interval '2 days',
+			'Матрица (1999) 1080p BDRemux', 'RuTracker', 'guid-1', 'abc123',
+			20000000000, 51, 0.87, now() - interval '3 days',
+			'abc123', '/downloads/Matrix', 0.43, 1200000, 4800, now() - interval '3 days',
+			now() - interval '3 days', 'stalledDL', now() - interval '1 day'
+		) RETURNING id`, mediaID).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert failed request: %v", err)
+	}
+	return id
+}
+
+// TestRestartRequestClearsTheProcess is about what the row means afterwards.
+//
+// A retry is not a resumed download: the torrent is gone, the release it named
+// is not being fetched, and the counters describe a search that has ended. A
+// row that kept any of it would have `status` reporting a download that is not
+// happening.
+func TestRestartRequestClearsTheProcess(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	id := failedRequest(t, ctx, pool)
+
+	nextRunAt := time.Now().Truncate(time.Millisecond)
+	deadline := nextRunAt.Add(2 * 365 * 24 * time.Hour)
+
+	got, err := store.RestartRequest(ctx, RestartInput{
+		ID:               id,
+		FromState:        StateFailed,
+		PreviousAttempts: 47,
+		PreviousError:    "three releases stalled",
+		NextRunAt:        nextRunAt,
+		SearchDeadline:   deadline,
+		Actor:            "cli",
+		RequestedBy:      "alex",
+	})
+	if err != nil {
+		t.Fatalf("RestartRequest: %v", err)
+	}
+
+	if got.State != StatePending {
+		t.Errorf("state = %q, want pending", got.State)
+	}
+	if got.AttemptCount != 0 || got.StallCount != 0 {
+		t.Errorf("counters survived: attempts=%d stalls=%d", got.AttemptCount, got.StallCount)
+	}
+	if got.LastError != "" {
+		t.Errorf("last error survived: %q", got.LastError)
+	}
+	if got.QbitHash != "" || got.ContentPath != "" {
+		t.Errorf("the torrent address survived: hash=%q path=%q", got.QbitHash, got.ContentPath)
+	}
+	if got.SelectedTitle != "" {
+		t.Errorf("the selected release survived: %q", got.SelectedTitle)
+	}
+	if got.Progress != 0 {
+		t.Errorf("progress survived: %v", got.Progress)
+	}
+	if got.DownloadDeadline != nil {
+		t.Errorf("the download deadline survived: %v", got.DownloadDeadline)
+	}
+	if got.CompletedAt != nil {
+		t.Errorf("the completion time survived: %v", got.CompletedAt)
+	}
+
+	// The window is replaced rather than resumed, which is the point: a retry
+	// that inherited a deadline in the past would fail on its first pass.
+	if !got.SearchDeadline.After(time.Now().Add(300 * 24 * time.Hour)) {
+		t.Errorf("search deadline = %v, want a fresh window", got.SearchDeadline)
+	}
+	if got.NextRunAt == nil || got.NextRunAt.After(time.Now().Add(time.Minute)) {
+		t.Errorf("next run = %v, want it due now", got.NextRunAt)
+	}
+}
+
+// TestRestartRequestRecordsWhatItReplaced — the reset clears the columns, so
+// the event is the only place the previous outcome survives.
+func TestRestartRequestRecordsWhatItReplaced(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	id := failedRequest(t, ctx, pool)
+
+	if _, err := store.RestartRequest(ctx, RestartInput{
+		ID:               id,
+		FromState:        StateFailed,
+		PreviousAttempts: 47,
+		PreviousError:    "three releases stalled",
+		NextRunAt:        time.Now(),
+		SearchDeadline:   time.Now().Add(time.Hour),
+		Actor:            "cli",
+		RequestedBy:      "alex",
+	}); err != nil {
+		t.Fatalf("RestartRequest: %v", err)
+	}
+
+	events, err := store.ListEvents(ctx, id, 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+
+	e := events[0]
+	if e.Event != "request.retried" {
+		t.Errorf("event = %q", e.Event)
+	}
+	if e.FromState != StateFailed || e.ToState != StatePending {
+		t.Errorf("transition recorded as %q -> %q", e.FromState, e.ToState)
+	}
+	if e.Actor != "cli" {
+		t.Errorf("actor = %q, want the interface that asked", e.Actor)
+	}
+	if !strings.Contains(string(e.Detail), "alex") {
+		t.Errorf("the person is not on the detail: %s", e.Detail)
+	}
+
+	detail := string(e.Detail)
+	for _, want := range []string{"three releases stalled", "47"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("the previous outcome is not in the detail: %s", detail)
+		}
+	}
+}
+
+func TestRestartRequestOnAMissingRequest(t *testing.T) {
+	store, _ := newStoreFor(t)
+
+	_, err := store.RestartRequest(context.Background(), RestartInput{
+		ID:             999,
+		NextRunAt:      time.Now(),
+		SearchDeadline: time.Now().Add(time.Hour),
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// TestRestartRequestAfterACompletedDownload — the other reason to retry is
+// that the file was deleted from Plex, and the row has to be usable again.
+func TestRestartRequestAfterACompletedDownload(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	id := failedRequest(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `UPDATE requests SET state = 'completed' WHERE id = $1`, id); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+
+	got, err := store.RestartRequest(ctx, RestartInput{
+		ID:             id,
+		FromState:      StateCompleted,
+		NextRunAt:      time.Now(),
+		SearchDeadline: time.Now().Add(time.Hour),
+		Actor:          "cli",
+	})
+	if err != nil {
+		t.Fatalf("RestartRequest: %v", err)
+	}
+	if got.State != StatePending {
+		t.Errorf("state = %q, want pending", got.State)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding a request
+// ---------------------------------------------------------------------------
+
+func TestFindRequestByWorkflowIDPrefersTheActiveOne(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	mediaID := insertMedia(t, pool, "movie", 603, nil, "The Matrix")
+
+	// A failed request and then a fresh one under the same workflow id, which
+	// is what --force leaves behind: several rows, one id.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+		 VALUES ($1, 'movie-603', 'failed', now() + interval '2 years')`, mediaID); err != nil {
+		t.Fatalf("insert failed request: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+		 VALUES ($1, 'movie-603', 'downloading', now() + interval '2 years')`, mediaID); err != nil {
+		t.Fatalf("insert active request: %v", err)
+	}
+
+	got, err := store.FindRequestByWorkflowID(ctx, "movie-603")
+	if err != nil {
+		t.Fatalf("FindRequestByWorkflowID: %v", err)
+	}
+	if got.State != StateDownloading {
+		t.Errorf("resolved to the %q row; a person asking about movie-603 means the live one", got.State)
+	}
+}
+
+func TestFindRequestByWorkflowIDWhenThereIsNone(t *testing.T) {
+	store, _ := newStoreFor(t)
+
+	if _, err := store.FindRequestByWorkflowID(context.Background(), "movie-999"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Listing
+// ---------------------------------------------------------------------------
+
+func TestListRequestsFilters(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	// One of each state, on distinct media so the active-uniqueness index is
+	// not in the way.
+	states := []State{
+		StatePending, StateSearching, StateAdding, StateDownloading,
+		StateCompleted, StateFailed, StateCanceled, StateSkipped,
+	}
+	for i, state := range states {
+		mediaID := insertMedia(t, pool, "movie", int64(1000+i), nil, "Title")
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+			 VALUES ($1, $2, $3, now() + interval '2 years')`,
+			mediaID, "movie-"+strconv.Itoa(1000+i), state); err != nil {
+			t.Fatalf("insert %s: %v", state, err)
+		}
+	}
+
+	t.Run("active only", func(t *testing.T) {
+		got, err := store.ListRequests(ctx, RequestFilter{States: ActiveStates()})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != 4 {
+			t.Fatalf("got %d requests, want the 4 active ones", len(got))
+		}
+		for _, r := range got {
+			if !r.State.Active() {
+				t.Errorf("a %q request came back from the active filter", r.State)
+			}
+		}
+	})
+
+	t.Run("everything", func(t *testing.T) {
+		got, err := store.ListRequests(ctx, RequestFilter{})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != len(states) {
+			t.Errorf("got %d requests, want %d", len(got), len(states))
+		}
+	})
+
+	t.Run("one state", func(t *testing.T) {
+		got, err := store.ListRequests(ctx, RequestFilter{States: []State{StateFailed}})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != 1 || got[0].State != StateFailed {
+			t.Errorf("got %d requests, want just the failed one", len(got))
+		}
+	})
+
+	t.Run("limit", func(t *testing.T) {
+		got, err := store.ListRequests(ctx, RequestFilter{Limit: 2})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("got %d requests, want 2", len(got))
+		}
+	})
+
+	t.Run("by media type", func(t *testing.T) {
+		got, err := store.ListRequests(ctx, RequestFilter{MediaType: "tv"})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %d series, want none", len(got))
+		}
+	})
+
+	t.Run("by watcher", func(t *testing.T) {
+		userID := insertUser(t, pool, "alex")
+
+		watched, err := store.ListRequests(ctx, RequestFilter{})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if err := store.AddWatcher(ctx, watched[0].ID, userID); err != nil {
+			t.Fatalf("AddWatcher: %v", err)
+		}
+
+		got, err := store.ListRequests(ctx, RequestFilter{WatcherUserID: userID})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != watched[0].ID {
+			t.Errorf("got %d requests, want only the watched one", len(got))
+		}
+
+		// Somebody else watches nothing.
+		otherID := insertUser(t, pool, "someone-else")
+		got, err = store.ListRequests(ctx, RequestFilter{WatcherUserID: otherID})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %d requests for a user watching nothing", len(got))
+		}
+	})
+
+	t.Run("newest first", func(t *testing.T) {
+		got, err := store.ListRequests(ctx, RequestFilter{})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		for i := 1; i < len(got); i++ {
+			if got[i].CreatedAt.After(got[i-1].CreatedAt) {
+				t.Fatalf("row %d is newer than the one before it", i)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+func TestEnsureUserByCLI(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	first, err := store.EnsureUserByCLI(ctx, "alex")
+	if err != nil {
+		t.Fatalf("EnsureUserByCLI: %v", err)
+	}
+	if first.Username != "alex" {
+		t.Errorf("username = %q", first.Username)
+	}
+	if first.IsAdmin {
+		t.Error("a CLI user was created as an administrator")
+	}
+
+	// Asking twice is what happens on every command, so it must not create a
+	// second account.
+	again, err := store.EnsureUserByCLI(ctx, "alex")
+	if err != nil {
+		t.Fatalf("EnsureUserByCLI again: %v", err)
+	}
+	if again.ID != first.ID {
+		t.Errorf("got a second account: %d then %d", first.ID, again.ID)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&count); err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("%d user rows, want 1", count)
+	}
+}
+
+// TestEnsureUserByCLIWhenTheNameIsTaken — the same person may already exist
+// from Telegram or the web under the same name, and the account is created
+// without one rather than failing or, worse, adopting the existing account:
+// linking two identities is something a person does with a code, because
+// otherwise anyone who can run the CLI as a given user takes over that
+// account.
+func TestEnsureUserByCLIWhenTheNameIsTaken(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	taken := insertUser(t, pool, "alex")
+
+	got, err := store.EnsureUserByCLI(ctx, "alex")
+	if err != nil {
+		t.Fatalf("EnsureUserByCLI: %v", err)
+	}
+	if got.ID == taken {
+		t.Fatal("the CLI identity adopted the existing account")
+	}
+	if got.Username != "" {
+		t.Errorf("username = %q, want it left unset", got.Username)
+	}
+
+	// And it is stable: the next command finds the same nameless account
+	// rather than creating another.
+	again, err := store.EnsureUserByCLI(ctx, "alex")
+	if err != nil {
+		t.Fatalf("EnsureUserByCLI again: %v", err)
+	}
+	if again.ID != got.ID {
+		t.Errorf("got %d then %d", got.ID, again.ID)
+	}
+}
+
+func TestFindUserByCLIDoesNotCreate(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	if _, err := store.FindUserByCLI(ctx, "nobody"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&count); err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("a read created %d users", count)
+	}
+}

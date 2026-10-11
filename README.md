@@ -25,8 +25,8 @@ Under construction, being built in stages:
 | 4 | Workflow, activities, task queues | done |
 | 5 | Download watcher | done |
 | 6 | Determinism checks in CI | done |
-| 7 | Repositories and CLI commands | next |
-| 8 | Web UI | |
+| 7 | CLI commands | done |
+| 8 | Web UI | next |
 | 9 | Telegram bot | |
 | 10 | Packaging, backups, alerts | |
 
@@ -397,6 +397,21 @@ make worker    # terminal 2
 make api       # terminal 3
 ```
 
+The binary reads `MEDIAD_*` variables, while `.env.example` currently names the
+secrets the short way (`TMDB_API_KEY`, `PLEX_TOKEN`, …) because that is what
+docker compose interpolates. Running on the host therefore needs the prefixed
+spelling, or the setting is silently absent and the default is used:
+
+```bash
+set -a && . ./.env && set +a
+export MEDIAD_TMDB_API_KEY="$TMDB_API_KEY"
+export MEDIAD_PLEX_TOKEN="$PLEX_TOKEN"
+# ...and so on for the indexer, qBittorrent and Telegram
+```
+
+This is a wart, not a design: the names are normalised in stage 10 so that one
+`.env` works for both paths.
+
 ## Configuration
 
 Settings come from three places, later ones winning:
@@ -422,6 +437,60 @@ The settings worth knowing about:
 | `search.backoff_ladder` | `1h,2h,4h,8h,12h,24h` | Check frequency. Strictly hourly would be 17 520 searches per request over two years, each fanning out across every tracker. The ladder gives ~735 for effectively the same result. |
 | `download.deadline` | `48h` | A torrent that has not finished in two days is treated as dead: the release is blacklisted and the search resumes. |
 | `indexer.rate_per_second` | `0.25` | One request per four seconds. Deliberately below the one-per-three target, because the server spreads activity tasks across several partitions and can burst above the configured average — and a burst that trips a tracker's limit gets the IP banned. |
+
+## Command line
+
+The CLI is a full interface, not a debugging aid: it talks to Postgres and
+Temporal directly and works with neither the worker nor the API running. That
+is deliberate, because the moment you most want to know what a request is doing
+is the moment the web interface is down.
+
+```bash
+mediad search "матрица"           # ask, choose, request
+mediad add movie 603              # by TMDB id, no questions
+mediad add tv 1399 --season 2
+mediad list                       # what is in flight
+mediad list --all --json          # everything, for a script
+mediad status 12                  # one request, and what it has done
+mediad status movie-603 --events 50
+mediad cancel 12
+mediad retry 12
+mediad notifications --unread
+```
+
+A few decisions worth knowing about:
+
+**A series always needs a season.** There is no "the whole series" request, so
+`search` asks which season and `add` requires `--season`. Season 0 is a real
+season — TMDB numbers specials that way — so the absence of the flag is not
+represented by the number zero anywhere.
+
+**Nothing blocks on a question in a script.** The CLI asks only when stdin is a
+terminal. Otherwise the ambiguity becomes an error naming the flag that would
+have resolved it, rather than a menu read from a closed pipe and a command that
+appears to hang.
+
+**It asks once, and only when it decided for you.** A query that matched one
+title and was resolved without a single question gets a confirmation before a
+two-year request is created. A title you picked out of a menu, or named with
+`--pick` or `add`, is already an answer and is not asked about again.
+
+**A retry is a fresh run of the same request.** The row, its watchers and its
+audit trail carry over — so "I asked in March, it failed, I asked again in
+June" is one story — and the search window starts again from now, because the
+two reasons to retry are that the deadline passed and that too many releases
+were found wanting. Releases already known to be bad stay blacklisted, so a
+retry looks for something different instead of picking the same torrent again.
+The cost is that a hand-retried request can outlive its original two years;
+that is a person deciding, not a loop.
+
+**Reading notifications does not mark them read.** The same rows are the web
+inbox and the queue the Telegram bot delivers from, and a glance in a terminal
+should not clear what somebody has not seen on their phone yet.
+
+`--json` is available on the read commands and on `add`, `search` and `retry`.
+The shapes are defined in the CLI rather than mirrored from the storage layer,
+so adding a column does not silently change the output.
 
 ## Architecture
 
@@ -616,6 +685,47 @@ workflow checks `GetCurrentHistoryLength()` on every iteration and calls
 `ContinueAsNew` past the configured threshold, carrying its state explicitly.
 That is also why the download progress poller is a separate singleton workflow
 rather than a loop inside each request.
+
+### Starting a workflow, and two ways to make one that never runs
+
+Both of these report success. Neither produces an error, a failed execution or
+anything in a log. The request simply never moves, and with a two-year
+execution timeout it never moves for two years.
+
+**Start by type name, never by function.** `ExecuteWorkflow` takes either. Given
+a function it uses the function's own Go name and ignores the alias the worker
+registered it under, because it looks aliases up in the *client's* registry —
+and aliases live on workers. The function here is called `Workflow`, so passing
+it starts executions of type `Workflow`, while every worker registers
+`RequestWorkflow`:
+
+```go
+// wrong: starts type "Workflow", which no worker knows
+c.ExecuteWorkflow(ctx, opts, Workflow, in)
+
+// right
+c.ExecuteWorkflow(ctx, opts, WorkflowType, in)
+```
+
+The symptom is a workflow that is `Running` in the Temporal UI with an empty
+history and a workflow task nothing ever claims. `mediad status` shows a
+request waiting for its first search, forever.
+
+**`WorkflowIDConflictPolicy: FAIL` on its own does nothing.** A retry must not
+attach to an execution that is already running, so it asks the server to refuse
+instead. But the Go client takes that refusal and converts it into a handle to
+the running execution — with a nil error — unless
+`WorkflowExecutionErrorWhenAlreadyStarted` is also set. Measured, not assumed:
+`FAIL` alone returns the running run's id and no error.
+
+```go
+opts.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+opts.WorkflowExecutionErrorWhenAlreadyStarted = true   // without this, the above is a no-op
+```
+
+`internal/request/service_test.go` pins both. It is a unit test with a fake
+client and no server, which is enough: what needs checking is which arguments
+reach the engine, and that is observable without one.
 
 ### Upgrading Temporal
 

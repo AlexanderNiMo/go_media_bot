@@ -10,6 +10,8 @@ import (
 
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"go.uber.org/fx"
@@ -77,7 +79,19 @@ func startWatcher(ctx context.Context, c client.Client, cfg *config.Config, log 
 		interval = 30 * time.Second
 	}
 
-	run, err := c.ExecuteWorkflow(ctx, options, DownloadWatcherWorkflow, WatcherInput{
+	// The type name is passed as a string rather than as the Go function, and
+	// that is not cosmetic. ExecuteWorkflow derives the type from the name of
+	// whatever it is handed: given a function it uses the function's own name,
+	// consulting only the *client's* registry of aliases — which is empty,
+	// because aliases are registered on workers. Passing DownloadWatcherWorkflow
+	// here would therefore start a workflow of type "DownloadWatcherWorkflow"
+	// that happens to be right only as long as the Go function keeps that name,
+	// and passing Workflow in the same position starts one of type "Workflow".
+	//
+	// A workflow whose type no worker registered is not an error anywhere. It
+	// is scheduled, no worker can claim it, and it waits. Silently. For two
+	// years.
+	run, err := c.ExecuteWorkflow(ctx, options, DownloadWatcherWorkflowType, WatcherInput{
 		Interval: interval,
 		// An hour per activity invocation. It bounds the history the watcher
 		// accumulates and keeps the start-to-close timeout comfortably larger
@@ -240,10 +254,46 @@ func ProfileFromConfig(cfg *config.Config) release.Profile {
 // Telegram bot — use, so that the rules about deduplication and workflow
 // identity live in one place rather than three.
 type Service struct {
-	temporal client.Client
+	temporal workflowClient
 	store    *storage.Store
 	profile  release.Profile
 	cfg      *config.Config
+}
+
+// workflowClient is the part of the Temporal client this layer uses.
+//
+// Narrowed so that what the service *asks the engine to do* can be tested
+// without a server — which matters more here than usual, because the two
+// mistakes this interface guards against are both invisible at runtime: a
+// workflow started under a type name no worker registered, and a start that
+// silently attaches to an execution that was already running. Neither produces
+// an error anywhere. Both are just a wait that never ends.
+type workflowClient interface {
+	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow any, args ...any) (client.WorkflowRun, error)
+	CancelWorkflow(ctx context.Context, workflowID, runID string) error
+	QueryWorkflow(ctx context.Context, workflowID, runID, queryType string, args ...any) (converter.EncodedValue, error)
+}
+
+// startRun starts one execution of the request workflow.
+//
+// Every start goes through here so that the type name is written once.
+func (s *Service) startRun(
+	ctx context.Context,
+	opts client.StartWorkflowOptions,
+	in Input,
+) (client.WorkflowRun, error) {
+	// By type name, not by function, and this is the call that matters most:
+	// it is how every request enters the system. ExecuteWorkflow derives the
+	// type from whatever it is handed — given a function it uses the
+	// function's own name, which here is "Workflow" — and consults only the
+	// client's registry of aliases, which is empty because aliases are
+	// registered on workers. So passing Workflow starts a workflow of type
+	// "Workflow", which no worker has registered.
+	//
+	// The consequence of that is not an error. The execution is accepted, no
+	// worker can claim its task, and it waits — silently, for as long as its
+	// two-year execution timeout.
+	return s.temporal.ExecuteWorkflow(ctx, opts, WorkflowType, in)
 }
 
 // NewService builds the service layer.
@@ -260,6 +310,21 @@ type StartInput struct {
 	Force bool
 }
 
+// StartResult is the outcome of asking for something.
+type StartResult struct {
+	Request *storage.Request
+	// Reused reports that an active request for the same media already
+	// existed, and this caller was attached to it as a watcher instead of a
+	// second download starting.
+	//
+	// It is part of the result rather than something the caller infers,
+	// because the difference is the whole message: "started" and "somebody
+	// else is already fetching this, you will be told when it arrives" are not
+	// the same thing to be told, and a caller that cannot distinguish them
+	// will say the wrong one.
+	Reused bool
+}
+
 // StartRequest creates the projection row and starts the workflow.
 //
 // The order is deliberate. The row is written first, and its id is what the
@@ -267,7 +332,7 @@ type StartInput struct {
 // leaves a running workflow that nothing can find if the process dies in
 // between, and a two-year execution nobody knows about is worse than a row
 // that has to be cleaned up.
-func (s *Service) StartRequest(ctx context.Context, in StartInput) (*storage.Request, error) {
+func (s *Service) StartRequest(ctx context.Context, in StartInput) (*StartResult, error) {
 	if err := in.Spec.Ref.ValidForRequest(); err != nil {
 		return nil, err
 	}
@@ -278,12 +343,7 @@ func (s *Service) StartRequest(ctx context.Context, in StartInput) (*storage.Req
 	// database when it has something to say.
 	if existing, err := s.store.FindActiveRequest(ctx, in.Spec.Ref); err == nil {
 		if !in.Force {
-			if in.UserID != 0 {
-				if err := s.store.AddWatcher(ctx, existing.ID, in.UserID); err != nil {
-					return nil, err
-				}
-			}
-			return s.store.GetRequest(ctx, existing.ID)
+			return s.attachTo(ctx, existing.ID, in.UserID)
 		}
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return nil, err
@@ -311,17 +371,12 @@ func (s *Service) StartRequest(ctx context.Context, in StartInput) (*storage.Req
 			if findErr != nil {
 				return nil, err
 			}
-			if in.UserID != 0 {
-				if err := s.store.AddWatcher(ctx, existing.ID, in.UserID); err != nil {
-					return nil, err
-				}
-			}
-			return s.store.GetRequest(ctx, existing.ID)
+			return s.attachTo(ctx, existing.ID, in.UserID)
 		}
 		return nil, err
 	}
 
-	run, err := s.temporal.ExecuteWorkflow(ctx, s.startOptions(workflowID), Workflow, Input{
+	run, err := s.startRun(ctx, s.startOptions(workflowID), Input{
 		RequestID: req.ID,
 		Spec:      in.Spec,
 		Policy:    policy,
@@ -340,6 +395,130 @@ func (s *Service) StartRequest(ctx context.Context, in StartInput) (*storage.Req
 		if err := s.store.AddWatcher(ctx, req.ID, in.UserID); err != nil {
 			return nil, err
 		}
+	}
+
+	stored, err := s.store.GetRequest(ctx, req.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &StartResult{Request: stored}, nil
+}
+
+// attachTo adds a user to a request that is already running.
+func (s *Service) attachTo(ctx context.Context, requestID, userID int64) (*StartResult, error) {
+	if userID != 0 {
+		if err := s.store.AddWatcher(ctx, requestID, userID); err != nil {
+			return nil, err
+		}
+	}
+
+	req, err := s.store.GetRequest(ctx, requestID)
+	if err != nil {
+		return nil, err
+	}
+	return &StartResult{Request: req, Reused: true}, nil
+}
+
+// RetryInput is who is restarting what.
+//
+// The interface and the person are separate because the audit trail separates
+// them: the schema pins the actor to a small vocabulary of components, so a
+// request restarted by hand reads the same whether it came from the CLI or the
+// web, and who did it goes on the event detail where a name belongs.
+type RetryInput struct {
+	RequestID int64
+	// Actor is the interface that asked: "cli", "api" or "telegram".
+	Actor string
+	// RequestedBy is the person.
+	RequestedBy string
+}
+
+// Retry restarts a request that has stopped.
+//
+// It is deliberately a fresh run of the same request rather than a new one:
+// the row, its watchers and its audit trail all carry over, so "I asked for
+// this in March, it failed, I asked again in June" is one story rather than
+// two unrelated ones.
+//
+// The search window is replaced, not resumed. The two reasons anyone retries
+// are that the deadline passed and that too many releases were found wanting,
+// and both leave a request with no useful time left — a retry that inherited
+// the old deadline would fail on its first pass and look broken. The cost is
+// that a request retried by hand can outlive its original two years; that is a
+// person deciding, not a loop.
+func (s *Service) Retry(ctx context.Context, in RetryInput) (*storage.Request, error) {
+	requestID := in.RequestID
+
+	req, err := s.store.GetRequest(ctx, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if req.State.Active() {
+		return nil, fmt.Errorf("request %d is %s and does not need restarting", requestID, req.State)
+	}
+
+	// The whole media row, not the copy on the projection. The projection
+	// carries what the interface renders; the workflow needs the release date
+	// and the external ids as well, and a restarted request that had silently
+	// lost them would search for the wrong thing for two years.
+	media, err := s.store.GetMedia(ctx, req.MediaID)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	// No jitter. Jitter exists to stop requests created in a batch from
+	// staying aligned; a retry is one person asking for one thing, and making
+	// them wait up to ten minutes to see it start is the wrong trade.
+	nextRunAt := now
+	deadline := now.Add(s.searchDeadline())
+
+	// The workflow is started before the row is reset, which is the opposite
+	// of the order StartRequest uses, and the reason is the failure mode. A
+	// row reset without a workflow leaves the request reading "pending"
+	// forever — and pending is an active state, so both a second retry and a
+	// fresh request would refuse to touch it. The row would be wedged with
+	// nothing running to un-wedge it. Started first, the worst case is a
+	// workflow whose row still says "failed" for the second it takes it to
+	// write its own state.
+	run, err := s.startRun(ctx, s.retryOptions(req.WorkflowID), Input{
+		RequestID:           req.ID,
+		Spec:                media.Spec,
+		Policy:              s.policy(),
+		StartPhase:          storage.StatePending,
+		StartNextRunAt:      nextRunAt,
+		StartSearchDeadline: deadline,
+	})
+	if err != nil {
+		// The one refusal worth explaining. It means the projection and the
+		// workflow engine disagree — the row says this request has stopped and
+		// an execution is still running — which is the state an operator most
+		// needs the reason for. Left as the SDK's own message it reads like a
+		// bug in the command rather than a stale row.
+		if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
+			return nil, fmt.Errorf(
+				"request %d already has a workflow running, although its row says %s: "+
+					"the projection is behind, so retry once it settles, or cancel it first",
+				requestID, req.State)
+		}
+		return nil, fmt.Errorf("restart the workflow for request %d: %w", requestID, err)
+	}
+
+	if _, err := s.store.RestartRequest(ctx, storage.RestartInput{
+		ID:               req.ID,
+		FromState:        req.State,
+		PreviousAttempts: req.AttemptCount,
+		PreviousError:    req.LastError,
+		NextRunAt:        nextRunAt,
+		SearchDeadline:   deadline,
+		Actor:            in.Actor,
+		RequestedBy:      in.RequestedBy,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := s.store.SetRunID(ctx, req.ID, run.GetRunID(), run.GetID()); err != nil {
+		return nil, err
 	}
 
 	return s.store.GetRequest(ctx, req.ID)
@@ -365,6 +544,32 @@ func (s *Service) startOptions(workflowID string) client.StartWorkflowOptions {
 		// reported failure.
 		WorkflowExecutionTimeout: s.searchDeadline() + 72*time.Hour,
 	}
+}
+
+// retryOptions builds the start options for a deliberate restart.
+//
+// It differs from startOptions in two fields, and both are needed — the first
+// without the second does nothing at all.
+//
+// A retry must not attach to a running execution. With the conflict policy
+// StartRequest uses, starting a workflow whose id is already running returns a
+// handle to the running one and reports success, so a retry would silently do
+// nothing: the row would be reset and the old execution would carry on with
+// its old state.
+//
+// ConflictPolicy FAIL is what tells the *server* to refuse instead. But the
+// client then converts that refusal into a handle to the existing run and
+// returns it with a nil error, unless WorkflowExecutionErrorWhenAlreadyStarted
+// is set. Measured, not assumed: FAIL on its own returns the running run's id
+// and no error.
+//
+// Reuse for *closed* executions stays permissive, or retrying would be
+// impossible for the two years the previous run's id is reserved.
+func (s *Service) retryOptions(workflowID string) client.StartWorkflowOptions {
+	opts := s.startOptions(workflowID)
+	opts.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+	opts.WorkflowExecutionErrorWhenAlreadyStarted = true
+	return opts
 }
 
 // Cancel asks a request's workflow to stop and clean up.
