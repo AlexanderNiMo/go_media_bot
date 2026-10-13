@@ -131,21 +131,42 @@ func (a *Activities) CheckPlex(ctx context.Context, in CheckPlexInput) (CheckPle
 // findInPlex looks the media up in the library.
 //
 // A film is matched directly; a season is matched by finding its show first,
-// because Plex records the tmdb:// guid on the show rather than on the season.
+// because Plex records the season number on the show's children but no
+// external guid on the children themselves.
+//
+// Matching is by title and year, never by the tmdb:// guid. A real Plex
+// library has a long tail of items the user never tagged, and the
+// application has to recognise those too — a film the user already has but
+// the system insists on downloading again is a worse failure than the
+// occasional title-collision that the year anchor does not catch.
 func (a *Activities) findInPlex(ctx context.Context, spec domain.MediaSpec) (*plex.Match, error) {
-	// The title is only a prefilter, so the server does not serialise an
-	// entire library. The match itself is on the guid.
-	title := spec.Title
-	if spec.OriginalTitle != "" && spec.OriginalTitle != spec.Title {
-		// A film filed under its original name is common in a Russian
-		// library; either title finds it, and the guid decides.
-		title = spec.Title
-	}
+	candidates := plexLookupTitles(spec)
 
 	if spec.Ref.IsSeason() {
-		return a.plex.FindSeason(ctx, spec.Ref, title)
+		season := spec.Ref.SeasonNumber()
+		return a.plex.FindSeasonByTitle(ctx, candidates, spec.Year, season)
 	}
-	return a.plex.FindMovie(ctx, spec.Ref, title)
+	return a.plex.FindMovieByTitle(ctx, candidates, spec.Year)
+}
+
+// plexLookupTitles is the candidate list the Plex lookup compares against.
+//
+// The order matters: the first entry is the one sent to Plex as a ?title=
+// prefilter, and the smaller that prefilter's result, the less work the
+// in-Go comparison has. TitleRU is the most likely Plex entry for a
+// Russian-speaking user, and is also the one the spec holds first.
+func plexLookupTitles(spec domain.MediaSpec) []string {
+	out := make([]string, 0, 3)
+	if spec.TitleRU != "" {
+		out = append(out, spec.TitleRU)
+	}
+	if spec.Title != "" && spec.Title != spec.TitleRU {
+		out = append(out, spec.Title)
+	}
+	if spec.OriginalTitle != "" && spec.OriginalTitle != spec.TitleRU && spec.OriginalTitle != spec.Title {
+		out = append(out, spec.OriginalTitle)
+	}
+	return out
 }
 
 // RefreshPlex asks the server to rescan one directory.

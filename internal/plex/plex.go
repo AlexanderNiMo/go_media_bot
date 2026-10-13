@@ -178,9 +178,9 @@ func (c *Client) Sections(ctx context.Context) ([]Section, error) {
 
 // FindMovie looks for a film by TMDB id.
 //
-// It asks the server for items whose title contains the given title, then
-// matches the guid. The title is only a pre-filter — it keeps the server from
-// serialising an entire library — and never the basis of the answer.
+// Kept for tests and the old guid-matching path. The application itself uses
+// FindMovieByTitle, because the live library often has no tmdb:// guid on
+// individual items.
 func (c *Client) FindMovie(ctx context.Context, ref domain.MediaRef, title string) (*Match, error) {
 	if ref.Type != domain.MediaTypeMovie {
 		return nil, fmt.Errorf("FindMovie called with %s", ref.Type)
@@ -190,15 +190,36 @@ func (c *Client) FindMovie(ctx context.Context, ref domain.MediaRef, title strin
 
 // FindSeason looks for one season of a series by TMDB id.
 //
-// The guid check is indirect here, and that is a property of Plex rather than
-// a shortcut. Plex records the tmdb:// guid on the *show*, not on the season,
-// so the show is matched by guid and the season is then located among its
-// children by number.
+// Kept for tests; the application uses FindSeasonByTitle, for the same
+// reason as FindMovie.
 func (c *Client) FindSeason(ctx context.Context, ref domain.MediaRef, title string) (*Match, error) {
 	if ref.Type != domain.MediaTypeTV || ref.Season == nil {
 		return nil, fmt.Errorf("FindSeason needs a series reference with a season")
 	}
 	return c.find(ctx, "show", ref, title, ref.Season)
+}
+
+// FindMovieByTitle looks for a film by title and year.
+//
+// Plex items carry an internal "plex://" id and, on items the user tagged,
+// a tmdb:// or imdb:// guid. Real libraries have a long tail of items with no
+// external guid, and those are the ones this method exists to find.
+//
+// A match is a normalised title equal to one of the candidates AND the year
+// equal to want. The candidate list is the spec's TitleRU, Title and
+// OriginalTitle in that order; the first that matches wins. The Plex-side
+// ?title= prefilter uses the same first candidate, so the server returns a
+// small list; the in-Go comparison finishes the work.
+func (c *Client) FindMovieByTitle(ctx context.Context, candidates []string, year int) (*Match, error) {
+	return c.findByTitle(ctx, "movie", candidates, year, nil)
+}
+
+// FindSeasonByTitle is FindMovieByTitle for series: the show is matched by
+// title and year, and the season is then located among the show's children
+// by its index. Plex records season numbers on the children but no external
+// guid, so a year-anchored match on the show is the most we can do.
+func (c *Client) FindSeasonByTitle(ctx context.Context, candidates []string, year int, season int) (*Match, error) {
+	return c.findByTitle(ctx, "show", candidates, year, &season)
 }
 
 func (c *Client) find(ctx context.Context, sectionType string, ref domain.MediaRef, title string, season *int) (*Match, error) {
