@@ -459,26 +459,28 @@ type mediaItem struct {
 
 	// Guid is a single entry and Guid is a list; which one appears depends on
 	// the Plex version. Both are read.
+	//
+	// Note the case: Plex ships two fields. The lowercase 'guid' is a string
+	// of the form "plex://movie/<ratingKey>" — the item's own URL inside
+	// Plex. The capitalised 'Guid' is a list of objects with the external
+	// ids (tmdb://, imdb://, tvdb://). Conflating them, or assuming the
+	// lowercase form is a list, fails to decode every response.
 	GUID []struct {
 		ID string `json:"id"`
 	} `json:"Guid"`
 	//nolint:revive // Plex's own field name.
-	Guid []struct {
-		ID string `json:"id"`
-	} `json:"guid"`
+	Guid string `json:"guid"`
 }
 
 func (m mediaItem) GUIDs() []string {
-	out := make([]string, 0, len(m.GUID)+len(m.Guid))
+	out := make([]string, 0, len(m.GUID)+1)
 	for _, g := range m.GUID {
 		if g.ID != "" {
 			out = append(out, g.ID)
 		}
 	}
-	for _, g := range m.Guid {
-		if g.ID != "" {
-			out = append(out, g.ID)
-		}
+	if m.Guid != "" {
+		out = append(out, m.Guid)
 	}
 	return out
 }

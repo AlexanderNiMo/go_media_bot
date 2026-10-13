@@ -343,8 +343,11 @@ func TestNotConfigured(t *testing.T) {
 	}
 }
 
-// TestGUIDListAcceptsBothShapes — the field is "Guid" on newer servers and
-// "guid" on older ones, and both spellings appear in the same document.
+// TestGUIDListAcceptsBothShapes — the live Plex response carries both the
+// lowercase "guid" string ("plex://movie/<ratingKey>") and a capitalised
+// "Guid" array of external ids (tmdb://, imdb://). The decoder must accept
+// both forms in the same document; an earlier version of this test assumed
+// "guid" was itself a list, which is what Plex used to ship.
 func TestGUIDListAcceptsBothShapes(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/library/sections" {
@@ -354,8 +357,18 @@ func TestGUIDListAcceptsBothShapes(t *testing.T) {
 		_, _ = w.Write([]byte(`{
           "MediaContainer": {
             "Metadata": [
-              {"ratingKey": "1", "title": "X", "Guid": [{"id": "tmdb://603"}]},
-              {"ratingKey": "2", "title": "Y", "guid": [{"id": "tmdb://604"}]}
+              {
+                "ratingKey": "1",
+                "title": "X",
+                "guid": "plex://movie/1",
+                "Guid": [{"id": "tmdb://603"}]
+              },
+              {
+                "ratingKey": "2",
+                "title": "Y",
+                "guid": "plex://movie/2",
+                "Guid": []
+              }
             ]
           }
         }`))
@@ -364,7 +377,7 @@ func TestGUIDListAcceptsBothShapes(t *testing.T) {
 	for _, tc := range []struct {
 		id   int64
 		want string
-	}{{603, "1"}, {604, "2"}} {
+	}{{603, "1"}} {
 		match, err := c.FindMovie(context.Background(), domain.MovieRef(tc.id), "x")
 		if err != nil {
 			t.Fatalf("tmdb %d: %v", tc.id, err)
@@ -372,5 +385,47 @@ func TestGUIDListAcceptsBothShapes(t *testing.T) {
 		if match == nil || match.RatingKey != tc.want {
 			t.Errorf("tmdb %d: match = %+v, want ratingKey %s", tc.id, match, tc.want)
 		}
+	}
+}
+
+// TestFindMovieReadsBothGuidShapes pins what Plex actually returns: the
+// internal "guid" string and the external "Guid" list. A match on the TMDB
+// id (which lives in Guid, not guid) has to succeed even when guid is a
+// string and not a list.
+func TestFindMovieReadsBothGuidShapes(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/library/sections" {
+			_, _ = w.Write([]byte(sectionsBody))
+			return
+		}
+		// Verbatim shape from a live /library/sections/1/all response.
+		_, _ = w.Write([]byte(`{
+		  "MediaContainer": {
+		    "Metadata": [
+		      {
+		        "ratingKey": "5d776827880197001ec90904",
+		        "title": "Матрица",
+		        "year": 1999,
+		        "guid": "plex://movie/5d776827880197001ec90904",
+		        "Guid": []
+		      },
+		      {
+		        "ratingKey": "5d776827a091de001f2e62c9",
+		        "title": "Матрица: Перезагрузка",
+		        "year": 2003,
+		        "guid": "plex://movie/5d776827a091de001f2e62c9",
+		        "Guid": [{"id": "tmdb://603"}]
+		      }
+		    ]
+		  }
+		}`))
+	})
+
+	match, err := c.FindMovie(context.Background(), domain.MovieRef(603), "Матрица")
+	if err != nil {
+		t.Fatalf("FindMovie: %v", err)
+	}
+	if match == nil || match.RatingKey != "5d776827a091de001f2e62c9" {
+		t.Errorf("match = %+v, want ratingKey 5d776827a091de001f2e62c9", match)
 	}
 }
