@@ -161,3 +161,72 @@ func TestRedactDSNWithoutCredentials(t *testing.T) {
 		t.Errorf("redactDSN = %q, want it unchanged", got)
 	}
 }
+
+// TestDevFileIsOptionalPinsTheShape — config_dev.yaml is layered on top of
+// defaults when it exists, and ignored when it does not. Both branches need
+// a test, because a missing file used to fail the whole load.
+func TestDevFileIsOptionalPinsTheShape(t *testing.T) {
+	dir := t.TempDir()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	body := `
+search:
+  search_deadline: 30m
+download:
+  deadline: 1m
+`
+	if err := os.WriteFile(filepath.Join(dir, "config_dev.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(Flags{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Search.SearchDeadline != 30*time.Minute {
+		t.Errorf("search.search_deadline = %v, want 30m", cfg.Search.SearchDeadline)
+	}
+	if cfg.Download.Deadline != time.Minute {
+		t.Errorf("download.deadline = %v, want 1m", cfg.Download.Deadline)
+	}
+}
+
+// TestDevFileIsIgnoredWhenConfigIsExplicit — pointing --config at a specific
+// file is an opt-out from whatever happens to be sitting next to it. A
+// developer who passes a non-default file should not be surprised by a
+// stray config_dev.yaml overriding their choice.
+func TestDevFileIsIgnoredWhenConfigIsExplicit(t *testing.T) {
+	dir := t.TempDir()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	mainBody := "search:\n  search_deadline: 12h\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(mainBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	devBody := "search:\n  search_deadline: 30m\n"
+	if err := os.WriteFile(filepath.Join(dir, "config_dev.yaml"), []byte(devBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(Flags{ConfigFile: filepath.Join(dir, "config.yaml")})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Search.SearchDeadline != 12*time.Hour {
+		t.Errorf("search.search_deadline = %v, want 12h (dev file should not apply)", cfg.Search.SearchDeadline)
+	}
+}

@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -76,6 +77,7 @@ type TMDB struct {
 	APIKey   string        `koanf:"api_key"   yaml:"api_key"`
 	Language string        `koanf:"language"  yaml:"language"`
 	CacheTTL time.Duration `koanf:"cache_ttl" yaml:"cache_ttl"`
+	Proxy    string        `koanf:"proxy" yaml:"proxy"`
 }
 
 // Plex is the media server whose library we check before downloading anything.
@@ -121,6 +123,11 @@ type QBittorrent struct {
 // Long polling is used rather than webhooks: the service is self-hosted and is
 // not expected to be reachable from the internet.
 type Telegram struct {
+	// Enabled is true by default, and a token is what actually turns the bot
+	// on: with no token there is nothing to poll with, so the bot reports
+	// itself disabled and everything else carries on. The flag exists for the
+	// deployment that wants the opposite — a token in the environment, for
+	// some other tool, with this project's bot switched off.
 	Enabled bool   `koanf:"enabled" yaml:"enabled"`
 	Token   string `koanf:"token"   yaml:"token"`
 }
@@ -170,6 +177,12 @@ type Flags struct {
 
 // Module-like provider input. Load reads the file named by the --config flag,
 // falling back to config.yaml in the working directory when it exists.
+//
+// A config_dev.yaml in the same directory is also read, but only when no
+// file was named explicitly: that is the dev override file, layered on top
+// of config.yaml and the defaults. The env provider still wins over
+// everything, which is how a developer keeps API keys out of YAML and the
+// rest of the dev setup in version control.
 func Load(flags Flags) (*Config, error) {
 	k := koanf.New(".")
 
@@ -185,6 +198,18 @@ func Load(flags Flags) (*Config, error) {
 	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
 		if !optional {
 			return nil, fmt.Errorf("load config file %q: %w", path, err)
+		}
+	}
+
+	// Dev overrides. Only loaded when no file was named on the command line:
+	// a developer who points --config at something specific is opting out of
+	// whatever happens to be sitting next to it. config_dev.yaml is in
+	// .gitignore; config_dev.yaml.example is the committed template.
+	if optional {
+		if _, err := os.Stat("config_dev.yaml"); err == nil {
+			if err := k.Load(file.Provider("config_dev.yaml"), yaml.Parser()); err != nil {
+				return nil, fmt.Errorf("load config_dev.yaml: %w", err)
+			}
 		}
 	}
 
@@ -245,14 +270,19 @@ func defaults() Config {
 			VerifyTimeout: 6 * time.Hour,
 		},
 		Indexer: Indexer{
-			Mode:    "prowlarr",
-			BaseURL: "http://localhost:9696",
+			Mode:    "jackett",
+			BaseURL: "http://localhost:9118",
 			// 1 request per 4s. Deliberately below the 1-per-3s target: the
 			// server spreads activity tasks across roughly four partitions of
 			// a task queue and can burst above the configured average, and a
 			// burst that trips a tracker's rate limit gets the IP banned.
 			RatePerSecond: 0.25,
 			CapsTTL:       24 * time.Hour,
+		},
+		Telegram: Telegram{
+			// On unless switched off; see the field comment. Without a token
+			// the bot stays quiet either way.
+			Enabled: true,
 		},
 		QBittorrent: QBittorrent{
 			URL:          "http://localhost:8080",
@@ -293,9 +323,9 @@ func defaults() Config {
 
 func (c *Config) validate() error {
 	switch c.Indexer.Mode {
-	case "prowlarr", "torznab":
+	case "prowlarr", "torznab", "jackett":
 	default:
-		return fmt.Errorf("indexer.mode: want prowlarr or torznab, got %q", c.Indexer.Mode)
+		return fmt.Errorf("indexer.mode: want prowlarr, torznab or jackett, got %q", c.Indexer.Mode)
 	}
 	if c.Postgres.DSN == "" {
 		return fmt.Errorf("postgres.dsn must not be empty")

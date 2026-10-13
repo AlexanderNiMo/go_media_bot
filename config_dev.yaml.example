@@ -1,0 +1,71 @@
+# Dev overrides for `mediad`. Loaded on top of defaults and config.yaml when
+# no --config flag is given, and overridden in turn by MEDIAD_* env vars.
+#
+# Real file: config_dev.yaml — in .gitignore, copy of this one. That way each
+# developer can tweak the local settings without touching the committed file.
+#
+# Sections that are not in your config.yaml or this file keep their compiled-in
+# defaults. Add a key only when you mean to override it.
+
+log:
+  # debug|text|info|warn|error
+  level: debug
+  format: text
+
+# Local services. These match the values in .env, so the application and
+# `make` targets agree on the same Postgres / Temporal pair.
+server:
+  base_url: http://localhost:8081
+
+postgres:
+  # `mediad_dev` is a separate database; the test suite creates and drops
+  # its own throwaway databases, but development traffic should not share
+  # that lifecycle.
+  dsn: postgres://mediad:mediad@localhost:5432/mediad_dev?sslmode=disable
+  max_conns: 5
+
+temporal:
+  host: localhost:7233
+  namespace: mediad
+  task_queue: mediad
+
+# Telegram is the only one that benefits from being off during dev. The
+# worker, the API and the CLI all work without it; with no token the bot
+# stays quiet on its own, and a developer who has set TELEGRAM_TOKEN for
+# something else can use this to suppress the bot without unsetting it.
+telegram:
+  enabled: false
+
+# The point of a dev profile: stages that take days in production take
+# minutes here. These are the same knobs as config.yaml; the difference is
+# only the values.
+#
+# Backoff ladder is in seconds rather than hours; the search "deadline" is
+# half an hour so a request that has not found anything yet at that point
+# transitions to failed and the state machine is exercised.
+search:
+  search_deadline: 30m
+  backoff_ladder: [10s, 20s, 40s, 80s, 160s, 320s]
+  jitter: 1s
+  poll_interval: 5s
+  continue_as_new_history: 200
+
+# Single download times out after a minute rather than two days, so a
+# torrent that does not start moving is the one that exercises the
+# stall-then-blacklist path. zero_stall_after at ten seconds is what
+# makes that affordable: a real download normally reports non-zero
+# progress well before then.
+download:
+  deadline: 1m
+  zero_stall_after: 10s
+  missing_grace: 5s
+  max_stalls: 2
+
+# Russian audio is the slowest thing to satisfy against a sparse dev
+# indexer set, and it is independent of the workflows under test. The
+# filter still runs; it just does not have to win.
+quality:
+  russian_audio: false
+  min_seeders: 1
+  min_size_gb: 0.1
+  max_size_gb: 200
