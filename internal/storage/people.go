@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -453,4 +454,162 @@ func (s *Store) ensureUser(ctx context.Context, provider, externalID, username s
 	}
 
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// Telegram delivery
+// ---------------------------------------------------------------------------
+
+// PendingTelegram is a notification waiting to be sent to a chat.
+type PendingTelegram struct {
+	ID         int64
+	UserID     int64
+	RequestID  int64
+	Kind       NotificationKind
+	Title      string
+	Body       string
+	TelegramID string
+	CreatedAt  time.Time
+}
+
+// ListPendingTelegram returns notifications that have a Telegram address and
+// have not been delivered.
+//
+// The table is the outbox. Nothing else queues a message: the workflow's
+// NotifyWatchers activity writes rows, and the bot process reads them. That
+// split is what lets the bot be switched off, restarted, or never configured
+// at all without the notification being lost — the row simply waits.
+//
+// Oldest first, so a backlog is delivered in the order things happened rather
+// than backwards.
+func (s *Store) ListPendingTelegram(ctx context.Context, limit int) ([]PendingTelegram, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	const q = `
+		SELECT n.id, n.user_id, COALESCE(n.request_id, 0), n.kind, n.title,
+		       COALESCE(n.body, ''), i.external_id, n.created_at
+		  FROM notifications n
+		  JOIN user_identities i
+		    ON i.user_id = n.user_id AND i.provider = 'telegram'
+		 WHERE n.delivered_telegram_at IS NULL
+		   AND i.external_id <> ''
+		 ORDER BY n.created_at
+		 LIMIT $1`
+
+	rows, err := s.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending telegram notifications: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PendingTelegram
+	for rows.Next() {
+		var p PendingTelegram
+		if err := rows.Scan(&p.ID, &p.UserID, &p.RequestID, &p.Kind,
+			&p.Title, &p.Body, &p.TelegramID, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// LinkTelegramByCode attaches a Telegram account to the user owning a code.
+//
+// The flow is the invite one in miniature: an administrator or the web profile
+// issues a code, the user sends /link <code>, and the two identities become
+// one account. Without it, somebody who signed up on the web would get a
+// second, separate account the moment they talked to the bot.
+func (s *Store) LinkTelegramByCode(ctx context.Context, code, telegramID, username string) (*User, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, errors.New("a link code is required")
+	}
+
+	var out *User
+
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		// The account to link is the one that issued the code, so used_by
+		// records it as its own consumer. Not NULL: the column is what marks a
+		// code spent, and leaving it unset would let the same code be claimed
+		// again by somebody else.
+		//
+		// The claiming UPDATE is also the atomic check — the used_by IS NULL
+		// and the expiry are in the WHERE clause, so two chats racing on one
+		// code produce one winner rather than two.
+		const claim = `
+			UPDATE invite_codes
+			   SET used_by = created_by, used_at = now()
+			 WHERE code = $1
+			   AND used_by IS NULL
+			   AND expires_at > now()
+			RETURNING created_by`
+
+		var userID int64
+		err := tx.QueryRow(ctx, claim, code).Scan(&userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errors.New("that code is not valid, has been used, or has expired")
+		}
+		if err != nil {
+			return fmt.Errorf("claim the link code: %w", err)
+		}
+
+		const link = `
+			INSERT INTO user_identities (user_id, provider, external_id)
+			VALUES ($1, 'telegram', $2)
+			ON CONFLICT (provider, external_id) DO UPDATE SET user_id = EXCLUDED.user_id`
+
+		if _, err := tx.Exec(ctx, link, userID, telegramID); err != nil {
+			return fmt.Errorf("link the telegram identity: %w", err)
+		}
+
+		// A name is only filled in when the account has none, so that linking
+		// a chat does not rename somebody who chose their own.
+		const name = `
+			UPDATE users SET username = COALESCE(username, $2)
+			 WHERE id = $1
+			RETURNING id, COALESCE(username, ''), is_admin`
+
+		var u User
+		if err := tx.QueryRow(ctx, name, userID, nullString(username)).
+			Scan(&u.ID, &u.Username, &u.IsAdmin); err != nil {
+			return fmt.Errorf("name the account: %w", err)
+		}
+
+		out = &u
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateLinkCode issues a code for attaching a Telegram account.
+//
+// It reuses the invite table because the mechanism is identical: one code, one
+// use, an expiry. The difference is only what the code is handed to.
+func (s *Store) CreateLinkCode(ctx context.Context, userID int64) (string, error) {
+	return s.CreateInvite(ctx, userID)
+}
+
+// UserByTelegram finds the account behind a chat, without creating one.
+func (s *Store) UserByTelegram(ctx context.Context, telegramID string) (*User, error) {
+	const q = `
+		SELECT u.id, COALESCE(u.username, ''), u.is_admin
+		  FROM users u
+		  JOIN user_identities i ON i.user_id = u.id
+		 WHERE i.provider = 'telegram' AND i.external_id = $1`
+
+	var u User
+	err := s.pool.QueryRow(ctx, q, telegramID).Scan(&u.ID, &u.Username, &u.IsAdmin)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("telegram %s: %w", telegramID, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find the user behind a chat: %w", err)
+	}
+	return &u, nil
 }
