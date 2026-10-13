@@ -1,11 +1,15 @@
 package tmdb
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -418,5 +422,368 @@ func TestJSONShapesAreStable(t *testing.T) {
 	}
 	if raw.MediaType != "movie" || raw.ID != 1 || raw.Title != "T" || raw.ReleaseDate != "2020-01-01" {
 		t.Errorf("decoded %+v", raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Posters
+// ---------------------------------------------------------------------------
+
+// newPosterClient points both the API and the image host at a stub.
+//
+// The existing helper sets only baseURL, so a poster fetch from it would go to
+// the real image.tmdb.org — a test that reaches the network, and one that
+// fails for a reason unrelated to the code under test.
+func newPosterClient(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, handler)
+	c.baseURL = srv.URL
+	c.imageBaseURL = srv.URL + "/t/p"
+	return c
+}
+
+// jpegBytes is a minimal body to stream back.
+func jpegBytes(n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = byte(i % 251)
+	}
+	return out
+}
+
+// TestFetchPosterStreams is the point of the streaming design.
+//
+// The body is not read here, and nothing is buffered: the caller gets a reader
+// it can copy straight to a socket. What is checked is that the bytes arrive
+// intact and in order, and that the response is released.
+func TestFetchPosterStreams(t *testing.T) {
+	want := jpegBytes(64 << 10)
+
+	c := newPosterClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/t/p/w342/") {
+			t.Errorf("the request went to %s, want the image host", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(want)
+	})
+
+	poster, err := c.FetchPoster(context.Background(), "/abc.jpg", "w342")
+	if err != nil {
+		t.Fatalf("FetchPoster: %v", err)
+	}
+	defer poster.Close()
+
+	if poster.ContentType != "image/jpeg" {
+		t.Errorf("content type = %q", poster.ContentType)
+	}
+
+	got, err := io.ReadAll(poster.Body)
+	if err != nil {
+		t.Fatalf("read the body: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("the body is %d bytes, want %d", len(got), len(want))
+	}
+}
+
+// TestFetchPosterIsBounded — the limit lives in the client, not at each call
+// site, because a limit every caller has to remember is one that one of them
+// will not apply.
+func TestFetchPosterIsBounded(t *testing.T) {
+	// More than the cap, so the reader has to stop early.
+	oversized := jpegBytes(maxPosterBytes + 4096)
+
+	c := newPosterClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(oversized)
+	})
+
+	poster, err := c.FetchPoster(context.Background(), "/big.jpg", "original")
+	if err != nil {
+		t.Fatalf("FetchPoster: %v", err)
+	}
+	defer poster.Close()
+
+	got, err := io.ReadAll(poster.Body)
+	if err != nil {
+		t.Fatalf("read the body: %v", err)
+	}
+	if int64(len(got)) > maxPosterBytes {
+		t.Errorf("read %d bytes, over the %d cap", len(got), maxPosterBytes)
+	}
+}
+
+// TestFetchPosterSizeAndPathAreValidated — both values are concatenated into
+// an upstream URL, so a caller that passed them through unchecked would let a
+// request reach any TMDB endpoint with our API key on it.
+func TestFetchPosterSizeAndPathAreValidated(t *testing.T) {
+	reached := false
+
+	c := newPosterClient(t, func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		_, _ = w.Write(jpegBytes(8))
+	})
+
+	for _, tc := range []struct {
+		name string
+		path string
+		size string
+	}{
+		{"empty path", "", "w342"},
+		{"traversal", "/../../search/movie", "w342"},
+		{"absolute url", "https://evil.example.com/x.jpg", "w342"},
+		{"protocol-relative", "//evil.example.com/x.jpg", "w342"},
+		{"query", "/x.jpg?api_key=leak", "w342"},
+		{"fragment", "/x.jpg#frag", "w342"},
+		{"no leading slash", "x.jpg", "w342"},
+		{"unknown size", "/x.jpg", "w9999"},
+		{"empty size segment", "/x.jpg", "../../etc"},
+		{"size with a slash", "/x.jpg", "w342/../.."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			poster, err := c.FetchPoster(context.Background(), tc.path, tc.size)
+			if err == nil {
+				poster.Close()
+				t.Fatalf("FetchPoster(%q, %q) was accepted", tc.path, tc.size)
+			}
+		})
+	}
+
+	if reached {
+		t.Error("a rejected request still reached the upstream host")
+	}
+}
+
+// TestFetchPosterDefaultSize — an empty size means w500, the size the app
+// actually uses most; it must not fall through to an unvalidated empty segment.
+func TestFetchPosterDefaultSize(t *testing.T) {
+	var sawPath string
+
+	c := newPosterClient(t, func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpegBytes(8))
+	})
+
+	poster, err := c.FetchPoster(context.Background(), "/x.jpg", "")
+	if err != nil {
+		t.Fatalf("FetchPoster: %v", err)
+	}
+	defer poster.Close()
+
+	if !strings.Contains(sawPath, "/w500/") {
+		t.Errorf("upstream path = %q, want the default size", sawPath)
+	}
+}
+
+// TestFetchPosterNotFoundIsAnAPIError — the caller distinguishes "no poster"
+// from "could not reach TMDB", because only one of them is worth caching.
+func TestFetchPosterNotFoundIsAnAPIError(t *testing.T) {
+	c := newPosterClient(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+
+	_, err := c.FetchPoster(context.Background(), "/missing.jpg", "w342")
+	if err == nil {
+		t.Fatal("a 404 was accepted")
+	}
+
+	var apiErr *Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want a *tmdb.Error, got %T: %v", err, err)
+	}
+	if !apiErr.NotFound() {
+		t.Errorf("status = %d, want 404", apiErr.StatusCode)
+	}
+}
+
+// TestFetchPosterErrorReleasesTheBody — a failed response whose body is never
+// read keeps the connection out of the pool with unread data on it, which is
+// how a proxy cache fills with half-consumed responses.
+func TestFetchPosterErrorReleasesTheBody(t *testing.T) {
+	closed := make(chan struct{})
+
+	c := newPosterClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("upstream exploded"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		close(closed)
+	})
+
+	for range 20 {
+		if _, err := c.FetchPoster(context.Background(), "/x.jpg", "w342"); err == nil {
+			t.Fatal("an error response was accepted")
+		}
+	}
+	<-closed
+}
+
+// ---------------------------------------------------------------------------
+// The proxy
+// ---------------------------------------------------------------------------
+
+// TestBuildTransportHandlesAEmptyProxy — no proxy means the default transport,
+// which every other HTTP call in the process uses.
+func TestBuildTransportWithNoProxy(t *testing.T) {
+	transport, err := buildTransport("")
+	if err != nil {
+		t.Fatalf("buildTransport(\"\"): %v", err)
+	}
+	if transport != http.DefaultTransport {
+		t.Error("an unconfigured proxy should leave the default transport alone")
+	}
+}
+
+// TestBuildTransportKeepsTheDefaults is the difference between a working
+// proxied deployment and a subtly broken one.
+//
+// A bare &http.Transport{Proxy: ...} drops every tuned default with it:
+// HTTP/2 is not attempted, the idle pool is unbounded, and the handshake and
+// response-header timeouts fall back to zero. None of that fails loudly.
+func TestBuildTransportKeepsTheDefaults(t *testing.T) {
+	transport, err := buildTransport("http://proxy.example.com:3128")
+	if err != nil {
+		t.Fatalf("buildTransport: %v", err)
+	}
+
+	typed, ok := transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("got %T, want *http.Transport", transport)
+	}
+
+	if typed.Proxy == nil {
+		t.Fatal("the proxy was dropped")
+	}
+	if typed.TLSHandshakeTimeout == 0 {
+		t.Error("the TLS handshake timeout was lost")
+	}
+	// ResponseHeaderTimeout is deliberately not checked: the stock transport
+	// leaves it at zero, so asserting it would be asserting something about
+	// the standard library rather than about this code. The fields below are
+	// the ones Clone actually carries and a bare literal would drop.
+	if typed.MaxIdleConns != http.DefaultTransport.(*http.Transport).MaxIdleConns {
+		t.Error("the idle connection limit was lost")
+	}
+	if typed.MaxIdleConns == 0 {
+		t.Error("the idle connection limit was lost")
+	}
+	if !typed.ForceAttemptHTTP2 {
+		t.Error("HTTP/2 was dropped")
+	}
+
+	// And it actually routes through the proxy.
+	req, err := http.NewRequest(http.MethodGet, "https://image.tmdb.org/t/p/w342/x.jpg", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	proxyURL, err := typed.Proxy(req)
+	if err != nil {
+		t.Fatalf("resolve the proxy: %v", err)
+	}
+	if proxyURL == nil || proxyURL.Host != "proxy.example.com:3128" {
+		t.Errorf("proxy = %v, want proxy.example.com:3128", proxyURL)
+	}
+}
+
+// TestBuildTransportRejectsNonsense — a typo in the setting must be an error,
+// not a panic. It used to take the whole process down at startup, including
+// `mediad config`, which exists to show you the setting you mistyped.
+func TestBuildTransportRejectsNonsense(t *testing.T) {
+	for _, bad := range []string{
+		"://nope",
+		"not a url at all",
+		"proxy.example.com:3128", // no scheme
+		"http://",                // no host
+	} {
+		t.Run(bad, func(t *testing.T) {
+			if _, err := buildTransport(bad); err == nil {
+				t.Errorf("buildTransport(%q) was accepted", bad)
+			}
+		})
+	}
+}
+
+// TestProxyAppliesToPosters is the coupling the whole change is about: images
+// must go the same way as the API calls, or nothing is fixed.
+//
+// The target is plain HTTP, which is a deliberate simplification. A real
+// poster fetch is HTTPS, and over a proxy that means a CONNECT tunnel: the
+// proxy never sees a URL, only "connect to image.tmdb.org:443", so there is no
+// absolute URL to assert on. Standing up a TLS origin and a tunnelling proxy
+// to check the same transport would be a great deal of machinery for a
+// property this already establishes — that the poster fetch leaves through
+// the configured proxy rather than straight out.
+func TestProxyAppliesToPosters(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		proxied []string
+	)
+
+	// The origin the proxy forwards to. Plain HTTP, per the note above.
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpegBytes(4))
+	}))
+	defer origin.Close()
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An HTTP proxy receives the request with an absolute URL in the
+		// request line, which is what distinguishes "went through the proxy"
+		// from "went straight to the origin".
+		mu.Lock()
+		proxied = append(proxied, r.URL.String())
+		mu.Unlock()
+
+		resp, err := http.Get(r.URL.String())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer proxy.Close()
+
+	cfg := &config.Config{}
+	cfg.TMDB.APIKey = "test-key"
+	cfg.TMDB.Proxy = proxy.URL
+
+	c, err := New(cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// The image host is redirected at the stub origin so that the request is
+	// plain HTTP and the proxy can see it.
+	c.imageBaseURL = origin.URL + "/t/p"
+
+	poster, err := c.FetchPoster(context.Background(), "/x.jpg", "w342")
+	if err != nil {
+		t.Fatalf("FetchPoster through a proxy: %v", err)
+	}
+	defer poster.Close()
+
+	if _, err := io.ReadAll(poster.Body); err != nil {
+		t.Fatalf("read the poster: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(proxied) == 0 {
+		t.Fatal("the poster fetch never reached the proxy, so it did not go through it")
+	}
+	if got := proxied[0]; !strings.Contains(got, origin.URL) {
+		t.Errorf("the proxy was asked for %q, want the image origin %s", got, origin.URL)
+	}
+	if !strings.Contains(proxied[0], "w342") {
+		t.Errorf("the proxied URL lost the size: %q", proxied[0])
 	}
 }

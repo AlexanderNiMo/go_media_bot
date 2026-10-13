@@ -409,12 +409,14 @@ func searchCardFor(r tmdb.SearchResult) searchCard {
 	}
 
 	card := searchCard{
-		Type:      string(r.Ref.Type),
-		TMDBID:    r.Ref.TMDBID,
-		Title:     r.Title,
-		Year:      r.Year,
-		Kind:      kind,
-		PosterURL: tmdb.PosterURL(r.PosterPath, "w342"),
+		Type:   string(r.Ref.Type),
+		TMDBID: r.Ref.TMDBID,
+		Title:  r.Title,
+		Year:   r.Year,
+		Kind:   kind,
+		// Our own endpoint, not tmdb.PosterURL: the browser may not be able to
+		// reach image.tmdb.org at all, which is the whole reason this exists.
+		PosterURL: posterPath(r.PosterPath, defaultPosterSize),
 	}
 	if r.OriginalTitle != r.Title {
 		card.Original = r.OriginalTitle
@@ -423,14 +425,14 @@ func searchCardFor(r tmdb.SearchResult) searchCard {
 }
 
 // confirmationFor renders the page that precedes a request.
-func confirmationFor(spec domain.MediaSpec, posterPath string) confirmation {
+func confirmationFor(spec domain.MediaSpec, poster string) confirmation {
 	kind := "Фильм"
 	if spec.Ref.Type == domain.MediaTypeTV {
 		kind = "Сериал"
 	}
 
-	if posterPath == "" {
-		posterPath = spec.PosterPath
+	if poster == "" {
+		poster = spec.PosterPath
 	}
 
 	c := confirmation{
@@ -441,7 +443,8 @@ func confirmationFor(spec domain.MediaSpec, posterPath string) confirmation {
 		Year:      spec.Year,
 		Runtime:   spec.RuntimeMin,
 		Overview:  spec.Overview,
-		PosterURL: tmdb.PosterURL(posterPath, "w342"),
+		// The larger size, since this page shows one poster rather than a grid.
+		PosterURL: posterPath(poster, "w500"),
 	}
 	if spec.Ref.IsSeason() {
 		c.HasSeason = true

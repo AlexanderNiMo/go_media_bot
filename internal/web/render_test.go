@@ -120,7 +120,10 @@ func fixtures(t *testing.T) map[string]any {
 			Query: "матрица",
 			Results: []searchCard{{
 				Type: "movie", TMDBID: 603, Title: "Матрица", Original: "The Matrix",
-				Year: 1999, Kind: "фильм", PosterURL: "https://image.tmdb.org/t/p/w342/p.jpg",
+				// A path on this server, because that is what the pages emit:
+				// a fixture with the direct TMDB URL would make the page look
+				// correct while teaching nothing about what production does.
+				Year: 1999, Kind: "фильм", PosterURL: "/poster/w342/p.jpg",
 			}},
 		},
 		"seasons": seasonsView{

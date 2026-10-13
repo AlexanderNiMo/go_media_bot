@@ -92,6 +92,17 @@ func (s *Server) routes() http.Handler {
 		r.Get("/", s.handleDashboard)
 		r.Get("/fragments/active", s.handleActiveFragment)
 
+		// Posters are fetched by us, through the TMDB proxy. Behind a session
+		// like everything else: an open image proxy is a way to make our
+		// server fetch arbitrary TMDB images on demand, and the browser has
+		// the cookie anyway.
+		//
+		// The trailing "*" is chi's wildcard, not "{path...}" — the latter is
+		// a different router's syntax, and chi answers 404 for a nested path
+		// under it. The captured value arrives as PathValue("*") and carries
+		// no leading slash.
+		r.Get("/poster/{size}/*", s.handlePoster)
+
 		r.Get("/search", s.handleSearch)
 
 		r.Get("/add/{kind}/{id}", s.handleAdd)

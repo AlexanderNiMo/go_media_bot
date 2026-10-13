@@ -33,19 +33,28 @@ import (
 var Module = fx.Module("tmdb", fx.Provide(New))
 
 const (
-	defaultBaseURL = "https://api.themoviedb.org/3"
-	imageBaseURL   = "https://image.tmdb.org/t/p"
+	defaultBaseURL      = "https://api.themoviedb.org/3"
+	defaultImageBaseURL = "https://image.tmdb.org/t/p"
 
 	// maxResponseBytes bounds a response body. TMDB responses are tens of
 	// kilobytes; the limit exists so a misdirected request cannot exhaust
 	// memory.
 	maxResponseBytes = 4 << 20
+
+	// maxPosterBytes bounds a poster download. TMDB's largest ("original") is
+	// a few megabytes, so this leaves room while still being finite.
+	maxPosterBytes = 12 << 20
 )
 
 // Client is a TMDB API client. It is safe for concurrent use.
 type Client struct {
 	http    *http.Client
 	baseURL string
+	// imageBaseURL is the image host, kept as a field rather than a constant
+	// so that a client can be pointed at a stub. It is not configurable in
+	// production: the image host is TMDB's, and a deployment that needed a
+	// different one would be talking to a different service.
+	imageBaseURL string
 	// Exactly one of apiKey and bearer is set. Both are accepted because both
 	// remain supported; the bearer token is the documented default.
 	apiKey   string
@@ -53,6 +62,37 @@ type Client struct {
 	language string
 	limiter  *rate.Limiter
 	log      *slog.Logger
+}
+
+// NewForTest builds a client pointed at a stub host.
+//
+// It exists so that callers outside this package — the web tests, for
+// instance — can exercise code that fetches posters without reaching TMDB. The
+// alternative is exporting the fields, which would let production code
+// reassign the base URL too.
+//
+// The name says what it is for. A constructor that merely allowed overriding
+// the URL would eventually be used to point the client somewhere real and
+// unexpected.
+func NewForTest(baseURL string) (*Client, error) {
+	transport, err := buildTransport("")
+	if err != nil {
+		return nil, err
+	}
+
+	c := &Client{
+		http: &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: transport,
+		},
+		baseURL:      strings.TrimSuffix(baseURL, "/") + "/3",
+		imageBaseURL: strings.TrimSuffix(baseURL, "/") + "/t/p",
+		language:     "ru-RU",
+		log:          slog.New(slog.DiscardHandler),
+		limiter:      rate.NewLimiter(rate.Limit(10), 20),
+	}
+	c.apiKey = "test-key"
+	return c, nil
 }
 
 // New builds a client from the configuration.
@@ -66,15 +106,20 @@ func New(cfg *config.Config, log *slog.Logger) (*Client, error) {
 		log.Warn("tmdb.api_key is not set; searching by title will fail")
 	}
 
+	transport, err := buildTransport(cfg.TMDB.Proxy)
+	if err != nil {
+		return nil, err
+	}
+
 	c := &Client{
 		http: &http.Client{
-			// A backstop only. The meaningful deadline comes from the caller's
-			// context, which carries the activity's timeout.
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: transport,
 		},
-		baseURL:  defaultBaseURL,
-		language: cfg.TMDB.Language,
-		log:      log.With("component", "tmdb"),
+		baseURL:      defaultBaseURL,
+		imageBaseURL: defaultImageBaseURL,
+		language:     cfg.TMDB.Language,
+		log:          log.With("component", "tmdb"),
 		// TMDB dropped its published rate limit, but still answers 429 under
 		// load. Ten per second sits well inside what it tolerates while a
 		// human-driven search never approaches it.
@@ -91,6 +136,45 @@ func New(cfg *config.Config, log *slog.Logger) (*Client, error) {
 	}
 
 	return c, nil
+}
+
+// buildTransport returns the HTTP transport both the API calls and the image
+// fetches go through.
+//
+// The proxy is applied by *cloning* the default transport rather than replacing
+// it. A bare &http.Transport{Proxy: ...} drops everything the default sets:
+// ForceAttemptHTTP2 goes false, so no connection is ever upgraded to HTTP/2;
+// MaxIdleConns goes to zero, which means no limit rather than no pooling; and
+// the TLS handshake and idle-connection timeouts go to zero, which means no
+// timeout. None of that fails loudly — the proxied path just behaves
+// differently from every other HTTP call in the process, which is a hard
+// difference to notice from the outside.
+//
+// (ResponseHeaderTimeout is zero in the standard library too, so it is not
+// among the things being preserved. Worth saying because it looks like it
+// should be.)
+func buildTransport(proxy string) (http.RoundTripper, error) {
+	proxy = strings.TrimSpace(proxy)
+	if proxy == "" {
+		return http.DefaultTransport, nil
+	}
+
+	proxyURL, err := url.Parse(proxy)
+	if err != nil {
+		// Returned rather than panicked. A typo in the proxy setting used to
+		// take the whole process down at startup — including `mediad config`,
+		// whose entire purpose is to show you the setting you mistyped, and
+		// `mediad migrate`, which never speaks to TMDB at all.
+		return nil, fmt.Errorf("tmdb.proxy %q is not a URL: %w", proxy, err)
+	}
+	if proxyURL.Scheme == "" || proxyURL.Host == "" {
+		return nil, fmt.Errorf("tmdb.proxy %q needs a scheme and a host, "+
+			"for example http://192.168.1.10:3128", proxy)
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(proxyURL)
+	return transport, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +302,11 @@ func (t Title) ToSpec() domain.MediaSpec {
 //
 // poster_path is nullable, and it is genuinely absent for obscure titles, so
 // callers have to handle the empty case rather than assume an image exists.
+//
+// This is the *direct* TMDB URL, and it only works where image.tmdb.org is
+// reachable. A deployment behind a proxy must not hand this to a browser — see
+// the web interface's poster handler, which fetches through the client below
+// instead.
 func PosterURL(path string, size string) string {
 	if path == "" {
 		return ""
@@ -225,7 +314,129 @@ func PosterURL(path string, size string) string {
 	if size == "" {
 		size = "w500"
 	}
-	return imageBaseURL + "/" + size + path
+	return defaultImageBaseURL + "/" + size + path
+}
+
+// AllowedPosterSizes is the set of image widths TMDB serves.
+//
+// Checked rather than passed through, because the size arrives from a URL path
+// on the poster endpoint and is concatenated into an upstream URL. Without the
+// check, a size of "../../search/movie" would turn our image proxy into a
+// general-purpose TMDB API proxy, and the API key would be attached to whatever
+// the caller asked for.
+var AllowedPosterSizes = map[string]bool{
+	"w45": true, "w92": true, "w154": true, "w185": true,
+	"w300": true, "w342": true, "w500": true, "w780": true,
+	"h632": true, "original": true,
+}
+
+// Poster is an open image response, streamed rather than buffered.
+//
+// The body is the caller's to close. It is deliberately not a []byte: an
+// "original" poster is a few megabytes, and reading it into memory would mean
+// one allocation of that size per concurrent viewer, for data that is about to
+// be copied straight to a socket and forgotten. Streaming keeps the cost per
+// request to a buffer.
+type Poster struct {
+	Body        io.ReadCloser
+	ContentType string
+	// Size is the upstream Content-Length, or -1 when it was not sent. It is
+	// advisory: the body is still bounded by the reader, because a header can
+	// lie.
+	Size int64
+}
+
+// Close releases the response body.
+func (p *Poster) Close() error {
+	if p == nil || p.Body == nil {
+		return nil
+	}
+	return p.Body.Close()
+}
+
+// FetchPoster opens a poster image through the same client, and therefore the
+// same proxy, as every API call.
+//
+// This is what makes the interface work behind a proxy: the browser asks our
+// backend for the image and never contacts image.tmdb.org, which it could not
+// reach anyway. The alternative — putting the direct URL in the page — gives a
+// layout full of broken images and no error anywhere, because a failed image
+// load is not something a page can report.
+//
+// The caller streams the body and closes it. The size and path are validated
+// here rather than by the caller, because both are concatenated into an
+// upstream URL: a handler that forgot to check one would let a request reach
+// any TMDB endpoint with our API key on it.
+func (c *Client) FetchPoster(ctx context.Context, path, size string) (*Poster, error) {
+	if path == "" {
+		return nil, errors.New("no poster path")
+	}
+	if size == "" {
+		size = "w500"
+	}
+	if !AllowedPosterSizes[size] {
+		return nil, fmt.Errorf("unknown poster size %q", size)
+	}
+
+	// A path, and nothing else. Checking the shape here rather than trusting
+	// the caller keeps the guarantee with the code that builds the URL: a
+	// value containing "..", "//" or a scheme would otherwise escape the image
+	// host entirely.
+	if !strings.HasPrefix(path, "/") || strings.Contains(path, "..") ||
+		strings.Contains(path, "//") || strings.ContainsAny(path, "?#") {
+		return nil, fmt.Errorf("poster path %q is not a plain TMDB path", path)
+	}
+
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("tmdb rate limiter: %w", err)
+	}
+
+	endpoint := c.imageBaseURL + "/" + size + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build poster request: %w", err)
+	}
+	req.Header.Set("Accept", "image/*")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch poster %s: %w", path, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// The body is read only far enough to describe the failure, then the
+		// connection is released. Not reading it at all would leak the
+		// connection back into the pool with unread data on it, which is how a
+		// proxy cache fills up with half-consumed responses.
+		defer resp.Body.Close()
+
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, &Error{
+			StatusCode: resp.StatusCode,
+			Path:       path,
+			Body:       truncate(string(detail), 300),
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+
+	return &Poster{
+		// Bounded here, not by the caller: a limit that each call site has to
+		// remember is a limit that one of them will not apply. A response
+		// larger than the cap is truncated rather than rejected, which is the
+		// right trade for an image — a cut-off poster is visible, and the
+		// caller sees the short read.
+		Body: struct {
+			io.Reader
+			io.Closer
+		}{io.LimitReader(resp.Body, maxPosterBytes), resp.Body},
+		ContentType: contentType,
+		Size:        resp.ContentLength,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
