@@ -5,8 +5,10 @@
 //	mediad worker   Temporal worker: polls the task queues and does the work
 //	mediad api      HTTP front door and web UI
 //	mediad all      both, in one process, for a small self-hosted deployment
+//	mediad bot      the Telegram bot only
 //	mediad migrate  apply database migrations and exit
 //	mediad config   print the effective configuration with secrets redacted
+//	mediad health   exit non-zero if Postgres or Temporal is unreachable
 //	mediad version  print build information
 //
 // and the commands a person types: search, add, list, status, cancel, retry and
@@ -21,10 +23,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
+	"go.temporal.io/sdk/client"
 	"go.uber.org/fx"
 	"gopkg.in/yaml.v3"
 
@@ -35,6 +40,7 @@ import (
 	"github.com/alex/mediad/internal/qbit"
 	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
+	"github.com/alex/mediad/internal/telegram"
 	"github.com/alex/mediad/internal/temporalx"
 	"github.com/alex/mediad/internal/tmdb"
 	"github.com/alex/mediad/internal/web"
@@ -67,6 +73,7 @@ you can ask for something that does not exist yet and forget about it.`,
 
 	root.AddCommand(
 		versionCmd(),
+		healthCmd(&configFile),
 		configCmd(&configFile),
 		migrateCmd(&configFile),
 	)
@@ -75,6 +82,7 @@ you can ask for something that does not exist yet and forget about it.`,
 	root.AddCommand(
 		workerCmd(&configFile),
 		apiCmd(&configFile),
+		botCmd(&configFile),
 		allCmd(&configFile),
 	)
 
@@ -114,6 +122,24 @@ func apiCmd(configFile *string) *cobra.Command {
 	}
 }
 
+func botCmd(configFile *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "bot",
+		Short: "Run the Telegram bot",
+		Long: `Polls Telegram for messages and delivers notifications.
+
+It is separate from worker and api because it is the one piece that talks to
+the outside world, and running it on its own means a deployment can keep the
+bot off the machine that holds the library.
+
+Without it, notifications stay in the database and are delivered whenever it
+starts: the table is the queue, so nothing is lost in the meantime.`,
+		RunE: func(*cobra.Command, []string) error {
+			return runBot(configFile)
+		},
+	}
+}
+
 func allCmd(configFile *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "all",
@@ -138,6 +164,82 @@ func versionCmd() *cobra.Command {
 			return err
 		},
 	}
+}
+
+// healthCmd reports whether the service can do its job.
+//
+// It exists for the container healthcheck, and it is deliberately a separate
+// command rather than something the binary does on its own: a probe has to be
+// a fresh process that talks to the running service, because one that merely
+// runs inside the container succeeds while the main process crash-loops. That
+// is a health signal that lies, which is worse than none.
+//
+// It checks Postgres and Temporal — the two dependencies without which nothing
+// works — and nothing else. Plex, the indexer and qBittorrent are all allowed
+// to be down: the worker keeps running and retries, and a restart caused by a
+// torrent client being briefly unavailable would turn a blip into an outage.
+func healthCmd(configFile *string) *cobra.Command {
+	var timeout time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "health",
+		Short: "Check that the database and the workflow engine are reachable",
+		Long: `Exits non-zero if a dependency the service cannot work without is unreachable.
+
+Postgres and Temporal are checked. Plex, the indexer and qBittorrent are not:
+those are expected to come and go, and the worker retries against them.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load(config.Flags{ConfigFile: *configFile})
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			// Postgres: a pool that refuses to open, or opens onto a database
+			// that will not answer a ping, is not one the service can use.
+			pool, err := pgxpool.New(ctx, cfg.Postgres.DSN)
+			if err != nil {
+				return fmt.Errorf("postgres: %w", err)
+			}
+			defer pool.Close()
+
+			if err := pool.Ping(ctx); err != nil {
+				return fmt.Errorf("postgres: %w", err)
+			}
+
+			// Temporal: the namespace has to exist, not merely the server.
+			// Those are different conditions, and the second is what workflow
+			// starts actually need.
+			//
+			// Dialled directly rather than through the fx graph, because
+			// client.Dial is what does the eager connectivity check and returns
+			// an error; the graph's own client retries for a minute, which a
+			// probe with a 5-second budget cannot afford.
+			tc, err := client.Dial(client.Options{
+				HostPort:  cfg.Temporal.Host,
+				Namespace: cfg.Temporal.Namespace,
+			})
+			if err != nil {
+				return fmt.Errorf("temporal: %w", err)
+			}
+			defer tc.Close()
+
+			if err := temporalx.CheckNamespace(ctx, tc, cfg); err != nil {
+				return fmt.Errorf("temporal: %w", err)
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "ok")
+			return nil
+		},
+	}
+
+	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Second,
+		"how long to wait for the dependencies")
+
+	return cmd
 }
 
 func configCmd(configFile *string) *cobra.Command {
@@ -303,11 +405,40 @@ func runAPI(configFile *string) error {
 	return runApp(configFile, temporalConnectivity(), webModule())
 }
 
-// runAll builds the graph with both, for a small self-hosted deployment.
+// runBot builds the graph with the Telegram bot attached.
+//
+// It refuses to start when the bot is not configured, and that check is worth
+// the extra config load. Without it the command builds the whole graph, finds
+// nothing to poll, and waits for a signal — a process that does nothing at all
+// while looking exactly like one that works, which is the worst way for a
+// misconfiguration to present itself.
+//
+// `mediad all` has no such check: a disabled bot there is normal, and the
+// worker and the interface still have work to do.
+func runBot(configFile *string) error {
+	cfg, err := config.Load(config.Flags{ConfigFile: *configFile})
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case !cfg.Telegram.Enabled:
+		return fmt.Errorf("the telegram bot is disabled; set telegram.enabled " +
+			"(MEDIAD_TELEGRAM_ENABLED=true) and telegram.token, or use `mediad all` " +
+			"to run the worker and the interface without it")
+	case strings.TrimSpace(cfg.Telegram.Token) == "":
+		return fmt.Errorf("telegram.token is empty; get one from @BotFather and set " +
+			"MEDIAD_TELEGRAM_TOKEN")
+	}
+
+	return runApp(configFile, temporalConnectivity(), telegram.Module)
+}
+
+// runAll builds the graph with everything, for a small self-hosted deployment.
 func runAll(configFile *string) error {
 	return runApp(configFile,
 		temporalConnectivity(), qbitConnectivity(),
-		workerModule(), request.ReconcilerModule, webModule())
+		workerModule(), request.ReconcilerModule, webModule(), telegram.Module)
 }
 
 // runApp builds the graph and runs it until SIGINT/SIGTERM.

@@ -27,8 +27,8 @@ Under construction, being built in stages:
 | 6 | Determinism checks in CI | done |
 | 7 | CLI commands | done |
 | 8 | Web UI | done |
-| 9 | Telegram bot | next |
-| 10 | Packaging, backups, alerts | |
+| 9 | Telegram bot | done |
+| 10 | Packaging, backups, alerts | next |
 
 ## Choosing a release
 
@@ -259,6 +259,37 @@ and would make the release selector prefer Russian releases for a title nobody
 asked for in Russian. So the Russian title is only stored when it differs from
 the original.
 
+### TMDB behind a proxy, and why the posters come through us
+
+Where TMDB is not reachable directly — which is the ordinary case in some
+regions — `TMDB_PROXY` sends both the API calls and the images through an HTTP
+proxy. One setting, because everything goes through one client.
+
+The images are the part that needs saying out loud. Linking a page straight to
+`image.tmdb.org` works perfectly on the server and fails completely in the
+browser: the browser is what fetches an `<img>`, and it is not configured with
+the proxy. The page renders, every card is a broken image, and **nothing is
+logged** — a failed image load is not something a page can report. It looks
+like a rendering bug, not a network one.
+
+So the browser asks us. Every poster URL the interface emits is
+`/poster/{size}/{path}`, and that endpoint fetches through the same client, and
+therefore the same proxy, as the API calls. Three consequences worth knowing:
+
+- **It streams.** An `original` poster is a few megabytes; buffering one per
+  concurrent viewer to then copy it to a socket is work with no purpose. The
+  body is copied straight through with a flush per chunk.
+- **It is behind the session**, like everything else. An open image proxy is a
+  way to make the server fetch arbitrary images on demand.
+- **The size and the path are validated against a whitelist**, because both are
+  concatenated into an upstream URL. Without that check, a path of
+  `../../search/movie` turns the image proxy into a general-purpose TMDB proxy
+  with the API key attached to whatever the caller asked for.
+
+A `404` from TMDB is cached for a day — the image is not going to appear — but
+any other failure is `no-store`, so a transient outage cannot leave the
+interface permanently convinced that every poster is missing.
+
 ### Plex — written by hand
 
 The one usable Go library has no semver tags, so it can only be pinned to a
@@ -281,17 +312,29 @@ season**, so "season 2 arrived" cannot be checked by guid. The show is matched
 by guid and the season is then located among its children by number, carrying
 back the episode count that the post-download check compares against.
 
-### Indexer — Torznab, or Prowlarr's JSON API
+### Indexer — Jackett aggregate Torznab
 
-Both produce the same `domain.Release`, so nothing downstream knows which is in
-use. The difference that forced two implementations: **Jackett exposes an
-aggregate Torznab endpoint that searches every tracker in one request; Prowlarr
-does not** — it serves one indexer per endpoint. So pointing Torznab mode at
-Prowlarr means covering one tracker per client, and Prowlarr mode uses its own
-JSON search API, which aggregates server-side.
+The application speaks Torznab, the protocol every Jackett indexer publishes
+on. Three front ends are supported: Jackett, Prowlarr, and a generic Torznab
+endpoint. Jackett is the default.
 
-Capabilities are read from `t=caps` before searching. This is not a nicety: an
-indexer that does not declare `imdbid` will not error on it, it will simply
+The Jackett client uses the **aggregate** endpoint
+(`/api/v2.0/indexers/all/results/torznab`), which fans out to every configured
+tracker in one request. That endpoint advertises a narrow capability set —
+only `t=search` is accepted; `t=movie` and `t=tvsearch` come back with Torznab
+error 201 — and the client encodes that in the static `Caps()` it returns.
+A spec that names a season or an IMDB id is searched with the free-text title
+only, because that is the only thing the aggregate can carry. Russian
+trackers match on the release name rather than on identifiers, which is what
+this is calibrated for.
+
+Prowlarr mode is the other one with a dedicated client, because Prowlarr's
+own JSON `/api/v1/search` does the fan-out server-side and returns JSON that
+needs no XML parsing. A generic `torznab` mode is also there for setups that
+expose a per-indexer Torznab URL.
+
+Capabilities are read from `t=caps` before searching. This is not a nicety:
+an indexer that does not declare `imdbid` will not error on it, it will simply
 match nothing — which is indistinguishable from "no releases exist".
 
 ### qBittorrent — idempotent by tag
@@ -366,6 +409,8 @@ test therefore sets only a tag, which is what identifies a torrent anyway.
 - Docker and Docker Compose
 - A TMDB API key, a Plex token, a qBittorrent instance, and either Prowlarr or
   Jackett
+- A Telegram bot token from @BotFather, if you want the bot — everything else
+  works without it
 
 ## Getting started
 
@@ -382,8 +427,11 @@ Then:
 ```bash
 make migrate   # apply the schema
 make config    # print the effective configuration, secrets redacted
-make all       # worker and API in one process
+make all       # worker, interface and bot in one process
 ```
+
+Then open <http://localhost:8081> and create the administrator. The bot needs
+`MEDIAD_TELEGRAM_TOKEN` set to start; the interface and the worker do not.
 
 The Temporal Web UI is at <http://localhost:8233>, and mediad's own interface at
 <http://localhost:8081>. Opening it for the first time shows a setup wizard that
@@ -415,11 +463,21 @@ This is a wart, not a design: the names are normalised in stage 10 so that one
 
 ## Configuration
 
-Settings come from three places, later ones winning:
+Settings come from four places, later ones winning:
 
 1. built-in defaults — the binary runs with no configuration at all
 2. `config.yaml` in the working directory, or the path given by `--config`
-3. environment variables, `MEDIAD_<SECTION>_<KEY>`
+3. `config_dev.yaml` in the working directory, layered on top of the file above
+4. environment variables, `MEDIAD_<SECTION>_<KEY>`
+
+`config_dev.yaml` is the per-developer override: a committed
+`config_dev.yaml.example` ships the dev-tuned timings (seconds instead of
+hours for the search ladder, a one-minute download deadline, `quality.russian_audio: false`)
+and the local service hosts. Each developer copies it to `config_dev.yaml`
+and tweaks from there. The file is in `.gitignore`, so what is on disk stays
+local. Pointing `--config` at anything other than the default opts out of
+this layering, so a developer who picks a specific file gets exactly that
+file.
 
 Only the first underscore after the prefix becomes a dot, so
 `MEDIAD_POSTGRES_MAX_CONNS` sets `postgres.max_conns` and
@@ -438,6 +496,7 @@ The settings worth knowing about:
 | `search.backoff_ladder` | `1h,2h,4h,8h,12h,24h` | Check frequency. Strictly hourly would be 17 520 searches per request over two years, each fanning out across every tracker. The ladder gives ~735 for effectively the same result. |
 | `download.deadline` | `48h` | A torrent that has not finished in two days is treated as dead: the release is blacklisted and the search resumes. |
 | `indexer.rate_per_second` | `0.25` | One request per four seconds. Deliberately below the one-per-three target, because the server spreads activity tasks across several partitions and can burst above the configured average — and a burst that trips a tracker's limit gets the IP banned. |
+| `tmdb.proxy` | unset | An HTTP proxy for TMDB, where the API is not reachable directly. Covers the images too: the browser is never sent to `image.tmdb.org`, it asks our own `/poster/` endpoint. |
 
 ## Command line
 
@@ -598,6 +657,74 @@ an event with actor `reconciler` — a value the schema's vocabulary already had
 room for. Failed rather than canceled: nobody decided it, and a user who sees
 `failed` knows to retry, where a silent `canceled` looks like something they
 did.
+
+## Telegram bot
+
+`mediad bot` runs it on its own; `mediad all` runs it alongside everything
+else. Setting `MEDIAD_TELEGRAM_TOKEN` turns it on — with no token it logs that
+it is disabled and the rest of the process carries on, and `mediad bot` refuses
+outright rather than starting a process that does nothing.
+
+| Message | What it does |
+|---|---|
+| any title | searches TMDB and offers the matches as buttons |
+| `/list` | what this account is waiting on |
+| `/cancel <id>` | stops one of them |
+| `/link <code>` | attaches the chat to an account |
+| `/help` | the same list |
+
+**Long polling, not webhooks.** The service is self-hosted behind a home
+connection, and a webhook would need a public hostname, a certificate and a
+port forward. Polling needs none of them and works from behind anything.
+
+**The buttons carry a session id, never a title.** Telegram caps
+`callback_data` at 64 bytes, and a page of Russian titles is past that before
+the list is full. The payload lives in `search_sessions` — in the database
+rather than in memory, so a bot restart does not invalidate every button in
+every chat, which the user experiences as pressing a button and being told it
+expired.
+
+**A series asks which season, in the same message.** The message is edited
+rather than answered again, so a conversation stays two messages long instead
+of growing one per tap, and editing removes the buttons — the choice has been
+made. The season's own première date travels into the request, not the
+series': season 6 of a show that began in 2011 is not media released in 2011,
+and the workflow would search for something that has not aired.
+
+### The notifications table is the outbox
+
+The workflow's `NotifyWatchers` activity writes rows; the bot reads them. That
+split is the whole design, and it is what makes the bot optional:
+
+- switched off entirely, the rows simply accumulate and the web inbox shows
+  them;
+- restarted, it picks up where it left off;
+- a send that fails leaves `delivered_telegram_at` unset, so the next pass
+  tries again — the alternative loses a message to a transient failure, and the
+  one thing this project must not do is fail to tell somebody their film is
+  ready.
+
+Rows are marked delivered in one statement **after** the sends, not before and
+not one at a time: marking first would lose the whole batch to a crash
+mid-loop.
+
+### Linking a chat to an account
+
+A chat is a Telegram identity, which is not the same thing as an account.
+`/link <code>` joins them, and the code is the one an administrator generates
+in the web interface — same table, same single-use semantics as an invite,
+because the mechanism is identical and only the destination differs.
+
+Without it, somebody who signed up on the web would get a second, unrelated
+account the moment they talked to the bot: notifications would split between
+two inboxes and `/list` would show half their requests. Until a chat is linked,
+the bot says so rather than guessing, because there is no safe guess — creating
+an account per chat is how the split happens in the first place.
+
+**Cancelling is scoped to the watchers.** Request ids are small numbers, so
+`/cancel 12` is trivially guessable; the handler checks that the account is one
+of the request's watchers before doing anything. Without it, anybody could stop
+a stranger's download by typing a number.
 
 ## Architecture
 

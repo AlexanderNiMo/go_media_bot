@@ -186,8 +186,23 @@ services:
     container_name: mediad-temporal-ui
     restart: unless-stopped
     depends_on:
-      temporal:
-        condition: service_healthy
+      # On the namespace, not merely on the server being healthy. The UI is
+      # pointed at TEMPORAL_DEFAULT_NAMESPACE below, and a UI whose namespace
+      # does not exist yet opens on an error — which is how a stack that is
+      # still starting looks identical to one that is misconfigured.
+      temporal-namespace-setup:
+        condition: service_completed_successfully
+      # Ordering, not a data dependency, and it is what makes a single target
+      # sufficient: the UI is the last service of an infrastructure-only run,
+      # so naming it in `up -d` has to wait for the other branch of the graph
+      # as well. Without this, `docker compose up -d temporal-ui` starts
+      # Temporal and silently leaves the application's database uncreated.
+      #
+      # On the migration rather than directly on db-setup: the migration
+      # already depends on the database existing, so this one edge carries the
+      # whole chain, and a database with no tables is not a stack that is up.
+      mediad-migrate:
+        condition: service_completed_successfully
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_UI_PORT: "8080"
@@ -212,19 +227,39 @@ services:
       # and namespace registration takes up to 15 seconds.
       temporal-namespace-setup:
         condition: service_completed_successfully
+      # And on its own database existing, with its schema applied. The
+      # application migrates on startup too, but it cannot migrate a database
+      # nobody has created yet — without this it starts, fails to connect, and
+      # restarts until the setup container happens to win the race.
+      mediad-migrate:
+        condition: service_completed_successfully
       postgresql:
         condition: service_healthy
     command: ["all"]
+    # Plex, qBittorrent and Prowlarr run on the host, not in this compose file,
+    # and inside a container `localhost` is the container itself. Without this
+    # the application reaches nothing, and the resulting failure is a login
+    # error against a torrent client that is running perfectly well a few
+    # centimetres away — which reads like a credentials problem.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@postgresql:5432/mediad?sslmode=disable
       MEDIAD_TEMPORAL_HOST: temporal:7233
       MEDIAD_TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
       MEDIAD_TMDB_API_KEY: ${TMDB_API_KEY:-}
-      MEDIAD_PLEX_URL: ${PLEX_URL:-}
+      MEDIAD_TMDB_PROXY: ${TMDB_PROXY:-}
+      # The *_DOCKER variants override the host-facing values from .env, which
+      # are written for a process running on the host. Two names rather than a
+      # rewrite of the URL because Compose does not do substitution inside a
+      # value: there is no way to turn `localhost` into `host.docker.internal`
+      # while leaving the port alone.
+      MEDIAD_PLEX_URL: ${PLEX_URL_DOCKER:-${PLEX_URL:-}}
       MEDIAD_PLEX_TOKEN: ${PLEX_TOKEN:-}
-      MEDIAD_INDEXER_BASE_URL: ${INDEXER_BASE_URL:-}
+      MEDIAD_INDEXER_BASE_URL: ${INDEXER_BASE_URL_DOCKER:-${INDEXER_BASE_URL:-}}
       MEDIAD_INDEXER_API_KEY: ${INDEXER_API_KEY:-}
-      MEDIAD_QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+      MEDIAD_QBITTORRENT_URL: ${QBITTORRENT_URL_DOCKER:-${QBITTORRENT_URL:-}}
+      MEDIAD_QBITTORRENT_API_KEY: ${QBITTORRENT_API_KEY:-}
       MEDIAD_QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
       MEDIAD_QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
       MEDIAD_TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
@@ -265,6 +300,14 @@ services:
           psql -h postgresql -U "$$SUPERUSER" -d postgres -c \
             "CREATE ROLE $$APP_USER LOGIN PASSWORD '$$APP_PASSWORD'"
 
+        # The password is set on every run, not only at creation. A role that
+        # already exists keeps whatever password it was made with, so changing
+        # MEDIAD_DB_PASSWORD in .env would otherwise leave the application
+        # failing to authenticate against a database that looks correctly
+        # configured — and the error names the role, not the stale password.
+        psql -h postgresql -U "$$SUPERUSER" -d postgres -c \
+          "ALTER ROLE $$APP_USER PASSWORD '$$APP_PASSWORD'"
+
         # CREATEDB so the test suite can build throwaway databases instead of
         # running against the development one and truncating it.
         psql -h postgresql -U "$$SUPERUSER" -d postgres -c \
@@ -276,3 +319,25 @@ services:
           "GRANT ALL PRIVILEGES ON DATABASE $$APP_DB TO $$APP_USER"
         psql -h postgresql -U "$$SUPERUSER" -d "$$APP_DB" -c \
           "GRANT ALL ON SCHEMA public TO $$APP_USER"
+
+  # Applies the application's own migrations, once, and exits.
+  #
+  # A container rather than a `make` step, because the tables are part of what
+  # "the stack is up" means: a database with no schema is a stack that looks
+  # started and fails on the first request. Being a service also puts it in the
+  # dependency graph, so anything that needs the schema can say so instead of
+  # hoping the ordering worked out.
+  #
+  # The application applies migrations on startup anyway, so this is not the
+  # only path — it is the one that makes the schema exist before anything else
+  # connects, including a worker run from the host.
+  mediad-migrate:
+    build: .
+    container_name: mediad-migrate
+    restart: on-failure:10
+    depends_on:
+      mediad-db-setup:
+        condition: service_completed_successfully
+    command: ["migrate"]
+    environment:
+      MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@postgresql:5432/mediad?sslmode=disable

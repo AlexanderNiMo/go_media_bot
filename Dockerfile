@@ -30,7 +30,14 @@ COPY --from=build /out/mediad /usr/local/bin/mediad
 # database lives in Postgres and the workflow state in Temporal.
 USER nonroot:nonroot
 
-EXPOSE 8080
+EXPOSE 8081
+
+# The probe is the binary itself, because distroless ships no shell and no
+# curl. It has to be a command that talks to the running service rather than
+# one that merely runs: `mediad version` would succeed inside a container whose
+# main process is crash-looping, which is a health signal that lies.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/mediad", "health"]
 
 # Overridden by the compose file, which picks worker, api or all.
 ENTRYPOINT ["/usr/local/bin/mediad"]

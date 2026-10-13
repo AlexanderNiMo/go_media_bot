@@ -6,6 +6,9 @@
 # defaults — but when present it is machine-specific.
 .env
 config.yaml
+# config_dev.yaml.example is the committed template; the real config_dev.yaml
+# is the per-developer override and is not for the repository.
+config_dev.yaml
 
 bin/
 *.test

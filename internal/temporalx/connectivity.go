@@ -46,13 +46,26 @@ func VerifyNamespace(c client.Client, cfg *config.Config, log *slog.Logger) erro
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	err := CheckNamespace(ctx, c, cfg)
+	if err == nil {
+		log.Info("connected to temporal",
+			"host", cfg.Temporal.Host,
+			"namespace", cfg.Temporal.Namespace)
+	}
+	return err
+}
+
+// CheckNamespace is VerifyNamespace without the logging or the timeout of its
+// own, for callers that already have both.
+//
+// The distinction is what a health probe needs: it runs on a deadline it was
+// given on the command line, and a second timeout hidden inside the check
+// would make the flag a lie.
+func CheckNamespace(ctx context.Context, c client.Client, cfg *config.Config) error {
 	_, err := c.WorkflowService().DescribeNamespace(ctx,
 		&workflowservice.DescribeNamespaceRequest{Namespace: cfg.Temporal.Namespace})
 	switch {
 	case err == nil:
-		log.Info("connected to temporal",
-			"host", cfg.Temporal.Host,
-			"namespace", cfg.Temporal.Namespace)
 		return nil
 
 	case isNotFound(err):
