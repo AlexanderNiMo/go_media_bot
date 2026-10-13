@@ -183,7 +183,7 @@ type prowlarrRelease struct {
 	InfoHash    string `json:"infoHash"`
 	Indexer     string `json:"indexer"`
 	IndexerID   int    `json:"indexerId"`
-	Categories  []int  `json:"categories"`
+	Categories  []prowlarrCategory `json:"categories"`
 	PublishDate string `json:"publishDate"`
 }
 
@@ -196,7 +196,7 @@ func (r prowlarrRelease) toRelease() domain.Release {
 		Indexer:     r.Indexer,
 		DownloadURL: r.DownloadURL,
 		MagnetURI:   r.MagnetURL,
-		Categories:  r.Categories,
+		Categories:  flattenProwlarrCategories(r.Categories),
 	}
 
 	// searchers/leechers are nullable in the API, and a null must not read as
@@ -242,4 +242,39 @@ func parseProwlarrTime(s string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// prowlarrCategory is one entry in Prowlarr's nested categories array.
+//
+// The Prowlarr API does not return a flat list of ids; it returns a tree
+// shaped like
+//
+//	[{id: 7000, name: "Books", subCategories: [{id: 7010, ...}, ...]}, ...]
+//
+// The release selector works against a flat list of ids, so the tree is
+// walked into one here. Duplicates are not deduplicated: a release that
+// appears in two categories at the same level of the API response carries
+// the id twice, and a download that matches the higher-level category must
+// pass through the same filter.
+type prowlarrCategory struct {
+	ID             int                 `json:"id"`
+	SubCategories  []prowlarrCategory  `json:"subCategories"`
+}
+
+func flattenProwlarrCategories(cats []prowlarrCategory) []int {
+	if len(cats) == 0 {
+		return nil
+	}
+	out := make([]int, 0, len(cats)*2)
+	var walk func([]prowlarrCategory)
+	walk = func(cs []prowlarrCategory) {
+		for _, c := range cs {
+			out = append(out, c.ID)
+			if len(c.SubCategories) > 0 {
+				walk(c.SubCategories)
+			}
+		}
+	}
+	walk(cats)
+	return out
 }

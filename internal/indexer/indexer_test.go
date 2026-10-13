@@ -306,7 +306,10 @@ const prowlarrBody = `[
     "infoHash": "ABC123",
     "indexer": "RuTracker",
     "indexerId": 5,
-    "categories": [2000, 2040],
+    "categories": [
+      {"id": 2000, "subCategories": []},
+      {"id": 2040, "subCategories": []}
+    ],
     "publishDate": "2023-01-02T15:04:05Z"
   },
   {
@@ -319,7 +322,11 @@ const prowlarrBody = `[
     "infoHash": "",
     "indexer": "",
     "indexerId": 7,
-    "categories": [2000],
+    "categories": [
+      {"id": 2000, "subCategories": [
+        {"id": 2040, "subCategories": []}
+      ]}
+    ],
     "publishDate": "not a date"
   }
 ]`
@@ -505,5 +512,44 @@ func TestNewSelectsMode(t *testing.T) {
 	badCfg.Indexer.Mode = "nonsense"
 	if _, err := New(badCfg, log); err == nil {
 		t.Error("expected an error for an unknown mode")
+	}
+}
+
+// TestProwlarrFlattensNestedCategories — Prowlarr returns a tree of category
+// objects, not a flat list of ids, and the release selector works against
+// the flat form. The flattening has to recurse into subCategories and
+// preserve order.
+func TestProwlarrFlattensNestedCategories(t *testing.T) {
+	c := newTestProwlarr(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[
+		  {
+		    "title": "X",
+		    "guid": "g",
+		    "downloadUrl": "u",
+		    "indexerId": 1,
+		    "categories": [
+		      {"id": 2000, "subCategories": [
+		        {"id": 2040, "subCategories": [
+		          {"id": 2045, "subCategories": []}
+		        ]}
+		      ]},
+		      {"id": 5000, "subCategories": []}
+		    ]
+		  }
+		]`))
+	})
+
+	rels, err := c.Search(context.Background(), SearchRequest{Query: "x"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	want := []int{2000, 2040, 2045, 5000}
+	if len(rels[0].Categories) != len(want) {
+		t.Fatalf("categories = %v, want %v", rels[0].Categories, want)
+	}
+	for i, id := range want {
+		if rels[0].Categories[i] != id {
+			t.Errorf("categories[%d] = %d, want %d", i, rels[0].Categories[i], id)
+		}
 	}
 }
