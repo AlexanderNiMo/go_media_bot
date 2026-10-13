@@ -116,7 +116,9 @@ func New(cfg *config.Config, log *slog.Logger) (Indexer, error) {
 		return NewProwlarr(cfg, log), nil
 	case "torznab":
 		return NewTorznab(cfg, log), nil
+	case "jackett":
+		return NewJackett(cfg, log), nil
 	default:
-		return nil, fmt.Errorf("indexer.mode: want prowlarr or torznab, got %q", cfg.Indexer.Mode)
+		return nil, fmt.Errorf("indexer.mode: want prowlarr, torznab or jackett, got %q", cfg.Indexer.Mode)
 	}
 }

@@ -502,7 +502,7 @@ func TestNewSelectsMode(t *testing.T) {
 	}
 
 	badCfg := &config.Config{}
-	badCfg.Indexer.Mode = "jackett"
+	badCfg.Indexer.Mode = "nonsense"
 	if _, err := New(badCfg, log); err == nil {
 		t.Error("expected an error for an unknown mode")
 	}
