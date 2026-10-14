@@ -4,9 +4,16 @@
 -- The projection in request_view was frozen when the view was first created
 -- (00001_init.sql). Adding columns to the underlying table does not change
 -- the view, so the new fields added by 00004_manual_release.sql are invisible
--- to every reader. CREATE OR REPLACE VIEW pulls them in.
+-- to every reader. Pull them in.
+--
+-- DROP + CREATE rather than CREATE OR REPLACE: Postgres refuses CREATE OR
+-- REPLACE when the column list reorders an existing column (the new
+-- selected_link slots in where qbit_hash used to be). DROP + CREATE has no
+-- such restriction; the only thing it loses is any GRANTs on the view, and
+-- nothing here issues them.
 
-CREATE OR REPLACE VIEW request_view AS
+DROP VIEW IF EXISTS request_view;
+CREATE VIEW request_view AS
 SELECT r.id,
        r.media_id,
        r.workflow_id,
