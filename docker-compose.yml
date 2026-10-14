@@ -181,8 +181,15 @@ services:
   # works on the host network, the bridge is the trouble. The Dockerfile path
   # is preferred when possible because it does not leak the container out of
   # the project's network.
+  #
+  # build.context is the repo root (not the script's directory) because the
+  # Dockerfile needs go.mod / go.sum from the parent for the Temporal SDK
+  # dependencies. The script source itself lives one level down and is
+  # copied explicitly.
   temporal-namespace-setup:
-    build: ./scripts/temporal-namespace-setup
+    build:
+      context: .
+      dockerfile: scripts/temporal-namespace-setup/Dockerfile
     container_name: mediad-temporal-namespace
     restart: on-failure:10
     depends_on:
