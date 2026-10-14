@@ -165,8 +165,15 @@ services:
 
   # Creates the namespace. `default` is only created automatically by the CLI
   # dev server; with a real server every namespace is explicit.
+  #
+  # Alpine + the official CLI installer rather than temporalio/admin-tools:
+  # admin-tools:1.32.1 has a TLS-aware gRPC dialer that timeouts against the
+  # server on this image pair (TCP works, the gRPC call never completes); the
+  # CLI binary fetched by https://temporal.download/cli.sh works. Both call the
+  # same wire protocol; whatever the regression is in admin-tools:1.32.1, it is
+  # not on this container's side.
   temporal-namespace-setup:
-    image: temporalio/admin-tools:1.32.1
+    image: alpine:3
     container_name: mediad-temporal-namespace
     restart: on-failure:10
     depends_on:
@@ -175,10 +182,16 @@ services:
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
-    entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
+        apk add --no-cache curl ca-certificates
+        curl -sSf https://temporal.download/cli.sh | sh
+        # The installer drops the binary in ~/.temporalio/bin and prints the
+        # PATH line; sourcing it is more reliable than hard-coding the path
+        # in case upstream changes it again.
+        . "${HOME}/.temporalio/pathrc" || . "${HOME}/.temporalio/bin/pathrc" || true
+
         until temporal operator cluster health --address "$$TEMPORAL_ADDRESS" >/dev/null 2>&1; do
           sleep 2
         done
