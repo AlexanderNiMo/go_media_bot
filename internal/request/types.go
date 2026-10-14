@@ -280,7 +280,10 @@ type Rejection struct {
 // AddTorrentInput hands a release to the torrent client.
 type AddTorrentInput struct {
 	RequestID int64
-	Release   domain.Release
+	// Spec is the media the release was selected for, carried through so
+	// AddTorrent can pick the per-type save path without a second lookup.
+	Spec    domain.MediaSpec
+	Release domain.Release
 }
 
 // AddTorrentResult reports what the client did.

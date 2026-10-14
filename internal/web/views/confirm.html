@@ -10,7 +10,7 @@
   </div>
 </div>
 
-<form method="post" action="/requests">
+<form method="post" action="{{path .BasePath "/requests"}}">
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
   <input type="hidden" name="media_type" value="{{.MediaType}}">
   <input type="hidden" name="tmdb_id" value="{{.TMDBID}}">

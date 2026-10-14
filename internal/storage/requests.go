@@ -72,6 +72,14 @@ type Request struct {
 	SelectedSeeders int
 	SelectedScore   float64
 
+	// SelectedLink is a torrent URL or magnet submitted manually through
+	// the web UI. Empty when the release came from the indexer.
+	SelectedLink string
+	// SelectedInfoHash is the infohash as the client reported it back,
+	// stored alongside the link for the workflow that has to keep going
+	// after a ContinueAsNew.
+	SelectedInfoHash string
+
 	QbitHash    string
 	ContentPath string
 
@@ -364,6 +372,18 @@ type RequestFilter struct {
 	// WatcherUserID restricts to requests this user is watching. Zero means
 	// everyone's.
 	WatcherUserID int64
+	// Query matches title, title_ru or original_title case-insensitively
+	// (ILIKE %query%). Empty means no text filter. The match is a substring
+	// on any of the three columns, ORed together.
+	Query string
+	// SortByTitle sorts by media title (locale-independent byte order).
+	// Default (false) sorts by created_at DESC, which is what a list of
+	// work-in-progress wants.
+	SortByTitle bool
+	// Since limits to rows with created_at >= now() - Since. Zero means no
+	// lower bound. The dashboard's "recent" window uses this; Pending rows
+	// are excluded by States, so it does not double up.
+	Since time.Duration
 	// Limit is clamped to something sane so a caller cannot ask for the whole
 	// table by accident.
 	Limit int
@@ -425,10 +445,27 @@ func (s *Store) ListRequests(ctx context.Context, f RequestFilter) ([]*Request, 
 			"EXISTS (SELECT 1 FROM request_watchers w WHERE w.request_id = request_view.id AND w.user_id = $%d)",
 			len(args)))
 	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		// One parameter, three LIKE clauses: PostgreSQL reuses the placeholder
+		// so we still get a single bound value.
+		args = append(args, "%"+q+"%")
+		n := len(args)
+		where = append(where, fmt.Sprintf(
+			"(title ILIKE $%d OR title_ru ILIKE $%d OR original_title ILIKE $%d)", n, n, n))
+	}
+	if f.Since > 0 {
+		args = append(args, f.Since)
+		where = append(where, fmt.Sprintf("created_at >= now() - ($%d || ' seconds')::interval", len(args)))
+	}
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	q += fmt.Sprintf(` ORDER BY created_at DESC LIMIT %d`, limit)
+	if f.SortByTitle {
+		q += ` ORDER BY title ASC`
+	} else {
+		q += ` ORDER BY created_at DESC`
+	}
+	q += fmt.Sprintf(` LIMIT %d`, limit)
 
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -697,6 +734,7 @@ const requestViewColumns = `
 	next_run_at, search_deadline, download_deadline,
 	COALESCE(selected_title, ''), COALESCE(selected_indexer, ''),
 	COALESCE(selected_size, 0), COALESCE(selected_seeders, 0), COALESCE(selected_score, 0),
+	COALESCE(selected_link, ''), COALESCE(selected_infohash, ''),
 	COALESCE(qbit_hash, ''), COALESCE(content_path, ''),
 	progress, dl_speed, COALESCE(eta_seconds, 0),
 	created_at, updated_at, completed_at,
@@ -722,6 +760,7 @@ func scanRequest(row rowScanner) (*Request, error) {
 		&r.NextRunAt, &r.SearchDeadline, &r.DownloadDeadline,
 		&r.SelectedTitle, &r.SelectedIndexer,
 		&r.SelectedSize, &r.SelectedSeeders, &r.SelectedScore,
+		&r.SelectedLink, &r.SelectedInfoHash,
 		&r.QbitHash, &r.ContentPath,
 		&r.Progress, &r.DlSpeed, &r.ETASeconds,
 		&r.CreatedAt, &r.UpdatedAt, &r.CompletedAt,

@@ -8,20 +8,21 @@
 # defaults. Add a key only when you mean to override it.
 
 log:
-  # debug|text|info|warn|error
   level: debug
   format: text
 
-# Local services. These match the values in .env, so the application and
-# `make` targets agree on the same Postgres / Temporal pair.
+# Local services. These match the values in .zed/debug.json, so a developer's
+# in-process worker (mediad worker) and the Docker stack agree on the same
+# hosts.
 server:
   base_url: http://localhost:8081
+  # base_path: /mediad
 
 postgres:
   # `mediad_dev` is a separate database; the test suite creates and drops
   # its own throwaway databases, but development traffic should not share
   # that lifecycle.
-  dsn: postgres://mediad:mediad@localhost:5432/mediad_dev?sslmode=disable
+  dsn: postgres://mediad:devpass@localhost:5432/mediad?sslmode=disable
   max_conns: 5
 
 temporal:
@@ -29,20 +30,31 @@ temporal:
   namespace: mediad
   task_queue: mediad
 
-# Telegram is the only one that benefits from being off during dev. The
-# worker, the API and the CLI all work without it; with no token the bot
-# stays quiet on its own, and a developer who has set TELEGRAM_TOKEN for
-# something else can use this to suppress the bot without unsetting it.
+# Plex on the home network.
+plex:
+  url: http://192.168.1.107:32400
+  token: ""
+
+# Prowlarr aggregates every configured tracker. Empty token would still
+# work for unauthenticated endpoints, but Prowlarr requires the key.
+indexer:
+  mode: prowlarr
+  base_url: http://192.168.1.107:9696
+  api_key: ""
+
+# qBittorrent on the home network. The port is the Web UI port, not the
+# listen port.
+qbittorrent:
+  url: http://192.168.1.107:8113
+  api_key: ""
+
+# Telegram is off during dev: a developer who has set TELEGRAM_TOKEN for
+# another project can use this to suppress the bot.
 telegram:
   enabled: false
 
 # The point of a dev profile: stages that take days in production take
-# minutes here. These are the same knobs as config.yaml; the difference is
-# only the values.
-#
-# Backoff ladder is in seconds rather than hours; the search "deadline" is
-# half an hour so a request that has not found anything yet at that point
-# transitions to failed and the state machine is exercised.
+# minutes here.
 search:
   search_deadline: 30m
   backoff_ladder: [10s, 20s, 40s, 80s, 160s, 320s]
@@ -50,20 +62,12 @@ search:
   poll_interval: 5s
   continue_as_new_history: 200
 
-# Single download times out after a minute rather than two days, so a
-# torrent that does not start moving is the one that exercises the
-# stall-then-blacklist path. zero_stall_after at ten seconds is what
-# makes that affordable: a real download normally reports non-zero
-# progress well before then.
 download:
   deadline: 1m
   zero_stall_after: 10s
   missing_grace: 5s
   max_stalls: 2
 
-# Russian audio is the slowest thing to satisfy against a sparse dev
-# indexer set, and it is independent of the workflows under test. The
-# filter still runs; it just does not have to win.
 quality:
   russian_audio: false
   min_seeders: 1

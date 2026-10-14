@@ -192,11 +192,14 @@ func (b *Bot) handleError(err error) {
 	b.log.Warn("telegram reported an error", "error", err)
 }
 
-// ---------------------------------------------------------------------------
-// Commands
-// ---------------------------------------------------------------------------
-
-const helpText = `Что я умею.
+// helpText is the message /help and /start reply.
+//
+// The web URL is interpolated from the configured BaseURL so a user with
+// the bot can be told exactly where to grab an invite code rather than
+// fishing for a link.
+func (b *Bot) helpText() string {
+	web := strings.TrimRight(b.cfg.Server.BaseURL, "/")
+	return fmt.Sprintf(`Что я умею.
 
 Пришлите название фильма или сериала — найду на TMDB и покажу варианты.
 Дальше: проверю Plex и, если этого там нет, буду искать релиз с русским
@@ -207,15 +210,17 @@ const helpText = `Что я умею.
 /link <код> — привязать этот чат к аккаунту
 /help — эта справка
 
-Код для привязки выдаётся в веб-интерфейсе, в настройках. Без него можно
-пользоваться ботом, но уведомления придут только сюда, а не в общий аккаунт.`
+Код для привязки выдаётся в веб-интерфейсе, в настройках: %s/settings?tab=telegram
+Без него можно пользоваться ботом, но уведомления придут только сюда, а
+не в общий аккаунт.`, web)
+}
 
 func (b *Bot) handleStart(ctx context.Context, api *tgbot.Bot, update *models.Update) {
-	b.reply(ctx, update, "Привет. Пришлите название фильма или сериала — найду и поставлю запрос.\n\n"+helpText)
+	b.reply(ctx, update, "Привет. Пришлите название фильма или сериала — найду и поставлю запрос.\n\n"+b.helpText())
 }
 
 func (b *Bot) handleHelp(ctx context.Context, api *tgbot.Bot, update *models.Update) {
-	b.reply(ctx, update, helpText)
+	b.reply(ctx, update, b.helpText())
 }
 
 // handleDefault handles free text: anything that is not a command is a search.

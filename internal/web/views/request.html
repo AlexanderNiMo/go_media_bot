@@ -2,7 +2,12 @@
 {{/* $.CSRF rather than .CSRF: inside this block "." is the request, and the
      token belongs to the page one level out. */}}
 {{with .Request}}
-<h1>{{.Title}} <span class="state {{.State}}">{{.State}}</span></h1>
+<div class="confirm">
+  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+  <div>
+    <h1>{{.Title}} <span class="state {{.State}}">{{.State}}</span></h1>
+  </div>
+</div>
 
 <dl class="facts">
   <dt>Plex</dt><dd>{{.PlexText}}</dd>
@@ -21,17 +26,43 @@
 
 <div class="actions">
   {{if .Active}}
-    <form method="post" action="/requests/{{.ID}}/cancel">
+    <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-      <button type="submit">Отменить</button>
+      <button type="submit" class="small">Отменить</button>
     </form>
   {{else}}
-    <form method="post" action="/requests/{{.ID}}/retry">
+    <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/retry">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-      <button type="submit">Запустить снова</button>
+      <button type="submit" class="small">Запустить снова</button>
     </form>
   {{end}}
 </div>
+
+<h3>Год</h3>
+<form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/year" class="stack">
+  <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+  <label>Год выпуска
+    <input type="number" name="year" min="1800" max="2200" value="{{.Year}}">
+  </label>
+  <button type="submit" class="small">Сохранить год</button>
+</form>
+
+<h3>Ручной релиз</h3>
+<p class="muted">
+  Индексатор не помог? Вставьте magnet-ссылку или URL .torrent — workflow
+  скачает её вместо того, что искал. Оставьте поле пустым, чтобы вернуться
+  к обычному поиску.
+</p>
+<form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/manual" class="stack">
+  <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+  <label>Ссылка
+    <input type="text" name="link" value="{{.SelectedLink}}" placeholder="magnet:?xt=… или https://…/file.torrent">
+  </label>
+  <button type="submit" class="small">{{if .SelectedLink}}Обновить ссылку{{else}}Отправить ссылку{{end}}</button>
+</form>
+{{if .SelectedLink}}
+  <p class="muted">Текущая ссылка: <span class="mono">{{.SelectedLink}}</span></p>
+{{end}}
 
 {{if .Events}}
   <h2>Что происходило</h2>

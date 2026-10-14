@@ -120,6 +120,13 @@ func (s *WorkflowSuite) expectNoise() {
 		Return(nil).Maybe()
 	s.env.OnActivity("RefreshPlex", mock.Anything, mock.Anything).
 		Return(nil).Maybe()
+	// PopManualLink is called on every search tick. The default behaviour
+	// is "no manual link pending" so the workflow falls through to the
+	// indexer path; tests that want a manual link override this stub.
+	s.env.OnActivity("PopManualLink", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ int64) (string, error) {
+			return "", nil
+		}).Maybe()
 }
 
 // expectDelete stubs the torrent removal and returns a counter of the calls.

@@ -204,7 +204,7 @@ func (s selector) reject(
 			rel.Seeders, s.profile.MinSeeders)
 	}
 
-	if reason, detail := s.checkSize(rel, parsed); reason != "" {
+	if reason, detail := s.checkSize(spec, rel, parsed); reason != "" {
 		return reason, detail
 	}
 
@@ -248,7 +248,7 @@ func (s selector) checkAudio(audio AudioTrack) *audioError {
 	}
 }
 
-func (s selector) checkSize(rel domain.Release, parsed Parsed) (Reason, string) {
+func (s selector) checkSize(spec domain.MediaSpec, rel domain.Release, parsed Parsed) (Reason, string) {
 	if rel.SizeBytes <= 0 {
 		// Nothing to check. An indexer that reports no size is not a reason to
 		// refuse a release that is otherwise fine.
@@ -260,6 +260,14 @@ func (s selector) checkSize(rel domain.Release, parsed Parsed) (Reason, string) 
 	if sizeGB < s.profile.MinSizeGB {
 		return ReasonTooSmall, fmt.Sprintf("%.2f GB is below the minimum %.2f GB",
 			sizeGB, s.profile.MinSizeGB)
+	}
+	// Per-type cap: a 50 GB film is almost always a remux, and a 50 GB
+	// episode does not exist. The general MaxSizeGB stays as a backstop
+	// for when a per-type value is not configured, so old configs
+	// continue to behave as before.
+	if cap := s.maxSizeGB(spec); cap > 0 && sizeGB > cap {
+		return ReasonTooLarge, fmt.Sprintf("%.2f GB is above the %.2f GB cap for %s",
+			sizeGB, cap, spec.Ref.Type)
 	}
 	if sizeGB > s.profile.MaxSizeGB {
 		return ReasonTooLarge, fmt.Sprintf("%.2f GB is above the maximum %.2f GB",
@@ -288,6 +296,24 @@ func (s selector) checkSize(rel domain.Release, parsed Parsed) (Reason, string) 
 // is to catch a mislabelled or fake file, not to express a preference. A
 // 1080p feature that is 300 MB is not a low-bitrate encode, it is something
 // else wearing a 1080p label.
+
+// maxSizeGB returns the per-type size cap, falling back to the general
+// MaxSizeGB so a profile that has not been configured for the per-type
+// values keeps the old behaviour.
+func (s selector) maxSizeGB(spec domain.MediaSpec) float64 {
+	switch spec.Ref.Type {
+	case domain.MediaTypeMovie:
+		if s.profile.MaxSizeGBMovies > 0 {
+			return s.profile.MaxSizeGBMovies
+		}
+	case domain.MediaTypeTV:
+		if s.profile.MaxSizeGBSeries > 0 {
+			return s.profile.MaxSizeGBSeries
+		}
+	}
+	return s.profile.MaxSizeGB
+}
+
 func plausibleFloorGB(q Quality, src Source) float64 {
 	base := 0.0
 	switch q {

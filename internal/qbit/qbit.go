@@ -183,6 +183,34 @@ func TagFor(requestID int64) string {
 	return tagPrefix + strconv.FormatInt(requestID, 10)
 }
 
+// ErrNoSpace is the sentinel for "qBittorrent refused the torrent because
+// there is not enough disk space to receive it". Two reasons it is a
+// sentinel rather than a plain string match:
+//
+//   - The activity layer branches on it. A no-space failure is the one
+//     failure that means "do not delete the half-added torrent and do not
+//     blackhole the request in a loop": the operator has to free space
+//     before anything else can move.
+//   - The detection itself is heuristic and the check sits here once
+//     rather than being redone in every caller.
+var ErrNoSpace = errors.New("qbittorrent: not enough disk space")
+
+// isFailedState reports whether a torrent's state means "the client refused
+// or parked this torrent", as opposed to a state in which a real download
+// is happening. The set is deliberately small: error, stalled, and
+// missingfiles are the three the client uses when a torrent is on disk
+// but is not making progress for an infrastructure reason.
+//
+// state strings are lowercased on the way through toStatus; this function
+// expects the same form.
+func isFailedState(state string) bool {
+	switch state {
+	case "error", "stalled", "missingfiles":
+		return true
+	}
+	return false
+}
+
 // AddSpec describes a torrent to hand to the client.
 type AddSpec struct {
 	// Link is a magnet URI or a .torrent URL.
@@ -194,6 +222,11 @@ type AddSpec struct {
 	Tags []string
 	// Paused adds the torrent without starting it.
 	Paused bool
+	// SavePath is the directory the client should download into. Empty means
+	// the client's own default — Add sends no savepath parameter at all in
+	// that case, so a deployment that does not need per-type routing is
+	// unaffected.
+	SavePath string
 }
 
 // Add hands a torrent to the client and returns its hash.
@@ -203,8 +236,9 @@ type AddSpec struct {
 // true, and nothing is added. Temporal activities are retried after a worker
 // crash, so this call will happen twice for the same release sooner or later.
 //
-// Note what is deliberately not sent: a save path. The client decides where
-// downloads go, which is this project's stated division of responsibility.
+// SavePath is sent only when set. An empty SavePath leaves the choice to
+// the client's own default — that is the path a deployment that does not
+// need per-type routing takes, and the field exists for the one that does.
 func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPresent bool, err error) {
 	if spec.Link == "" {
 		return "", false, errors.New("nothing to add: link is empty")
@@ -222,9 +256,17 @@ func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPre
 			return "", false, fmt.Errorf("look up torrents tagged %q: %w", tag, err)
 		}
 		if len(existing) > 0 {
-			c.log.Info("torrent already present, adopting it",
-				"tag", tag, "hash", existing[0].Hash, "name", existing[0].Name)
-			return existing[0].Hash, true, nil
+			// A torrent the client already has is adopted, except when the
+			// client has parked it in a failure state. That kind of
+			// "already there" is a broken addition the caller has to
+			// hear about, not a download that has started.
+			if !isFailedState(existing[0].State) {
+				c.log.Info("torrent already present, adopting it",
+					"tag", tag, "hash", existing[0].Hash, "name", existing[0].Name)
+				return existing[0].Hash, true, nil
+			}
+			c.log.Warn("torrent present in a failure state, retrying the add",
+				"tag", tag, "hash", existing[0].Hash, "state", existing[0].State)
 		}
 	}
 
@@ -233,6 +275,9 @@ func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPre
 	}
 	if spec.Category != "" {
 		options["category"] = spec.Category
+	}
+	if spec.SavePath != "" {
+		options["savepath"] = spec.SavePath
 	}
 	if spec.Paused {
 		// The parameter was renamed in qBittorrent 5.0. Sending the wrong name
@@ -249,6 +294,17 @@ func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPre
 	// success_count and pending_count both mean "accepted"; failure_count is
 	// the only one that means it did not work.
 	if resp.FailureCount > 0 && resp.SuccessCount == 0 && resp.PendingCount == 0 {
+		// qBittorrent's response itself is silent on the cause, but it may
+		// have actually added the torrent and parked it in state=error with
+		// a no-space errorMessage. Look it up; if that is the case, return
+		// the sentinel so the activity layer can keep the torrent in place
+		// and surface the problem to an operator rather than blackhole the
+		// request.
+		if noSpace, err := c.addFailedBecauseNoSpace(ctx, spec.Tags); err != nil {
+			c.log.Warn("could not probe for a no-space condition", "error", err)
+		} else if noSpace {
+			return "", false, fmt.Errorf("torrent %s: %w", spec.Link, ErrNoSpace)
+		}
 		return "", false, fmt.Errorf("qbittorrent rejected the torrent (failures: %d)", resp.FailureCount)
 	}
 
@@ -436,4 +492,53 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// addFailedBecauseNoSpace reports whether a "torrent rejected" failure
+// was actually a disk-full condition.
+//
+// qBittorrent returns failure_count > 0 for several different problems
+// (bad magnet, missing metadata, denied by the disk), and the API does
+// not say which. The check is by side effect: if the failure landed
+// while free disk space was below the size of what was being added, the
+// disk is the most likely cause.
+//
+// Two cases are explicitly NOT a no-space answer:
+//   - The lookup returned an error. Treating "I do not know" as "yes,
+//     disk is full" would route every silent failure through the
+//     operator path.
+//   - Free space is plenty. The cause has to be something else.
+func (c *Client) addFailedBecauseNoSpace(ctx context.Context, tags []string) (bool, error) {
+	free, err := c.qb.GetFreeSpaceOnDiskCtx(ctx)
+	if err != nil {
+		return false, err
+	}
+	// A negative answer from qBittorrent means the call itself failed,
+	// not that the disk is full. Defensive: a non-negative but tiny
+	// value still counts as "low", because qBittorrent's free-space
+	// count lags the actual state of the filesystem and we want a
+	// margin for whatever the operator has to write alongside.
+	if free < 0 {
+		return false, nil
+	}
+	for _, tag := range tags {
+		found, err := c.FindByTag(ctx, tag)
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range found {
+			// qBittorrent's state strings, lowercased on the way through
+			// toStatus. Anything other than the failure-related states
+			// here means the torrent was accepted and is making
+			// progress, so the rejection is on a different request.
+			if entry.State == "error" || entry.State == "stalled" || entry.State == "missingfiles" {
+				if entry.Size > 0 && free < entry.Size {
+					c.log.Warn("qBittorrent rejected a torrent and free disk is below the size",
+						"hash", entry.Hash, "size", entry.Size, "free", free, "state", entry.State)
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }

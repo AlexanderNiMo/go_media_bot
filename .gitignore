@@ -19,6 +19,7 @@ coverage.*
 .idea/
 .vscode/
 .zed/
+__debug_bin*
 
 # Agent settings local to this machine. Shared configuration, if any is ever
 # needed, belongs in .claude/settings.json instead.

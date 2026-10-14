@@ -3,6 +3,8 @@ package qbit
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +43,11 @@ type fakeQBittorrent struct {
 	addResponseJSON bool
 	// loginStatus lets a test simulate a rejected login.
 	loginStatus int
+
+	// freeSpace is the value /sync/maindata reports. Defaults to 0, which
+	// the no-space check interprets as "unknown / not enough", matching the
+	// safety bias of a "delete nothing" rule.
+	freeSpace int64
 }
 
 func newFakeQBittorrent() *fakeQBittorrent {
@@ -65,6 +72,11 @@ func (f *fakeQBittorrent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case r.URL.Path == "/api/v2/app/version":
 		_, _ = w.Write([]byte(f.version))
+
+	case r.URL.Path == "/api/v2/sync/maindata" || r.URL.Path == "/sync/maindata":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"server_state":{"free_space_on_disk":%d}}`, f.freeSpace)))
+		return
 
 	case r.URL.Path == "/api/v2/torrents/info":
 		_ = r.ParseForm()
@@ -170,13 +182,17 @@ func newTestClient(t *testing.T, fake *fakeQBittorrent) *Client {
 }
 
 func torrent(hash, name, state string, progress float64, tags string) map[string]any {
+	return torrentWithSize(hash, name, state, progress, tags, 1000)
+}
+
+func torrentWithSize(hash, name, state string, progress float64, tags string, size int64) map[string]any {
 	return map[string]any{
 		"hash":      hash,
 		"name":      name,
 		"state":     state,
 		"progress":  progress,
 		"tags":      tags,
-		"size":      1000,
+		"size":      size,
 		"dlspeed":   100,
 		"eta":       60,
 		"save_path": "/downloads",
@@ -591,5 +607,100 @@ func TestDownloadedExcludesFailed(t *testing.T) {
 	failed := domain.TorrentStatus{Progress: 1.0, State: "error"}
 	if failed.Downloaded() {
 		t.Error("a torrent at 100% but in an error state must not count as downloaded")
+	}
+}
+
+// TestAddForwardsSavePath — the activity chooses a per-type save path from
+// configuration, and Add must hand it to the client so a download lands in
+// the right directory. An empty SavePath is the no-routing case, which is
+// tested in TestAddOmitsSavePathWhenEmpty.
+func TestAddForwardsSavePath(t *testing.T) {
+	fake := newFakeQBittorrent()
+	fake.addedIDs = []string{"deadbeef"}
+	c := newTestClient(t, fake)
+
+	_, _, err := c.Add(context.Background(), AddSpec{
+		Link:     "magnet:?xt=urn:btih:deadbeef",
+		Tags:     []string{TagFor(1)},
+		SavePath: "/data/ftp/pub/Torrents/films",
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if len(fake.addCalls) != 1 {
+		t.Fatalf("add calls = %d, want 1", len(fake.addCalls))
+	}
+	got := fake.addCalls[0].Get("savepath")
+	if got != "/data/ftp/pub/Torrents/films" {
+		t.Errorf("savepath = %q, want the per-type path", got)
+	}
+}
+
+// TestAddOmitsSavePathWhenEmpty — a deployment that does not configure
+// per-type routing must not have a stray "savepath" field sent to the
+// client, because the client's own default is what the deployment expects.
+func TestAddOmitsSavePathWhenEmpty(t *testing.T) {
+	fake := newFakeQBittorrent()
+	fake.addedIDs = []string{"deadbeef"}
+	c := newTestClient(t, fake)
+
+	_, _, err := c.Add(context.Background(), AddSpec{
+		Link: "magnet:?xt=urn:btih:deadbeef",
+		Tags: []string{TagFor(2)},
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if got := fake.addCalls[0].Get("savepath"); got != "" {
+		t.Errorf("savepath = %q, want it omitted when not configured", got)
+	}
+}
+
+// TestAddDetectsNoSpaceFromFreeSpaceBelowSize is the key contract: when
+// qBittorrent rejects a torrent (failure_count > 0) and the surviving
+// entry is in a failure state, the package must report ErrNoSpace only
+// when free disk is below the torrent's size. A rejection with plenty
+// of room is a different problem and must not be conflated.
+func TestAddDetectsNoSpaceFromFreeSpaceBelowSize(t *testing.T) {
+	fake := newFakeQBittorrent()
+	// qBittorrent rejects the add: 0 successes, 1 failure. The client
+	// still leaves a torrent entry in state=error for the package to find.
+	fake.addResponse = `{"success_count":0,"failure_count":1,"added_torrent_ids":[]}`
+	fake.addResponseJSON = true
+	fake.torrents["abc"] = torrentWithSize("abc", "Матрица", "error", 0, TagFor(1), 5*1024*1024*1024)
+	// Free space below the torrent size.
+	fake.freeSpace = 1 * 1024 * 1024 * 1024
+
+	c := newTestClient(t, fake)
+
+	_, _, err := c.Add(context.Background(), AddSpec{
+		Link: "magnet:?xt=urn:btih:abc",
+		Tags: []string{TagFor(1)},
+	})
+	if !errors.Is(err, ErrNoSpace) {
+		t.Fatalf("err = %v, want ErrNoSpace", err)
+	}
+}
+
+// TestAddDoesNotFlagNoSpaceWhenFreeSpaceIsPlenty covers the inverse: a
+// rejected add with plenty of free disk is some other problem and must
+// not become ErrNoSpace. The path is the most likely place for a false
+// positive to creep in.
+func TestAddDoesNotFlagNoSpaceWhenFreeSpaceIsPlenty(t *testing.T) {
+	fake := newFakeQBittorrent()
+	fake.addResponse = `{"success_count":0,"failure_count":1,"added_torrent_ids":[]}`
+	fake.addResponseJSON = true
+	fake.torrents["abc"] = torrentWithSize("abc", "Матрица", "error", 0, TagFor(1), 5*1024*1024*1024)
+	// Plenty of free space.
+	fake.freeSpace = 100 * 1024 * 1024 * 1024
+
+	c := newTestClient(t, fake)
+
+	_, _, err := c.Add(context.Background(), AddSpec{
+		Link: "magnet:?xt=urn:btih:abc",
+		Tags: []string{TagFor(1)},
+	})
+	if errors.Is(err, ErrNoSpace) {
+		t.Fatalf("err = %v, want a generic rejection, not ErrNoSpace", err)
 	}
 }

@@ -2,22 +2,29 @@
 <h1>Уведомления</h1>
 
 {{if .Items}}
-  <form method="post" action="/notifications/read">
-    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <form method="post" action="{{path $.BasePath "/notifications/read"}}">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="actions">
+      <button type="submit" class="small">Отметить выбранные прочитанными</button>
+      <button type="button" class="small secondary" onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = true)">Выбрать все</button>
+      <button type="button" class="small secondary" onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = false)">Снять выбор</button>
+    </div>
     <table>
-      <thead><tr><th>Когда</th><th>Что</th><th>Текст</th><th></th></tr></thead>
+      <thead><tr><th></th><th colspan="2">Когда</th><th>Что</th><th>Текст</th></tr></thead>
       <tbody>
       {{range .Items}}
         <tr class="{{if .Unread}}unread{{end}}">
+          <td><input type="checkbox" class="notif-check" name="id" value="{{.ID}}"></td>
+          <td class="thumb">
+            {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+          </td>
           <td class="muted mono">{{.When}}</td>
-          <td><a href="/requests/{{.RequestID}}">{{.Title}}</a></td>
+          <td>{{if .RequestID}}<a href="{{path $.BasePath "/requests/"}}{{.RequestID}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
           <td class="muted">{{.Body}}</td>
-          <td><input type="checkbox" name="id" value="{{.ID}}"></td>
         </tr>
       {{end}}
       </tbody>
     </table>
-    <button type="submit">Отметить выбранные прочитанными</button>
   </form>
 {{else}}
   <p class="muted">Ничего нет.</p>

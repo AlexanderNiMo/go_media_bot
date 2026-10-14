@@ -123,7 +123,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 		if !has {
-			http.Redirect(w, r, "/setup", http.StatusSeeOther)
+			s.seeOther(w, r, "/setup")
 			return
 		}
 
@@ -216,7 +216,7 @@ func isUnsafe(method string) bool {
 
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 	if sessionUser(r) != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		s.seeOther(w, r, "/")
 		return
 	}
 
@@ -227,7 +227,7 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !has {
-		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		s.seeOther(w, r, "/setup")
 		return
 	}
 
@@ -277,7 +277,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.clearCookie(w, sessionCookie, r)
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	s.seeOther(w, r, "/login")
 }
 
 // startSession issues the cookie.
@@ -312,7 +312,7 @@ func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {
 	if has {
 		// The wizard closes behind itself. Leaving it reachable would let
 		// anyone who reaches the host create an administrator.
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		s.seeOther(w, r, "/login")
 		return
 	}
 
@@ -335,7 +335,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if has {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		s.seeOther(w, r, "/login")
 		return
 	}
 
@@ -360,14 +360,24 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("created the first account", "user", user.Username)
 	s.flash(w, r, "Аккаунт создан.", "ok")
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	s.seeOther(w, r, "/")
 }
 
 // handleJoinForm is registration by invite code.
+//
+// Without a ?code=… query string the form asks for one. With it, the
+// code is validated and the registration form is shown, or an error
+// is rendered with a link back to the entry form.
 func (s *Server) handleJoinForm(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	if code == "" {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		// Entry form: ask the visitor for the code first, so the link
+		// from the login page does not silently throw them away.
+		s.render(w, r, "join", struct {
+			page
+			Code        string
+			InviteError string
+		}{s.basePage(w, r, "join"), "", ""})
 		return
 	}
 
@@ -375,14 +385,19 @@ func (s *Server) handleJoinForm(w http.ResponseWriter, r *http.Request) {
 	// rather than after somebody has typed a password twice.
 	inv, err := s.store.GetInvite(r.Context(), code)
 	if err != nil || inv.Usable(nowFunc()) != nil {
-		s.renderError(w, r, "login", inviteProblem(err, inv))
+		s.render(w, r, "join", struct {
+			page
+			Code        string
+			InviteError string
+		}{s.basePage(w, r, "join"), code, inviteProblem(err, inv)})
 		return
 	}
 
 	s.render(w, r, "join", struct {
 		page
-		Code string
-	}{s.basePage(w, r, "join"), code})
+		Code        string
+		InviteError string
+	}{s.basePage(w, r, "join"), code, ""})
 }
 
 func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
@@ -413,7 +428,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("account created from an invite", "user", user.Username)
 	s.flash(w, r, "Аккаунт создан.", "ok")
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	s.seeOther(w, r, "/")
 }
 
 // accountProblem explains a failure to create an account.
@@ -487,10 +502,11 @@ func credentialProblem(username, password string) string {
 // show it or leaving it to reappear on the next navigation.
 func (s *Server) basePage(w http.ResponseWriter, r *http.Request, nav string) page {
 	p := page{
-		User:    sessionUser(r),
-		Nav:     nav,
-		Version: s.version,
-		CSRF:    csrfToken(r),
+		User:     sessionUser(r),
+		Nav:      nav,
+		Version:  s.version,
+		CSRF:     csrfToken(r),
+		BasePath: s.cfg.Server.BasePath,
 	}
 
 	if p.User != nil {

@@ -6,7 +6,7 @@
   приглашения остальным.
 </p>
 
-<form method="post" action="/setup" class="stack narrow">
+<form method="post" action="{{path .BasePath "/setup"}}" class="stack narrow">
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
   <label>Имя
     <input type="text" name="username" autocomplete="username" autofocus required minlength="3">

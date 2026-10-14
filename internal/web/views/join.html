@@ -1,15 +1,32 @@
 {{define "content"}}
 <h1>Регистрация по приглашению</h1>
 
-<form method="post" action="/join" class="stack narrow">
-  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-  <input type="hidden" name="code" value="{{.Code}}">
-  <label>Имя
-    <input type="text" name="username" autocomplete="username" autofocus required minlength="3">
-  </label>
-  <label>Пароль
-    <input type="password" name="password" autocomplete="new-password" required minlength="10">
-  </label>
-  <button type="submit">Создать аккаунт</button>
-</form>
+{{if .Code}}
+  {{if .InviteError}}
+    <p class="flash bad">{{.InviteError}}</p>
+    <p><a href="{{path .BasePath "/join"}}">← ввести другой код</a></p>
+  {{else}}
+    <p class="muted">Код действителен. Завершите регистрацию.</p>
+    <form method="post" action="{{path .BasePath "/join"}}" class="stack narrow">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="code" value="{{.Code}}">
+      <label>Имя
+        <input type="text" name="username" autocomplete="username" autofocus required minlength="3" maxlength="64">
+      </label>
+      <label>Пароль
+        <input type="password" name="password" autocomplete="new-password" required minlength="10">
+      </label>
+      <button type="submit">Создать аккаунт</button>
+    </form>
+  {{end}}
+{{else}}
+  <p class="muted">Введите код, который выдал администратор.</p>
+  <form method="get" action="{{path .BasePath "/join"}}" class="stack narrow">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Код приглашения
+      <input type="text" name="code" autofocus autocomplete="off" required>
+    </label>
+    <button type="submit">Продолжить</button>
+  </form>
+{{end}}
 {{end}}

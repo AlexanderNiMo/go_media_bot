@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Все запросы</h1>
 
-<form method="get" action="/requests" class="filters">
+<form method="get" action="{{path .BasePath "/requests"}}" class="filters">
   <label>Состояние
     <select name="state" onchange="this.form.submit()">
       <option value="" {{if not .State}}selected{{end}}>активные</option>
@@ -23,7 +23,7 @@
     {{range .Requests}}
       <tr>
         <td class="muted">{{.ID}}</td>
-        <td><a href="/requests/{{.ID}}">{{.Title}}</a></td>
+        <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
         <td><span class="state {{.State}}">{{.State}}</span></td>
         <td class="muted">{{.When}}</td>
         <td class="muted">{{.Watchers}}</td>

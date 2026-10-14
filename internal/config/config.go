@@ -54,6 +54,12 @@ type Log struct {
 type Server struct {
 	Listen  string `koanf:"listen"   yaml:"listen"`
 	BaseURL string `koanf:"base_url" yaml:"base_url"`
+	// BasePath is the URL prefix the web interface is mounted under. Empty
+	// means the interface is at the host root; "/mediad" means it is reachable
+	// at "https://example.com/mediad/...". Templates and redirects prepend it
+	// to every internal link, so the same binary serves a single-tenant
+	// deployment and one running behind a shared reverse proxy.
+	BasePath string `koanf:"base_path" yaml:"base_path"`
 }
 
 // Postgres holds the application database connection settings.
@@ -116,6 +122,12 @@ type QBittorrent struct {
 
 	Category     string        `koanf:"category"      yaml:"category"`
 	PollInterval time.Duration `koanf:"poll_interval" yaml:"poll_interval"`
+
+	// SavePathMovies and SavePathSeries are the per-type download locations.
+	// Either may be empty, in which case qBittorrent's own default takes over
+	// for that media type — the two fields are independent, not coupled.
+	SavePathMovies string `koanf:"save_path_movies" yaml:"save_path_movies"`
+	SavePathSeries string `koanf:"save_path_series" yaml:"save_path_series"`
 }
 
 // Telegram is the chat front end.
@@ -159,14 +171,20 @@ type Download struct {
 
 // Quality is the release acceptance policy.
 type Quality struct {
-	MinResolution       int      `koanf:"min_resolution"       yaml:"min_resolution"`
+	MinResolution       int      `koanf:"min_resolution"        yaml:"min_resolution"`
 	PreferredResolution int      `koanf:"preferred_resolution" yaml:"preferred_resolution"`
-	MinSeeders          int      `koanf:"min_seeders"          yaml:"min_seeders"`
-	MinSizeGB           float64  `koanf:"min_size_gb"          yaml:"min_size_gb"`
-	MaxSizeGB           float64  `koanf:"max_size_gb"          yaml:"max_size_gb"`
-	ExcludedSources     []string `koanf:"excluded_sources"     yaml:"excluded_sources"`
-	RequireRussianAudio bool     `koanf:"russian_audio"        yaml:"russian_audio"`
-	RussianMarkers      []string `koanf:"russian_markers"      yaml:"russian_markers"`
+	MinSeeders          int      `koanf:"min_seeders"           yaml:"min_seeders"`
+	MinSizeGB           float64  `koanf:"min_size_gb"           yaml:"min_size_gb"`
+	MaxSizeGB           float64  `koanf:"max_size_gb"           yaml:"max_size_gb"`
+	// Per-type caps. A 50 GB film is almost always a remux of a theatrical
+	// master, and a 50 GB single episode is not a real release, so the
+	// general MaxSizeGB above is a backstop rather than the day-to-day
+	// limit. Zero disables the per-type check and falls back to MaxSizeGB.
+	MaxSizeGBMovies     float64  `koanf:"max_size_gb_movies"    yaml:"max_size_gb_movies"`
+	MaxSizeGBSeries     float64  `koanf:"max_size_gb_series"    yaml:"max_size_gb_series"`
+	ExcludedSources     []string `koanf:"excluded_sources"      yaml:"excluded_sources"`
+	RequireRussianAudio bool     `koanf:"russian_audio"         yaml:"russian_audio"`
+	RussianMarkers      []string `koanf:"russian_markers"       yaml:"russian_markers"`
 }
 
 // Flags carries values that come from cobra rather than from the file, since
@@ -232,11 +250,32 @@ func Load(flags Flags) (*Config, error) {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
 
+	// Normalise the URL prefix. Trailing slashes and a bare "/" must not
+	// survive into the request path, and an empty string is a valid answer —
+	// the interface is at the host root in that case.
+	cfg.Server.BasePath = normaliseBasePath(cfg.Server.BasePath)
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+// normaliseBasePath returns the path in a form templates and the router can
+// use directly. "" stays "" (the interface is at the host root); "/foo/"
+// becomes "/foo"; "/foo" is left alone; a leading slash is added if it was
+// missing.
+func normaliseBasePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || p == "/" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	p = strings.TrimRight(p, "/")
+	return p
 }
 
 // defaults returns a fully populated Config. Unmarshalling over it means a
@@ -315,6 +354,8 @@ func defaults() Config {
 			MinSeeders:          3,
 			MinSizeGB:           1.5,
 			MaxSizeGB:           60,
+			MaxSizeGBMovies:     25,
+			MaxSizeGBSeries:     50,
 			ExcludedSources:     []string{"CAM", "TS", "TELESYNC", "HDTS", "DVDSCR"},
 			RequireRussianAudio: true,
 		},

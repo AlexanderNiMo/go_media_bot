@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/alex/mediad/internal/config"
 	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/indexer"
 	"github.com/alex/mediad/internal/plex"
@@ -29,6 +30,7 @@ type Activities struct {
 	indexer indexer.Indexer
 	qbit    *qbit.Client
 	profile release.Profile
+	cfg     *config.Config
 	log     *slog.Logger
 }
 
@@ -39,6 +41,7 @@ func NewActivities(
 	idx indexer.Indexer,
 	torrents *qbit.Client,
 	profile release.Profile,
+	cfg *config.Config,
 	log *slog.Logger,
 ) *Activities {
 	return &Activities{
@@ -47,6 +50,7 @@ func NewActivities(
 		indexer: idx,
 		qbit:    torrents,
 		profile: profile,
+		cfg:     cfg,
 		log:     log.With("component", "activities"),
 	}
 }
@@ -305,15 +309,53 @@ func (a *Activities) AddTorrent(ctx context.Context, in AddTorrentInput) (AddTor
 			"ReleaseNotDownloadable", nil)
 	}
 
+	savePath := ""
+	switch in.Spec.Ref.Type {
+	case domain.MediaTypeMovie:
+		savePath = a.cfg.QBittorrent.SavePathMovies
+	case domain.MediaTypeTV:
+		savePath = a.cfg.QBittorrent.SavePathSeries
+	}
+	if savePath != "" {
+		a.log.Info("using a per-type save path",
+			"request", in.RequestID, "type", in.Spec.Ref.Type, "save_path", savePath)
+	}
+
 	hash, already, err := a.qbit.Add(ctx, qbit.AddSpec{
 		Link:     link,
 		Category: "mediad",
 		Tags:     []string{tag},
 		// Started immediately rather than paused: there is nothing to review
 		// between the decision to download and the download.
-		Paused: false,
+		Paused:   false,
+		SavePath: savePath,
 	})
 	if err != nil {
+		// A no-space failure is the one case where deleting the torrent
+		// would make the problem worse, not better: the request has
+		// nothing else to download, and the operator has to free disk
+		// space before anything can move. Surface the alert and let the
+		// workflow mark the request failed without blacklisting the
+		// release.
+		if errors.Is(err, qbit.ErrNoSpace) {
+			a.log.Error("qBittorrent rejected the torrent: out of disk space",
+				"request", in.RequestID, "release", in.Release.Title, "error", err)
+			title := "qBittorrent: out of disk space"
+			body := fmt.Sprintf("request %d (%s) could not be added because qBittorrent reports no disk space",
+				in.RequestID, in.Release.Title)
+			if alertErr := a.store.CreateAdminAlert(ctx,
+				storage.NotificationFailed, title, body); alertErr != nil {
+				// Logged and moved on. The user-facing failure is the
+				// "request failed" outcome below; double-logging the alert
+				// failure would just add noise to the operator's signal.
+				a.log.Warn("could not raise an admin alert for no-space",
+					"request", in.RequestID, "error", alertErr)
+			}
+			// Non-retryable so the workflow goes straight to failed,
+			// not back into the search loop.
+			return AddTorrentResult{}, temporal.NewNonRetryableApplicationError(
+				"qBittorrent is out of disk space", "NoDiskSpace", err)
+		}
 		return AddTorrentResult{}, fmt.Errorf("add torrent to the client: %w", err)
 	}
 
@@ -522,4 +564,21 @@ func isRateLimited(err error) bool {
 		return idxErr.RateLimited() || idxErr.Unauthorized()
 	}
 	return false
+}
+
+// PopManualLink returns a user-submitted link, if any, and clears the
+// field atomically. Called at the start of each search cycle so the
+// workflow picks up a magnet the operator pasted in the web UI without
+// having to retry the whole request.
+func (a *Activities) PopManualLink(ctx context.Context, requestID int64) (string, error) {
+	link, err := a.store.PopSelectedLink(ctx, requestID)
+	if err != nil {
+		return "", fmt.Errorf("pop manual link: %w", err)
+	}
+	if link == "" {
+		a.log.Debug("no manual link on this tick", "request", requestID)
+	} else {
+		a.log.Info("picked up a manual link", "request", requestID)
+	}
+	return link, nil
 }

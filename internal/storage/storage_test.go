@@ -687,6 +687,14 @@ func TestListRequestsFilters(t *testing.T) {
 	}
 	for i, state := range states {
 		mediaID := insertMedia(t, pool, "movie", int64(1000+i), nil, "Title")
+		// Stamps a poster on every media row so the request_view reads it
+		// back into the projection's PosterPath. The fixture value is a
+		// path-shaped string; nothing here renders it.
+		if _, err := pool.Exec(ctx,
+			`UPDATE media SET poster_path = $1 WHERE id = $2`,
+			"/abc"+strconv.Itoa(1000+i)+".jpg", mediaID); err != nil {
+			t.Fatalf("poster: %v", err)
+		}
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO requests (media_id, workflow_id, state, search_deadline)
 			 VALUES ($1, $2, $3, now() + interval '2 years')`,
@@ -706,6 +714,25 @@ func TestListRequestsFilters(t *testing.T) {
 		for _, r := range got {
 			if !r.State.Active() {
 				t.Errorf("a %q request came back from the active filter", r.State)
+			}
+		}
+	})
+
+	t.Run("poster on every request", func(t *testing.T) {
+		got, err := store.ListRequests(ctx, RequestFilter{})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		if len(got) != len(states) {
+			t.Fatalf("got %d requests, want %d", len(got), len(states))
+		}
+		// Every request came back with the poster its media was stamped
+		// with. The exact format is "/abc<TMDBID>.jpg", so the test is
+		// independent of how the projection orders its joins.
+		for _, r := range got {
+			if !strings.HasPrefix(r.PosterPath, "/abc") || !strings.HasSuffix(r.PosterPath, ".jpg") {
+				t.Errorf("request %d (media_id=%d, tmdb_id=%d) poster = %q, want /abc<TMDBID>.jpg",
+					r.ID, r.MediaID, r.Media.Ref.TMDBID, r.PosterPath)
 			}
 		}
 	})
@@ -971,5 +998,113 @@ func TestNotificationsSkipWatchersWhoOptedOut(t *testing.T) {
 	}
 	if created[0].UserID != normal {
 		t.Errorf("the notification went to user %d, want %d", created[0].UserID, normal)
+	}
+}
+
+// TestListTelegramIdentitiesReturnsTheUsersChats is the round-trip the
+// settings page reads to render the linked list. A user with no chat returns
+// nil; a user with one returns it; the chat belongs to the user it claims
+// to.
+func TestListTelegramIdentitiesReturnsTheUsersChats(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	uid := insertUser(t, pool, "alex")
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO user_identities (user_id, provider, external_id)
+		VALUES ($1, 'telegram', '111'), ($1, 'telegram', '222')`, uid); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
+	ids, err := store.ListTelegramIdentities(ctx, uid)
+	if err != nil {
+		t.Fatalf("ListTelegramIdentities: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d identities, want 2", len(ids))
+	}
+	if ids[0].ExternalID != "111" || ids[1].ExternalID != "222" {
+		t.Errorf("ids = [%s %s], want [111 222]", ids[0].ExternalID, ids[1].ExternalID)
+	}
+}
+
+// TestUnlinkTelegramRemovesOnlyTheMatchingChat is the safety net: a
+// cross-account delete would be a serious bug, so the WHERE clause is
+// user_id + external_id, and a request for somebody else's chat returns
+// "not found" without changing anything.
+func TestUnlinkTelegramRemovesOnlyTheMatchingChat(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	alex := insertUser(t, pool, "alex")
+	bob := insertUser(t, pool, "bob")
+	for _, u := range []struct {
+		uid int64
+		chat string
+	}{{alex, "alex-1"}, {bob, "bob-1"}} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO user_identities (user_id, provider, external_id)
+			VALUES ($1, 'telegram', $2)`, u.uid, u.chat); err != nil {
+			t.Fatalf("link: %v", err)
+		}
+	}
+
+	removed, err := store.UnlinkTelegram(ctx, alex, "bob-1")
+	if err != nil {
+		t.Fatalf("UnlinkTelegram: %v", err)
+	}
+	if removed {
+		t.Error("alex was allowed to remove bob's chat")
+	}
+
+	// The reverse: alex unlinking his own chat works, bob's stays.
+	removed, err = store.UnlinkTelegram(ctx, alex, "alex-1")
+	if err != nil || !removed {
+		t.Fatalf("UnlinkTelegram own chat: removed=%v err=%v", removed, err)
+	}
+
+	var remaining int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_identities WHERE user_id = $1`, bob).
+		Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 1 {
+		t.Errorf("bob's chats remaining = %d, want 1", remaining)
+	}
+}
+
+// TestTelegramNotifyMaskRoundTrip — the default is 15 (all bits), the
+// setter clamps out-of-range, and a freshly read row returns what was
+// written.
+func TestTelegramNotifyMaskRoundTrip(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+	uid := insertUser(t, pool, "alex")
+
+	got, err := store.GetTelegramNotifyMask(ctx, uid)
+	if err != nil {
+		t.Fatalf("GetTelegramNotifyMask: %v", err)
+	}
+	if got != 15 {
+		t.Errorf("default mask = %d, want 15", got)
+	}
+
+	if err := store.SetTelegramNotifyMask(ctx, uid, 5); err != nil {
+		t.Fatalf("SetTelegramNotifyMask: %v", err)
+	}
+	got, err = store.GetTelegramNotifyMask(ctx, uid)
+	if err != nil {
+		t.Fatalf("GetTelegramNotifyMask: %v", err)
+	}
+	if got != 5 {
+		t.Errorf("after write, mask = %d, want 5", got)
+	}
+
+	if err := store.SetTelegramNotifyMask(ctx, uid, 16); err == nil {
+		t.Error("SetTelegramNotifyMask accepted 16, want an out-of-range error")
+	}
+	if err := store.SetTelegramNotifyMask(ctx, uid, -1); err == nil {
+		t.Error("SetTelegramNotifyMask accepted -1, want an out-of-range error")
 	}
 }

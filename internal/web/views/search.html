@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Поиск</h1>
 
-<form method="get" action="/search" class="search">
+<form method="get" action="{{path .BasePath "/search"}}" role="search">
   <input type="search" name="q" value="{{.Query}}" placeholder="Название фильма или сериала"
          autofocus autocomplete="off">
   <button type="submit">Найти</button>
@@ -12,13 +12,14 @@
     <p class="muted">Совпадений: {{len .Results}}</p>
     <div class="cards">
     {{range .Results}}
-      <a class="card" href="/add/{{.Type}}/{{.TMDBID}}">
-        {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{else}}<span class="noposter"></span>{{end}}
+      <a class="card" href="{{path $.BasePath "/add/"}}{{.Type}}/{{.TMDBID}}">
+        <div class="poster">
+          {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{else}}<span class="noposter">постер недоступен</span>{{end}}
+          {{if .Year}}<span class="year">{{.Year}}</span>{{end}}
+          <span class="type">{{.Kind}}</span>
+        </div>
         <span class="card-title">{{.Title}}</span>
-        <span class="card-meta">
-          {{if .Year}}{{.Year}} · {{end}}{{.Kind}}
-          {{if .Original}}<br><span class="muted">{{.Original}}</span>{{end}}
-        </span>
+        {{if .Original}}<span class="card-meta muted">{{.Original}}</span>{{end}}
       </a>
     {{end}}
     </div>

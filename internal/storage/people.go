@@ -228,6 +228,31 @@ type Notification struct {
 	CreatedAt  time.Time
 }
 
+// CreateAdminAlert writes one notification to every user with is_admin=true.
+//
+// Aimed at operational events that are not tied to a request: "the disk is
+// full", "a tracker banned us", that kind of thing. The kind is
+// NotificationFailed so the existing notify-mask filter does not silence
+// it — an operator wants every disk-full alarm to land, not just the ones
+// that match their preferences.
+//
+// requestID is 0 when the alert is not attached to a request. The
+// notifications table allows NULL, and the bot handles 0 as "no link".
+func (s *Store) CreateAdminAlert(ctx context.Context, kind NotificationKind, title, body string) error {
+	payload := map[string]any{}
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		const q = `
+			INSERT INTO notifications (user_id, request_id, kind, title, body, payload)
+			SELECT id, NULL, $1, $2, $3, $4 FROM users WHERE is_admin = TRUE`
+		_, err := tx.Exec(ctx, q, kind, title, nullString(body), payload)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("admin alert: %w", err)
+	}
+	return nil
+}
+
 // MarkTelegramDelivered records that the Telegram copy went out.
 //
 // A failure here is not worth failing the notification over: the row exists,
@@ -612,4 +637,86 @@ func (s *Store) UserByTelegram(ctx context.Context, telegramID string) (*User, e
 		return nil, fmt.Errorf("find the user behind a chat: %w", err)
 	}
 	return &u, nil
+}
+
+// TelegramIdentity is one Telegram chat bound to a user.
+type TelegramIdentity struct {
+	ExternalID string
+	CreatedAt  time.Time
+}
+
+// ListTelegramIdentities returns every Telegram chat attached to a user.
+func (s *Store) ListTelegramIdentities(ctx context.Context, userID int64) ([]TelegramIdentity, error) {
+	const q = `
+		SELECT external_id, created_at
+		  FROM user_identities
+		 WHERE user_id = $1 AND provider = 'telegram'
+		 ORDER BY created_at`
+	rows, err := s.pool.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list telegram identities: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TelegramIdentity
+	for rows.Next() {
+		var id TelegramIdentity
+		if err := rows.Scan(&id.ExternalID, &id.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// UnlinkTelegram detaches a chat from a user.
+//
+// The chat id is the WHERE clause so a request that names a chat belonging
+// to somebody else is a no-op, not a cross-account delete. Empty chat id
+// is rejected because "remove whatever" is a footgun.
+func (s *Store) UnlinkTelegram(ctx context.Context, userID int64, telegramID string) (bool, error) {
+	telegramID = strings.TrimSpace(telegramID)
+	if telegramID == "" {
+		return false, errors.New("a telegram id is required")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM user_identities
+		  WHERE user_id = $1 AND provider = 'telegram' AND external_id = $2`,
+		userID, telegramID)
+	if err != nil {
+		return false, fmt.Errorf("unlink telegram: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// GetTelegramNotifyMask returns the user's current Telegram notification mask.
+//
+// A user with no entry (a freshly-migrated row that the default did not catch)
+// reads as 15, which is the documented default and the right answer either
+// way.
+func (s *Store) GetTelegramNotifyMask(ctx context.Context, userID int64) (int, error) {
+	var mask int
+	err := s.pool.QueryRow(ctx,
+		`SELECT telegram_notify_mask FROM users WHERE id = $1`, userID).Scan(&mask)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read telegram notify mask: %w", err)
+	}
+	return mask, nil
+}
+
+// SetTelegramNotifyMask records a new Telegram notification mask.
+func (s *Store) SetTelegramNotifyMask(ctx context.Context, userID int64, mask int) error {
+	if mask < 0 || mask > 15 {
+		return fmt.Errorf("notify mask out of range: %d", mask)
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users SET telegram_notify_mask = $2 WHERE id = $1`,
+		userID, mask)
+	if err != nil {
+		return fmt.Errorf("set telegram notify mask: %w", err)
+	}
+	return nil
 }

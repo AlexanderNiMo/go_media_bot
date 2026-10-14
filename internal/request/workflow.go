@@ -3,6 +3,7 @@ package request
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -162,6 +163,28 @@ const (
 func searchOnce(ctx workflow.Context, in *Input, state *State) (searchOutcome, error) {
 	actCtx := withOptions(ctx, indexerOptions())
 
+	// A user-submitted magnet bypasses the indexer. The link is consumed
+	// here, the workflow falls through to the add path with a synthetic
+	// Release that has no infohash (qBittorrent fills it in).
+	var link string
+	if err := workflow.ExecuteActivity(actCtx, (*Activities).PopManualLink, in.RequestID).
+		Get(actCtx, &link); err != nil {
+		return searchContinue, fmt.Errorf("pop manual link: %w", err)
+	}
+	if link != "" {
+		// Build a Release with the bare minimum the AddTorrent path
+		// needs: a Link and a Title for the audit trail. Other fields
+		// are zero — the score-based selection has nothing to choose
+		// from, and the scoring/identity helpers are only used by the
+		// selector, which is bypassed here.
+		state.Selected = manualReleaseFromLink(link, in.Spec.DisplayTitle())
+		state.Phase = storage.StateAdding
+		if err := saveState(ctx, in, state, "release.manual", "user-submitted link"); err != nil {
+			return searchContinue, err
+		}
+		return searchFound, nil
+	}
+
 	var res SearchResult
 	err := workflow.ExecuteActivity(actCtx, (*Activities).SearchReleases, SearchInput{
 		RequestID: in.RequestID,
@@ -253,11 +276,23 @@ func downloadCycle(ctx workflow.Context, in *Input, state *State) (*Result, erro
 	var added AddTorrentResult
 	err := workflow.ExecuteActivity(actCtx, (*Activities).AddTorrent, AddTorrentInput{
 		RequestID: in.RequestID,
+		Spec:      in.Spec,
 		Release:   *state.Selected,
 	}).Get(actCtx, &added)
 	if err != nil {
 		if cancellationIsDue(ctx, err) {
 			return cancelRequest(ctx, in, state)
+		}
+		// A disk-full error is terminal, not transient. Retrying would
+		// either fail the same way or, worse, succeed and add a torrent
+		// that nothing can read. Surface it as a request failure with
+		// the operator's alert already in their inbox; do not blacklist
+		// the release (the release is fine) and do not back off (the
+		// backoff just hides the problem).
+		if isNoDiskSpaceError(err) {
+			result, ferr := failedResult(ctx, in, state,
+				"qBittorrent is out of disk space; the operator has been notified")
+			return result, ferr
 		}
 		if saveErr := handleAddFailure(ctx, in, state, err); saveErr != nil {
 			return nil, saveErr
@@ -448,6 +483,10 @@ func completeDownload(ctx workflow.Context, in *Input, state *State, contentPath
 		Outcome:   storage.StateCompleted,
 		Title:     in.Spec.DisplayTitle(),
 		Year:      in.Spec.Year,
+		// Surface what landed, not just that something did. The body goes
+		// to the notification row, where "downloaded" alone is the kind
+		// of message a user files and forgets.
+		Reason:    describeRelease(*state.Selected),
 		Attempts:  state.Attempt,
 		Selected:  state.Selected,
 	}
@@ -1117,5 +1156,40 @@ func notifyOptions() workflow.ActivityOptions {
 			// notification is a far smaller problem than a missing one.
 			MaximumAttempts: 0,
 		},
+	}
+}
+
+// isNoDiskSpaceError reports whether the error from AddTorrent was the
+// "out of disk space" sentinel raised by the qBittorrent client.
+//
+// The check is on the application-error type rather than the wrapped
+// error: the activity wraps qbit.ErrNoSpace into a temporal.ApplicationError
+// with type "NoDiskSpace", and a workflow that branches on the cause has
+// to look at that type rather than at the message — strings change, type
+// names do not.
+func isNoDiskSpaceError(err error) bool {
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) {
+		return false
+	}
+	return appErr.Type() == "NoDiskSpace"
+}
+
+// manualReleaseFromLink builds a synthetic Release around a user-submitted
+// link so the existing AddTorrent path can take over without the scoring
+// step. A magnet goes into MagnetURI, anything else into DownloadURL;
+// AddTorrent calls Release.Link() to pick the right field.
+func manualReleaseFromLink(link, title string) *domain.Release {
+	if strings.HasPrefix(link, "magnet:") {
+		return &domain.Release{
+			Title:     title,
+			Indexer:   "manual",
+			MagnetURI: link,
+		}
+	}
+	return &domain.Release{
+		Title:       title,
+		Indexer:     "manual",
+		DownloadURL: link,
 	}
 }

@@ -18,6 +18,13 @@ type Profile struct {
 	MinSizeGB  float64
 	MaxSizeGB  float64
 
+	// Per-type size caps. A 50 GB film is almost always a remux of a
+	// theatrical master, and a 50 GB single episode is not a real
+	// release. Zero means "use the general MaxSizeGB above", which
+	// keeps old configurations behaving as before.
+	MaxSizeGBMovies float64
+	MaxSizeGBSeries float64
+
 	ExcludedSources []Source
 
 	RequireRussianAudio bool
@@ -318,6 +325,12 @@ func ProfileFromConfig(cfg *config.Config) Profile {
 	}
 	if q.MinSizeGB > 0 {
 		p.MinSizeGB = q.MinSizeGB
+	}
+	if q.MaxSizeGBMovies > 0 {
+		p.MaxSizeGBMovies = q.MaxSizeGBMovies
+	}
+	if q.MaxSizeGBSeries > 0 {
+		p.MaxSizeGBSeries = q.MaxSizeGBSeries
 	}
 	if q.MaxSizeGB > 0 {
 		p.MaxSizeGB = q.MaxSizeGB

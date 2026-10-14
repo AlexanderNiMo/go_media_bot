@@ -1,64 +1,151 @@
 {{define "content"}}
 <h1>Настройки</h1>
 
-<h2>Аккаунт</h2>
-<dl class="facts">
-  <dt>Имя</dt><dd>{{.User.Username}}</dd>
-  <dt>Права</dt><dd>{{if .User.IsAdmin}}администратор{{else}}пользователь{{end}}</dd>
-</dl>
+<nav class="tabs" aria-label="Разделы настроек">
+  <a href="{{path $.BasePath "/settings?tab=account"}}" {{if eq $.Tab "account"}}class="on"{{end}}>Аккаунт</a>
+  <a href="{{path $.BasePath "/settings?tab=telegram"}}" {{if eq $.Tab "telegram"}}class="on"{{end}}>Telegram</a>
+  <a href="{{path $.BasePath "/settings?tab=notifications"}}" {{if eq $.Tab "notifications"}}class="on"{{end}}>Уведомления</a>
+  {{if .User.IsAdmin}}
+    <a href="{{path $.BasePath "/settings?tab=invites"}}" {{if eq $.Tab "invites"}}class="on"{{end}}>Приглашения</a>
+    <a href="{{path $.BasePath "/settings?tab=users"}}" {{if eq $.Tab "users"}}class="on"{{end}}>Пользователи</a>
+  {{end}}
+</nav>
 
-<h3>Сменить пароль</h3>
-<form method="post" action="/settings/password" class="stack">
-  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-  <label>Текущий пароль
-    <input type="password" name="current" autocomplete="current-password" required>
-  </label>
-  <label>Новый пароль
-    <input type="password" name="password" autocomplete="new-password" required minlength="10">
-  </label>
-  <button type="submit">Сменить</button>
-</form>
-<p class="muted">Смена пароля завершает все сессии, включая эту.</p>
+<article class="tabpanel {{if eq .Tab "account"}}on{{end}}">
+  <h2>Аккаунт</h2>
+  <dl class="facts">
+    <dt>Имя</dt><dd>{{.User.Username}}</dd>
+    <dt>Права</dt><dd>{{if .User.IsAdmin}}администратор{{else}}пользователь{{end}}</dd>
+  </dl>
 
-{{if .User.IsAdmin}}
-  <h2>Приглашения</h2>
-  <p class="muted">
-    Регистрация закрыта: аккаунт можно создать только по коду. Код действует
-    {{.InviteTTL}}.
-  </p>
-
-  <form method="post" action="/settings/invites">
-    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-    <button type="submit">Выдать код</button>
+  <h3>Сменить пароль</h3>
+  <form method="post" action="{{path $.BasePath "/settings/password"}}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Текущий пароль
+      <input type="password" name="current" autocomplete="current-password" required>
+    </label>
+    <label>Новый пароль
+      <input type="password" name="password" autocomplete="new-password" required minlength="10">
+    </label>
+    <button type="submit">Сменить</button>
   </form>
+  <p class="muted">Смена пароля завершает все сессии, включая эту.</p>
+</article>
 
-  {{if .Invites}}
+<article class="tabpanel {{if eq .Tab "telegram"}}on{{end}}">
+  <h2>Telegram</h2>
+
+  {{if .Telegram}}
+    <p>Привязанные чаты:</p>
     <table>
-      <thead><tr><th>Код</th><th>Создан</th><th>Действует до</th><th>Состояние</th></tr></thead>
+      <thead><tr><th>ID чата</th><th>Привязан</th><th></th></tr></thead>
       <tbody>
-      {{range .Invites}}
+      {{range .Telegram}}
         <tr>
-          <td class="mono">{{.Code}}</td>
-          <td class="muted mono">{{.CreatedAt}}</td>
-          <td class="muted mono">{{.ExpiresAt}}</td>
-          <td>{{.State}}</td>
+          <td class="mono">{{.ID}}</td>
+          <td class="muted">{{.CreatedAt}}</td>
+          <td>
+            <form method="post" action="{{path $.BasePath "/settings/telegram"}}">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="unlink">
+              <input type="hidden" name="telegram_id" value="{{.ID}}">
+              <button type="submit" class="link warn">отвязать</button>
+            </form>
+          </td>
         </tr>
       {{end}}
       </tbody>
     </table>
+  {{else}}
+    <p class="muted">
+      Telegram не привязан. Уведомления о загрузках приходят только в веб-интерфейс.
+    </p>
   {{end}}
 
-  <h2>Пользователи</h2>
-  <table>
-    <thead><tr><th>Имя</th><th>Права</th></tr></thead>
-    <tbody>
-    {{range .Users}}
-      <tr>
-        <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">без имени</span>{{end}}</td>
-        <td>{{if .IsAdmin}}администратор{{else}}пользователь{{end}}</td>
-      </tr>
+  <form method="post" action="{{path $.BasePath "/settings/telegram"}}">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <input type="hidden" name="action" value="link">
+    <button type="submit">Привязать Telegram</button>
+  </form>
+  <p class="muted">
+    После нажатия будет выдан код; в Telegram откройте бот и отправьте
+    <code>/link &lt;код&gt;</code>. Код живёт {{.InviteTTL}} и тратится с первого применения.
+  </p>
+</article>
+
+<article class="tabpanel {{if eq .Tab "notifications"}}on{{end}}">
+  <h2>Уведомления</h2>
+  <p class="muted">Какие уведомления отправлять в Telegram.</p>
+  <form method="post" action="{{path $.BasePath "/settings/notifications"}}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="checkrows">
+    {{range .NotifyOptions}}
+      <label>
+        <input type="checkbox" name="{{.Name}}" value="1" {{if .Checked}}checked{{end}}>
+        <span>{{.Label}}</span>
+      </label>
     {{end}}
-    </tbody>
-  </table>
+    </div>
+    <button type="submit" class="small">Сохранить</button>
+  </form>
+</article>
+
+{{if .User.IsAdmin}}
+  <article class="tabpanel {{if eq .Tab "invites"}}on{{end}}">
+    <h2>Приглашения</h2>
+    <p class="muted">
+      Регистрация закрыта: аккаунт можно создать только по коду. Код действует
+      {{.InviteTTL}}.
+    </p>
+
+    {{if .NewInviteURL}}
+      <div class="invite">
+        <p><strong>Готовая ссылка для приглашённого:</strong></p>
+        <p class="invite-row">
+          <input type="text" readonly value="{{.NewInviteURL}}" id="new-invite-link"
+                 onclick="this.select()">
+          <button type="button" class="small"
+                  onclick="navigator.clipboard.writeText(document.getElementById('new-invite-link').value)">Копировать</button>
+        </p>
+        <p class="muted">Код: <span class="mono">{{.NewInvite}}</span>. Действует {{.InviteTTL}}, тратится с первого применения.</p>
+      </div>
+    {{end}}
+
+    <form method="post" action="{{path $.BasePath "/settings/invites"}}">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <button type="submit" class="small">Выдать ещё код</button>
+    </form>
+
+    {{if .Invites}}
+      <table>
+        <thead><tr><th>Код</th><th>Создан</th><th>Действует до</th><th>Состояние</th></tr></thead>
+        <tbody>
+        {{range .Invites}}
+          <tr>
+            <td class="mono">{{.Code}}</td>
+            <td class="muted mono">{{.CreatedAt}}</td>
+            <td class="muted mono">{{.ExpiresAt}}</td>
+            <td>{{.State}}</td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    {{end}}
+  </article>
+
+  <article class="tabpanel {{if eq .Tab "users"}}on{{end}}">
+    <h2>Пользователи</h2>
+    <table>
+      <thead><tr><th>Имя</th><th>Права</th></tr></thead>
+      <tbody>
+      {{range .Users}}
+        <tr>
+          <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">без имени</span>{{end}}</td>
+          <td>{{if .IsAdmin}}администратор{{else}}пользователь{{end}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </article>
 {{end}}
 {{end}}

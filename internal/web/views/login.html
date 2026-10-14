@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Вход</h1>
 
-<form method="post" action="/login" class="stack narrow">
+<form method="post" action="{{path .BasePath "/login"}}" class="stack narrow">
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
   <label>Имя
     <input type="text" name="username" autocomplete="username" autofocus required>
@@ -11,4 +11,9 @@
   </label>
   <button type="submit">Войти</button>
 </form>
+
+<p class="muted">
+  Регистрация закрыта. Если у вас есть код приглашения,
+  <a href="{{path .BasePath "/join"}}">создайте аккаунт</a>.
+</p>
 {{end}}
