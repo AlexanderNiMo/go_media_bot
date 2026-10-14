@@ -1,40 +1,145 @@
 {{define "layout"}}<!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-sidebar="icons">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{block "title" .}}mediad{{end}}</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/htmx.min.js" defer></script>
+  <link rel="icon" type="image/svg+xml" href="{{path .BasePath "/favicon.ico"}}">
+  <link rel="stylesheet" href="{{path .BasePath "/static/pico.min.css"}}">
+  <link rel="stylesheet" href="{{path .BasePath "/static/style.css"}}">
+  <script src="{{path .BasePath "/static/htmx.min.js"}}" defer></script>
+  <script>
+    // Sidebar persistence: 'open' (full labels, 16rem) or 'icons' (icons
+    // only, 3.5rem). The HTML's data-sidebar attribute is the default for
+    // a first visit; a saved value replaces it before paint so the layout
+    // does not flash. Legacy 'closed' values from earlier versions are
+    // ignored — the new default is 'icons', which the attribute already
+    // carries, and a stale 'closed' is overwritten on the next toggle.
+    (function () {
+      try {
+        var s = localStorage.getItem('mediad.sidebar');
+        if (s === 'open' || s === 'icons') {
+          document.documentElement.setAttribute('data-sidebar', s);
+        }
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="/">mediad</a>
+    <button type="button" class="hamburger" id="hamburger" aria-label="Переключить сайдбар" onclick="mediadToggleSidebar()"></button>
+    <a class="brand" href="{{path .BasePath "/"}}">mediad</a>
     {{if .User}}
-      <nav>
-        <a href="/" {{if eq .Nav "dashboard"}}class="on"{{end}}>Запросы</a>
-        <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Поиск</a>
-        <a href="/notifications" {{if eq .Nav "notifications"}}class="on"{{end}}>
-          Уведомления{{if .Unread}} <span class="badge">{{.Unread}}</span>{{end}}
-        </a>
-        <a href="/settings" {{if eq .Nav "settings"}}class="on"{{end}}>Настройки</a>
-      </nav>
-      <form method="post" action="/logout" class="who">
-        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <form method="post" action="{{path $.BasePath "/logout"}}" class="who">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <span>{{.User.Username}}</span>
         <button type="submit" class="link">выйти</button>
       </form>
     {{end}}
   </header>
 
-  <main>
-    {{if .Flash}}<p class="flash {{.FlashKind}}">{{.Flash}}</p>{{end}}
-    {{if .Error}}<p class="flash bad">{{.Error}}</p>{{end}}
-    {{template "content" .}}
-  </main>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar" aria-hidden="true">
+      <nav>
+        <a href="{{path $.BasePath "/"}}" {{if eq .Nav "dashboard"}}class="on"{{end}} title="Запросы" aria-label="Запросы">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="icon" aria-hidden="true"><path fill-rule="evenodd" d="M2 3.75A.75.75 0 0 1 2.75 3h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75Zm0 4.167a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Zm0 4.166a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Zm0 4.167a.75.75 0 0 1 .75-.75h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd"/></svg>
+          <span class="label">Запросы</span>
+        </a>
+        <a href="{{path $.BasePath "/search"}}" {{if eq .Nav "search"}}class="on"{{end}} title="Поиск" aria-label="Поиск">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="icon" aria-hidden="true"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 1 0 3.473 9.789l3.119 3.119a.75.75 0 1 0 1.06-1.06l-3.118-3.12A5.5 5.5 0 0 0 9 3.5ZM4.5 9a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0Z" clip-rule="evenodd"/></svg>
+          <span class="label">Поиск</span>
+        </a>
+        <a href="{{path $.BasePath "/notifications"}}" {{if eq .Nav "notifications"}}class="on"{{end}} title="Уведомления" aria-label="Уведомления">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="icon" aria-hidden="true"><path fill-rule="evenodd" d="M10 2a6 6 0 0 0-6 6c0 1.887-.454 3.665-1.257 5.23a.75.75 0 0 0 .515 1.076 32.903 32.903 0 0 0 3.256.508 3.5 3.5 0 0 0 6.972 0 32.903 32.903 0 0 0 3.256-.508.75.75 0 0 0 .515-1.076A11.448 11.448 0 0 1 16 8a6 6 0 0 0-6-6ZM8 17.5a2 2 0 0 0 4 0 2 2 0 0 0-.4-1.181.75.75 0 0 0-.612-.319H9.012a.75.75 0 0 0-.612.319A2 2 0 0 0 8 17.5Z" clip-rule="evenodd"/></svg>
+          <span class="label">Уведомления</span>
+          {{if .Unread}} <span class="badge">{{.Unread}}</span>{{end}}
+        </a>
+        <a href="{{path $.BasePath "/settings"}}" {{if eq .Nav "settings"}}class="on"{{end}} title="Настройки" aria-label="Настройки">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="icon" aria-hidden="true"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 0 1-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 0 1 .947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 0 1 2.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 0 1 2.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 0 1 .947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 0 1-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 0 1-2.287-.947ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clip-rule="evenodd"/></svg>
+          <span class="label">Настройки</span>
+        </a>
+      </nav>
 
-  <footer>
-    <span>{{.Version}}</span>
-  </footer>
+      {{if eq .Nav "settings"}}
+      <nav class="sub">
+        <a href="{{path $.BasePath "/settings?tab=account"}}" {{if eq $.Tab "account"}}class="on"{{end}} title="Аккаунт" aria-label="Аккаунт">
+          <span class="label">Аккаунт</span>
+        </a>
+        <a href="{{path $.BasePath "/settings?tab=telegram"}}" {{if eq $.Tab "telegram"}}class="on"{{end}} title="Telegram" aria-label="Telegram">
+          <span class="label">Telegram</span>
+        </a>
+        <a href="{{path $.BasePath "/settings?tab=notifications"}}" {{if eq $.Tab "notifications"}}class="on"{{end}} title="Уведомления" aria-label="Уведомления">
+          <span class="label">Уведомления</span>
+        </a>
+        {{if .User.IsAdmin}}
+          <a href="{{path $.BasePath "/settings?tab=invites"}}" {{if eq $.Tab "invites"}}class="on"{{end}} title="Приглашения" aria-label="Приглашения">
+            <span class="label">Приглашения</span>
+          </a>
+          <a href="{{path $.BasePath "/settings?tab=users"}}" {{if eq $.Tab "users"}}class="on"{{end}} title="Пользователи" aria-label="Пользователи">
+            <span class="label">Пользователи</span>
+          </a>
+        {{end}}
+      </nav>
+      {{end}}
+
+      <nav class="help">
+        <a href="{{path $.BasePath "/help"}}" {{if eq .Nav "help"}}class="on"{{end}} title="Помощь" aria-label="Помощь">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="icon" aria-hidden="true"><path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0ZM8.94 6.94a.75.75 0 1 1-1.061-1.06 3.5 3.5 0 1 1 4.929 4.93.75.75 0 0 1-1.06-1.061 2 2 0 0 0-2.808-2.808ZM10 15.25a.75.75 0 0 1 .75-.75h.008a.75.75 0 0 1 .75.75v.008a.75.75 0 0 1-.75.75H10.75a.75.75 0 0 1-.75-.75v-.008Z" clip-rule="evenodd"/></svg>
+          <span class="label">Помощь</span>
+        </a>
+      </nav>
+    </aside>
+
+    <div class="content" id="content" onclick="mediadMaybeCloseSidebar()">
+      <main>
+        {{if .Flash}}<p class="flash {{.FlashKind}}">{{.Flash}}</p>{{end}}
+        {{if .Error}}<p class="flash bad">{{.Error}}</p>{{end}}
+        {{template "content" .}}
+      </main>
+
+      <footer>
+        <span>{{.Version}}</span>
+      </footer>
+    </div>
+  </div>
+
+  <script>
+    // Two states: 'open' (16rem, labels) and 'icons' (3.5rem, icons only).
+    // The HTML attribute holds the default for a first visit; this function
+    // applies a state and persists it. The toggle cycles them.
+    function mediadSetSidebar(state) {
+      if (state !== 'open' && state !== 'icons') state = 'icons';
+      document.documentElement.setAttribute('data-sidebar', state);
+      try { localStorage.setItem('mediad.sidebar', state); } catch (e) {}
+      var sb = document.getElementById('sidebar');
+      if (sb) {
+        // aria-hidden follows visual availability, not the state. On a
+        // narrow viewport the 'icons' state hides the drawer off-screen,
+        // so the screen reader should ignore it. On a wide viewport the
+        // 'icons' state keeps the column visible (just narrow) and its
+        // links are still reachable.
+        var hidden = state === 'icons' && window.matchMedia('(max-width: 768px)').matches;
+        sb.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+      }
+    }
+    function mediadToggleSidebar() {
+      var cur = document.documentElement.getAttribute('data-sidebar') || 'icons';
+      mediadSetSidebar(cur === 'open' ? 'icons' : 'open');
+    }
+    // On a narrow viewport the sidebar is a drawer over the content; tapping
+    // outside it dismisses it. On a wide viewport the sidebar is a column and
+    // a tap on the content is a normal click — closing it would be surprising.
+    function mediadMaybeCloseSidebar() {
+      if (window.matchMedia('(max-width: 768px)').matches &&
+          document.documentElement.getAttribute('data-sidebar') === 'open') {
+        mediadSetSidebar('icons');
+      }
+    }
+    // Sync aria-hidden with the state at load, so a collapsed column does
+    // not leave its links in the tab order.
+    (function () {
+      mediadSetSidebar(document.documentElement.getAttribute('data-sidebar') || 'icons');
+    })();
+  </script>
 </body>
 </html>{{end}}

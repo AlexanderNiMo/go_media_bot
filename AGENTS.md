@@ -237,3 +237,15 @@ The user steers in short, focused turns. Patterns that work:
   codebase cannot produce on its own. Treat it as a real signal
   even if the code "works" — they are the one who has to live
   with it.
+- **Use `interactive-input` for multi-choice questions, with a probe.**
+  Wrap options in a ```` ```interactive ```` block (`Input.ChoiceSet`)
+  rather than a numbered list when the choice set is enumerable. The
+  skill was made available mid-session; load it with
+  `skill_view(name='interactive-input')` and see `references/schema.md`
+  for `TextBlock`, `Input.Text/Number/Toggle`, `Separator`, and
+  `Action.Submit`. **Probe once whether the current client renders the
+  block as native UI or falls back to a JSON code block.** If the user
+  reports the latter, fall back to enumerated prose
+  ("1) … 2) … 3) …") and accept text answers of the same shape — that
+  is the form that has worked in this project. Do not assume the
+  client supports the rich UI without checking.

@@ -1,104 +1,52 @@
-/* The whole stylesheet. It is hand-written because the interface is a handful
-   of tables and forms: a framework would be more bytes than the HTML it
-   styles, and keeping it here means the deployed instance fetches nothing
-   from anywhere.
+/* On top of Pico v2.0.6 (vendored as pico.min.css). Pico provides typography,
+   form controls, color tokens, dark/light switching via prefers-color-scheme,
+   and `container`/`grid`/`card` primitives. This stylesheet layers
+   project-specific layout on top of it. */
 
-   The palette is two neutrals, one accent, and a set of state colours that are
-   the only saturated things on the page — so the state of a request is what
-   the eye lands on rather than the chrome. */
+:root { --pico-spacing-vertical: 1rem; }
 
-:root {
-  --bg: #14161a;
-  --panel: #1c1f26;
-  --line: #2a2f38;
-  --text: #e6e8ec;
-  --muted: #8d95a3;
-  --accent: #5b9dff;
-  --ok: #4cc38a;
-  --warn: #e5a44a;
-  --bad: #e5645f;
-  --radius: 8px;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f7f8fa;
-    --panel: #ffffff;
-    --line: #e2e5ea;
-    --text: #1b1f27;
-    --muted: #69707d;
-  }
-}
-
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-}
-
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-/* --- chrome ------------------------------------------------------------- */
+main.container, main { max-width: 76rem; }
 
 header.top {
   display: flex;
   align-items: center;
   gap: 1.5rem;
   padding: 0.75rem 1.25rem;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  background: var(--pico-card-background-color);
   flex-wrap: wrap;
 }
 
-.brand { font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
+.brand { font-weight: 600; letter-spacing: -0.01em; color: var(--pico-h1-color); }
 
-header.top nav { display: flex; gap: 1rem; flex: 1; }
-header.top nav a { color: var(--muted); }
-header.top nav a.on { color: var(--text); font-weight: 500; }
-
-.who { display: flex; align-items: center; gap: 0.75rem; color: var(--muted); font-size: 0.9em; }
+.who { display: flex; align-items: center; gap: 0.75rem; color: var(--pico-muted-color); font-size: 0.9em; }
 
 .badge {
-  background: var(--accent);
-  color: #fff;
+  background: var(--pico-primary);
+  color: var(--pico-primary-inverse);
   border-radius: 999px;
   padding: 0 0.45em;
   font-size: 0.8em;
   font-weight: 600;
 }
 
-main { max-width: 68rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
-
-footer {
-  max-width: 68rem;
-  margin: 0 auto;
-  padding: 0 1.25rem 2rem;
-  color: var(--muted);
-  font-size: 0.8em;
-}
-
 h1 { font-size: 1.5rem; margin: 0 0 1rem; }
 h2 { font-size: 1.15rem; margin: 2rem 0 0.75rem; }
 h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
 
-.muted { color: var(--muted); }
-.warn { color: var(--warn); }
+.muted { color: var(--pico-muted-color); }
+.warn { color: var(--pico-del-color, #c1272d); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
 
 .flash {
-  background: var(--panel);
-  border-left: 3px solid var(--ok);
+  background: var(--pico-card-background-color);
+  border-left: 3px solid var(--pico-ins-color, #2c7a4b);
   padding: 0.6rem 0.9rem;
-  border-radius: var(--radius);
+  border-radius: var(--pico-border-radius);
   margin: 0 0 1rem;
 }
-.flash.bad { border-left-color: var(--bad); }
-
-/* --- tables ------------------------------------------------------------- */
+.flash.bad { border-left-color: var(--pico-del-color, #c1272d); }
+.flash.warn { border-left-color: var(--pico-contrast-warning, #c98300); }
 
 table { width: 100%; border-collapse: collapse; margin: 0.5rem 0 1rem; }
 
@@ -107,89 +55,32 @@ th {
   font-size: 0.78em;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted);
+  color: var(--pico-muted-color);
   font-weight: 600;
   padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--pico-muted-border-color);
 }
 
-td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
-tbody tr:hover { background: var(--panel); }
+td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--pico-muted-border-color); vertical-align: middle; }
+tbody tr:hover { background: var(--pico-card-background-color); }
 
 tr.unread td { font-weight: 500; }
 .events td { font-size: 0.9em; }
 
-.actions { text-align: right; white-space: nowrap; }
-.actions form { display: inline; }
+.state { font-size: 0.85em; padding: 0.05rem 0.4rem; border-radius: 999px; border: 1px solid var(--pico-muted-border-color); }
+.state.downloading { color: var(--pico-primary); border-color: var(--pico-primary); }
+.state.completed   { color: var(--pico-ins-color, #2c7a4b); border-color: var(--pico-ins-color, #2c7a4b); }
+.state.failed      { color: var(--pico-del-color, #c1272d); border-color: var(--pico-del-color, #c1272d); }
+.state.canceled    { color: var(--pico-muted-color); }
+.state.skipped,
+.state.pending     { color: var(--pico-muted-color); }
 
-/* --- state -------------------------------------------------------------- */
-
-.state {
-  font-size: 0.78em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 600;
-  padding: 0.15em 0.5em;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-}
-
-.state.pending, .state.searching, .state.adding { color: var(--muted); }
-.state.downloading { color: var(--accent); }
-.state.completed { color: var(--ok); }
-.state.skipped { color: var(--warn); }
-.state.failed, .state.canceled { color: var(--bad); }
-
-/* --- progress ----------------------------------------------------------- */
-
-.bar {
-  height: 6px;
-  background: var(--line);
-  border-radius: 999px;
-  overflow: hidden;
-  min-width: 8rem;
-  margin-bottom: 0.25rem;
-}
-.bar i { display: block; height: 100%; background: var(--accent); }
-
-/* --- forms -------------------------------------------------------------- */
-
-form.search { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
-form.search input { flex: 1; }
-
-input, select, button {
-  font: inherit;
-  color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 0.5rem 0.65rem;
-}
-
-input:focus, select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-button { cursor: pointer; }
-button:hover { border-color: var(--accent); }
-button.link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  padding: 0;
-}
-
-form.stack { display: flex; flex-direction: column; gap: 0.75rem; max-width: 26rem; }
-form.stack.narrow { max-width: 20rem; }
-form.stack label { display: flex; flex-direction: column; gap: 0.25rem; color: var(--muted); font-size: 0.9em; }
-form.stack input { color: var(--text); font-size: 1rem; }
-
-.filters { margin-bottom: 0.5rem; color: var(--muted); }
+.filters { margin-bottom: 0.5rem; color: var(--pico-muted-color); display: flex; gap: 1rem; flex-wrap: wrap; }
 .filters label { display: inline-flex; align-items: center; gap: 0.5rem; }
-
-/* --- cards -------------------------------------------------------------- */
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
   gap: 1rem;
 }
 
@@ -197,30 +88,66 @@ form.stack input { color: var(--text); font-size: 1rem; }
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  background: var(--pico-card-background-color);
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
   padding: 0.6rem;
-  color: var(--text);
+  color: var(--pico-color);
 }
-.card:hover { border-color: var(--accent); text-decoration: none; }
+.card:hover { border-color: var(--pico-primary); text-decoration: none; }
 
-.card img, .noposter {
+.poster {
+  position: relative;
   width: 100%;
   aspect-ratio: 2 / 3;
-  object-fit: cover;
   border-radius: 4px;
-  background: var(--line);
+  background: var(--pico-muted-border-color);
+  overflow: hidden;
+}
+.poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
   display: block;
+}
+.poster .year {
+  position: absolute;
+  bottom: 0.4rem;
+  left: 0.4rem;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 0.75em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+}
+.poster .type {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  background: var(--pico-primary);
+  color: var(--pico-primary-inverse);
+  font-size: 0.7em;
+  font-weight: 600;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.noposter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--pico-muted-color);
+  font-size: 0.85em;
 }
 
 .card-title { font-weight: 500; line-height: 1.3; }
-.card-meta { font-size: 0.85em; color: var(--muted); }
+.card-meta { font-size: 0.85em; color: var(--pico-muted-color); }
 
-.cards.seasons { grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); }
+.cards.seasons { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
 
-.confirm { display: flex; gap: 1.25rem; margin-bottom: 1.5rem; }
-.confirm img { width: 9rem; border-radius: var(--radius); }
+.confirm { display: flex; gap: 1.25rem; margin-bottom: 1.5rem; align-items: flex-start; }
+.confirm img { width: 9rem; border-radius: var(--pico-border-radius); }
 .confirm h2 { margin-top: 0; }
 
 dl.facts {
@@ -229,5 +156,249 @@ dl.facts {
   gap: 0.35rem 1.25rem;
   margin: 0 0 1.5rem;
 }
-dl.facts dt { color: var(--muted); font-size: 0.9em; }
+dl.facts dt { color: var(--pico-muted-color); font-size: 0.9em; }
 dl.facts dd { margin: 0; }
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  margin: 0 0 1.5rem;
+}
+.tabs a {
+  padding: 0.6rem 1rem;
+  color: var(--pico-muted-color);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tabs a.on {
+  color: var(--pico-h1-color);
+  border-bottom-color: var(--pico-primary);
+  font-weight: 500;
+}
+
+.tabpanel { display: none; }
+.tabpanel.on { display: block; }
+
+form.stack { display: flex; flex-direction: column; gap: 0.75rem; max-width: 32rem; }
+form.stack label { display: flex; flex-direction: column; gap: 0.25rem; }
+
+button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--pico-primary);
+  cursor: pointer;
+  font: inherit;
+}
+button.link.warn { color: var(--pico-del-color, #c1272d); }
+button.link:hover { text-decoration: underline; }
+
+/* --- narrow forms (login / setup / join) ------------------------------ */
+
+form.narrow {
+  max-width: 26rem;
+  margin: 0 auto;
+}
+
+/* Pico's default button is too tall for a list of rows. A compact
+   variant used inline (cancel, unlink, refresh) keeps the action
+   available without dominating the row. */
+button.small,
+a.button.small,
+input[type="submit"].small,
+input[type="button"].small {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85em;
+  line-height: 1.3;
+  border-radius: var(--pico-border-radius);
+}
+
+/* Override Pico's default horizontal label on the notifications tab:
+   the option label and the checkbox are easier to scan as a stack than
+   as a row. */
+
+/* Notification checkboxes: one row per option, checkbox and text on
+   the same line. Pico's defaults stack an <input> and its <span>, so
+   this overrides just for the options block. */
+form .checkrows { display: flex; flex-direction: column; gap: 0.4rem; }
+form .checkrows label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+form .checkrows input[type="checkbox"] {
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0;
+}
+
+/* Thumbnail cell for tables that mix a poster with text. The 92 px
+   width matches TMDB's "w92" image size, which is the smallest that
+   still reads as a poster. */
+td.thumb { width: 4.5rem; padding: 0.3rem 0.4rem 0.3rem 0.6rem; }
+td.thumb img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 3px; display: block; background: var(--pico-muted-border-color); }
+
+/* Compact button row, used at the top of forms that span a list. */
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 0.75rem; }
+
+/* A non-primary action: same compact button, dimmer colour so it does
+   not compete with the main submit. Pico does not have a built-in
+   "secondary" button class, hence the manual mapping. */
+button.secondary {
+  background: var(--pico-secondary-background);
+  color: var(--pico-secondary-inverse);
+  border: 1px solid var(--pico-secondary-border);
+}
+button.secondary:hover {
+  background: var(--pico-secondary-hover-background);
+}
+
+/* Narrow first column for row-selection checkboxes. */
+table td > input.notif-check {
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0;
+  vertical-align: middle;
+}
+
+/* The just-issued invite is shown as a wide input plus a copy button.
+   The input gets the focus, the button sits next to it; together they
+   read as a single shareable URL. */
+.invite {
+  background: var(--pico-card-background-color);
+  border: 1px solid var(--pico-muted-border-color);
+  border-left: 3px solid var(--pico-ins-color, #2c7a4b);
+  border-radius: var(--pico-border-radius);
+  padding: 0.75rem 1rem;
+  margin: 0 0 1rem;
+}
+.invite-row { display: flex; gap: 0.5rem; align-items: center; }
+.invite-row input[type="text"] { flex: 1; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+
+/* --- layout with sidebar ---------------------------------------------- */
+
+body { display: flex; flex-direction: column; min-height: 100vh; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Mobile-first: the sidebar is a fixed drawer that lives off-screen and
+   slides in when opened. The desktop rules below turn it into a column
+   in the grid. The breakpoint is the same as the JS-side matchMedia in
+   layout.html, so the click-to-dismiss and the visual behaviour stay
+   in sync. */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 16rem;
+  background: var(--pico-card-background-color);
+  border-right: 1px solid var(--pico-muted-border-color);
+  padding: 4rem 0 1rem;
+  overflow-y: auto;
+  z-index: 10;
+  transform: translateX(-100%);
+  transition: transform 0.15s ease-out;
+}
+.sidebar nav { display: flex; flex-direction: column; padding: 0 0.5rem; }
+.sidebar nav a {
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--pico-border-radius);
+  color: var(--pico-color);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+}
+.sidebar nav a:hover { background: var(--pico-muted-border-color); text-decoration: none; }
+.sidebar nav a.on { background: var(--pico-primary); color: var(--pico-primary-inverse); }
+.sidebar nav + nav { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--pico-muted-border-color); }
+.sidebar nav.sub a { padding-left: 1.5rem; font-size: 0.9em; }
+.sidebar nav.help { margin-top: auto; border-top: 1px solid var(--pico-muted-border-color); }
+
+/* The icon next to the label. currentColor lets the hover/active state
+   colour the icon along with the text. */
+.sidebar .icon {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  color: currentColor;
+}
+.sidebar .label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The 'icons' state hides the labels and the settings sub-nav (the page
+   itself has its own tabs at settings.html:4-12, so the duplication is
+   not a loss) and centres the icon in the row. The badge moves to the
+   top-right of the cell so it reads as a notification dot. */
+html[data-sidebar="icons"] .sidebar .label { display: none; }
+html[data-sidebar="icons"] .sidebar nav.sub { display: none; }
+html[data-sidebar="icons"] .sidebar nav a { justify-content: center; padding: 0.55rem 0; gap: 0; }
+html[data-sidebar="icons"] .sidebar .badge { position: absolute; top: 0.3rem; right: 0.3rem; }
+
+html[data-sidebar="open"] .sidebar { transform: translateX(0); }
+html[data-sidebar="open"] .layout  { grid-template-columns: 16rem 1fr; }
+
+.content { min-width: 0; }
+.content > main { max-width: 76rem; margin: 0 auto; padding: 1.5rem 1.25rem 2rem; }
+.content > footer { max-width: 76rem; margin: 0 auto; padding: 0 1.25rem 2rem; color: var(--pico-muted-color); font-size: 0.8em; }
+
+/* The hamburger lives in the top bar and is always visible. The glyph
+   switches with the state via CSS, so the same button also reads as
+   the button that closes the panel — no JS needed for the icon itself. */
+.hamburger {
+  background: none;
+  border: 0;
+  padding: 0.25rem 0.5rem;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+  margin-right: 0.25rem;
+}
+.hamburger::before { content: '☰'; }
+html[data-sidebar="open"] .hamburger::before { content: '✕'; }
+.hamburger:hover { color: var(--pico-h1-color); }
+
+/* Mobile: the sidebar is a drawer over the content. The 'icons' state
+   keeps it off-screen, so a phone user gets the same behaviour as a
+   hidden drawer. Tap-to-dismiss is wired by the onclick on .content
+   in layout.html. */
+@media (max-width: 768px) {
+  html[data-sidebar="open"] .layout { grid-template-columns: 1fr; }
+  html[data-sidebar="open"] .content { opacity: 0.5; }
+  .content > main { padding-top: 1rem; }
+}
+
+/* Desktop: the sidebar is a column in the grid, never a drawer. The
+   'icons' state keeps the column visible but narrows it to the width
+   of a single icon, so the navigation is always reachable without
+   taking the room of a full panel. min-width: 0 lets the column
+   shrink past the sidebar's intrinsic width. */
+@media (min-width: 769px) {
+  .sidebar {
+    position: static;
+    transform: none;
+    grid-row: 1;
+    grid-column: 1;
+    height: auto;
+    padding-top: 1rem;
+    min-width: 0;
+  }
+  html[data-sidebar="open"]  .layout { grid-template-columns: 16rem 1fr; }
+  html[data-sidebar="icons"] .layout { grid-template-columns: 3.5rem 1fr; }
+}
