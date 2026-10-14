@@ -382,3 +382,41 @@ func truncateForTest(s string, n int) string {
 func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
+
+// TestPosterURLAbsorbsBasePath — a poster is a URL the browser fetches
+// against the same origin, so the rendered <img src> has to carry the
+// configured base path. Without this, a deployment behind a reverse proxy
+// at /mediad renders <img src="/poster/w342/x.jpg"> and every poster
+// 404s in the browser; the server has no idea, because the failure is
+// on the static-asset path, not on a request the server sees.
+func TestPosterURLAbsorbsBasePath(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	data := searchView{
+		page:  page{BasePath: "/mediad", CSRF: "token"},
+		Query: "матрица",
+		Results: []searchCard{{
+			Type: "movie", TMDBID: 603, Title: "Матрица", Original: "The Matrix",
+			Year: 1999, Kind: "фильм", PosterURL: "/poster/w342/p.jpg",
+		}},
+	}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/mediad/search", nil), "search", data)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned %d: %s", rec.Code, truncateForTest(rec.Body.String(), 300))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `src="/mediad/poster/w342/p.jpg"`) {
+		t.Errorf("poster URL did not absorb the base path; rendered body:\n%s",
+			truncateForTest(body, 600))
+	}
+	// The card link also has to carry the base path. A wrong href here means
+	// the user clicks and lands on a 404 from the upstream reverse proxy,
+	// not from this server.
+	if !strings.Contains(body, `href="/mediad/add/movie/603"`) {
+		t.Errorf("search card link did not absorb the base path; rendered body:\n%s",
+			truncateForTest(body, 600))
+	}
+}
