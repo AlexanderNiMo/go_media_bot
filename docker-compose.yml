@@ -308,8 +308,8 @@ services:
       MEDIAD_TELEGRAM_PROXY: ${MEDIAD_TELEGRAM_PROXY:-}
       # APP_SERVER
       MEDIAD_SERVER_LISTEN: ${MEDIAD_SERVER_LISTEN:-0.0.0.0:8081}
-      MEDIAD_SERVER_BASEURL: ${MEDIAD_SERVER_BASEURL:-localhost}
-      MEDIAD_SERVER_BASEPATH: ${MEDIAD_SERVER_BASEPATH:-}
+      MEDIAD_SERVER_BASE_URL: ${MEDIAD_SERVER_BASE_URL:-localhost}
+      MEDIAD_SERVER_BASE_PATH: ${MEDIAD_SERVER_BASE_PATH:-}
     # config.yaml is optional. The host's ./config.yaml (gitignored; see
     # config_dev.yaml.example for the template) is mounted read-only into
     # the container and passed to `mediad all` via --config. An empty file
