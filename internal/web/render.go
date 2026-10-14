@@ -14,6 +14,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -38,6 +39,7 @@ var pageNames = []string{
 	"request",
 	"notifications",
 	"settings",
+	"help",
 	"login",
 	"setup",
 	"join",
@@ -61,6 +63,11 @@ func newTemplates() (*templates, error) {
 	funcs := template.FuncMap{
 		"percent": percent,
 		"since":   since,
+		// path joins a route to the deployment's base path. A leading slash
+		// on the route is required; a missing one is left as-is so a typo
+		// surfaces in the rendered page rather than silently rewriting URLs.
+		"path":      pathFunc,
+		"hasString": hasString,
 	}
 
 	t := &templates{set: make(map[string]*template.Template, len(pageNames))}
@@ -97,12 +104,19 @@ type page struct {
 	Unread    int
 	Flash     string
 	FlashKind string
+	// FlashHTML, when set, replaces Flash and is rendered verbatim. Used
+	// for messages that must carry a link or other inline markup, where
+	// the plain-text Flash would lose the format.
+	FlashHTML string
 	Error     string
 	Version   string
 	// CSRF is what every form has to echo back. It is on the layout's data
 	// rather than passed per form because a form that forgets it is rejected
 	// at submission time, which is a confusing way to find out.
 	CSRF string
+	// BasePath is the URL prefix the interface is mounted under. Templates
+	// use the path helper rather than reading this directly.
+	BasePath string
 }
 
 // render writes a page.
@@ -258,4 +272,69 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 // logger returns a logger tagged for this package.
 func logger(base *slog.Logger) *slog.Logger {
 	return base.With("component", "web")
+}
+
+// pathFunc joins a base path and a route.
+//
+// Both arguments are expected to start with "/". The route's leading slash is
+// kept; the base path's trailing slash is stripped, so "/mediad" + "/login"
+// becomes "/mediad/login" rather than "/mediad//login".
+//
+// An empty basePath is allowed: it means the interface is at the host root
+// and the route is returned unchanged.
+func pathFunc(basePath, route string) string {
+	if basePath == "" {
+		return route
+	}
+	return strings.TrimRight(basePath, "/") + route
+}
+
+// hasString reports whether v (any printable type) appears in slice.
+// state.State is a defined string type, so the caller passes a State value
+// directly and we stringify it; this is what lets a template iterate
+// []storage.State and ask whether each one is in a []string of filter picks.
+func hasString(slice []string, v any) bool {
+	s := fmt.Sprint(v)
+	for _, x := range slice {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// path is the Go-side equivalent of the template helper.
+func (s *Server) path(route string) string {
+	return pathFunc(s.cfg.Server.BasePath, route)
+}
+
+// seeOther is the project's redirect-after-POST helper.
+//
+// It takes a route relative to the host root, prepends the deployment's base
+// path, and writes a 303. The 303 is what makes a POST-POST-PRG cycle safe:
+// the browser follows the redirect with GET rather than replaying the form.
+func (s *Server) seeOther(w http.ResponseWriter, r *http.Request, route string) {
+	http.Redirect(w, r, s.path(route), http.StatusSeeOther)
+}
+
+// handleFavicon serves the embedded SVG icon.
+//
+// Browsers default to /favicon.ico on every page; without this handler
+// the request 404s and the server logs it on every render. The content
+// type is image/svg+xml, and a long cache lifetime is safe because the
+// icon is versioned in the binary and only changes on a release.
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	f, err := s.tmpl.dirFS.Open("static/favicon.svg")
+	if err != nil {
+		// Unreachable in practice: the embed directive guarantees the file.
+		http.Error(w, "favicon not embedded", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	if _, err := io.Copy(w, f); err != nil {
+		s.log.Warn("favicon copy failed", "error", err)
+	}
 }

@@ -31,6 +31,10 @@ type requestRow struct {
 	ProgressPct   string
 	ProgressText  string
 	SearchText    string
+
+	PosterURL    string
+	Year         int
+	SelectedLink string
 }
 
 // requestDetail is one request as a page.
@@ -101,13 +105,20 @@ type confirmation struct {
 // error in the handler that sets it, rather than a blank cell.
 type dashboardView struct {
 	page
+	Filter dashboardFilter
 	Active []requestRow
 	Recent []requestRow
+	// ActiveAll is the full set of active states, regardless of which subset
+	// the user has filtered to. Used to render the state pills with their
+	// counts.
+	ActiveAll []storage.State
 }
 
 type activeFragmentView struct {
 	page
-	Active []requestRow
+	Filter    dashboardFilter
+	Active    []requestRow
+	ActiveAll []storage.State
 }
 
 type searchView struct {
@@ -123,9 +134,10 @@ type seasonsView struct {
 }
 
 type showHeader struct {
-	TMDBID int64
-	Title  string
-	Year   int
+	TMDBID    int64
+	Title     string
+	Year      int
+	PosterURL string
 }
 
 type confirmView struct {
@@ -152,6 +164,7 @@ type notificationRow struct {
 	Body      string
 	When      string
 	Unread    bool
+	PosterURL string
 }
 
 type notificationsView struct {
@@ -166,16 +179,54 @@ type inviteRow struct {
 	State     string
 }
 
+// telegramRow is one chat attached to the current user.
+type telegramRow struct {
+	ID        string
+	CreatedAt string
+}
+
+// notificationOption is one bit of the Telegram notify mask, rendered as a
+// checkbox. The bit and the label are split because a missing key is what
+// the user is signalling by leaving the box empty.
+type notificationOption struct {
+	Bit     int
+	Label   string
+	Name    string
+	Checked bool
+}
+
 type settingsView struct {
 	page
+	Tab string
+
 	Invites   []inviteRow
 	Users     []storage.User
 	InviteTTL string
+
+	// NewInvite, when set, is a freshly issued invite code whose full
+	// /join?code=… URL the page should render as a clickable link. The
+	// code comes from ?new_invite=… on the redirect after a successful
+	// POST to /settings/invites; it is one-shot, refreshed only when the
+	// admin issues another.
+	NewInvite string
+	// NewInviteURL is the absolute path the admin can hand to the
+	// invitee, including the base path. Rendered as a copyable link.
+	NewInviteURL string
+
+	Telegram      []telegramRow
+	NewLinkCode   string
+	NotifyOptions []notificationOption
 }
 
 type loginView struct {
 	page
 	Next string
+}
+
+// helpView is the static help page. No data beyond what the layout already
+// carries: the page is documentation, not a query.
+type helpView struct {
+	page
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +257,9 @@ func rowFor(r *storage.Request, watchers []storage.Watcher, now time.Time) reque
 	row.ProgressPct = percent(r.Progress)
 	row.ProgressText = progressText(r)
 	row.SearchText = searchText(r, now)
+	row.PosterURL = posterPath(r.PosterPath, "w185")
+	row.Year = r.Media.Year
+	row.SelectedLink = r.SelectedLink
 
 	return row
 }

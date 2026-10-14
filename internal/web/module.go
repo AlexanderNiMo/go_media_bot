@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -69,9 +70,14 @@ func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(s.logRequests)
+	r.Use(s.basePath)
 	r.Use(s.sessions)
 
 	r.Handle("/static/*", s.staticHandler())
+
+	// Browsers default to /favicon.ico; serve the same SVG under that
+	// path so the request lands on our assets rather than 404.
+	r.Get("/favicon.ico", s.handleFavicon)
 
 	// Reachable without a session, and each of them re-checks its own
 	// precondition rather than trusting that it was routed here.
@@ -113,13 +119,19 @@ func (s *Server) routes() http.Handler {
 		r.Get("/requests/{id}", s.handleRequest)
 		r.Post("/requests/{id}/cancel", s.handleCancel)
 		r.Post("/requests/{id}/retry", s.handleRetry)
+		r.Post("/requests/{id}/manual", s.handleManualRelease)
+		r.Post("/requests/{id}/year", s.handleEditYear)
 
 		r.Get("/notifications", s.handleNotifications)
 		r.Post("/notifications/read", s.handleNotificationsRead)
 
+		r.Get("/help", s.handleHelp)
+
 		r.Get("/settings", s.handleSettings)
 		r.Post("/settings/password", s.handlePassword)
 		r.Post("/settings/invites", s.handleCreateInvite)
+		r.Post("/settings/telegram", s.handleTelegramSettings)
+		r.Post("/settings/notifications", s.handleNotificationSettings)
 	})
 
 	return r
@@ -190,4 +202,46 @@ func (s *Server) warnAboutExposure() error {
 			"base_url", s.cfg.Server.BaseURL)
 	}
 	return nil
+}
+
+// basePath is the middleware that strips a configured URL prefix off the
+// request path, so the routes underneath see "/login" rather than
+// "/mediad/login" and templates only have to ask for the prefix when they
+// build a link.
+//
+// Two cases are handled without going further:
+//
+//   - The request path is "/" and a prefix is set. The user typed the host
+//     root; send them to the prefix.
+//   - The request path does not start with the prefix. The prefix is
+//     configured, so anything outside it is a typo or a stray crawler — 404
+//     rather than a redirect loop.
+func (s *Server) basePath(next http.Handler) http.Handler {
+	prefix := s.cfg.Server.BasePath
+	if prefix == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/":
+			// Drop the trailing slash on the prefix: "/mediad/" is friendlier
+			// than "/mediad", and either is a valid response.
+			http.Redirect(w, r, prefix+"/", http.StatusFound)
+			return
+		case !strings.HasPrefix(r.URL.Path, prefix+"/") && r.URL.Path != prefix:
+			http.NotFound(w, r)
+			return
+		}
+
+		// Strip the prefix. The trailing slash is kept so the routes
+		// underneath see "/login", not "login".
+		stripped := strings.TrimPrefix(r.URL.Path, prefix)
+		if stripped == "" {
+			stripped = "/"
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = stripped
+		r2.URL.RawPath = ""
+		next.ServeHTTP(w, r2)
+	})
 }

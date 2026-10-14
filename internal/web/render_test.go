@@ -111,9 +111,11 @@ func fixtures(t *testing.T) map[string]any {
 
 	return map[string]any{
 		"dashboard": dashboardView{
-			page:   testPage(),
-			Active: []requestRow{row},
-			Recent: []requestRow{row},
+			page:      testPage(),
+			Filter:    dashboardFilter{},
+			Active:    []requestRow{row},
+			Recent:    []requestRow{row},
+			ActiveAll: storage.ActiveStates(),
 		},
 		"search": searchView{
 			page:  testPage(),
@@ -158,11 +160,13 @@ func fixtures(t *testing.T) map[string]any {
 			InviteTTL: "7 дн",
 		},
 		"login": loginView{page: testPage(), Next: "/requests"},
+		"help":  helpView{page: testPage()},
 		"setup": struct{ page }{testPage()},
 		"join": struct {
 			page
-			Code string
-		}{testPage(), "invite-code"},
+			Code        string
+			InviteError string
+		}{testPage(), "invite-code", ""},
 	}
 }
 

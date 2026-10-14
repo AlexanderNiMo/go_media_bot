@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,47 +24,197 @@ import (
 // dashboardLimit caps the lists on the front page.
 const dashboardLimit = 50
 
+// dashboardFilter is the parsed query string for the dashboard. It carries
+// both the values used to query storage and the same values formatted back for
+// the template's form: that way a filter that round-tripped through the URL
+// renders the controls in the same state the user left them.
+type dashboardFilter struct {
+	Q          string   // free-text search across title fields
+	Type       string   // "movie" / "tv" / "" — empty means both
+	Sort       string   // "date" (default) / "title"
+	Since      string   // "24h" / "7d" / "30d" / "" (none = no limit)
+	ActiveSubs []string // subset of ActiveStates the user wants shown; empty = all
+}
+
+// toStorage turns the parsed values into a storage.RequestFilter. Since and
+// SortByTitle come from the same source, so they live together here. The
+// dashboard's Active list always asks for all active states, and then trims
+// in the template; the per-state filter only narrows what the user sees.
+func (f dashboardFilter) toStorage(activeDefaultLimit int, recentLimit int) (active storage.RequestFilter, recent storage.RequestFilter) {
+	common := func(states []storage.State, limit int) storage.RequestFilter {
+		return storage.RequestFilter{
+			States:      states,
+			MediaType:   domain.MediaType(f.Type),
+			Query:       f.Q,
+			SortByTitle: f.Sort == "title",
+			Since:       sinceDuration(f.Since),
+			Limit:       limit,
+		}
+	}
+	active = common(storage.ActiveStates(), activeDefaultLimit)
+	active.States = applyActiveSubset(active.States, f.ActiveSubs)
+
+	recentStates := []storage.State{
+		storage.StateCompleted, storage.StateFailed,
+		storage.StateCanceled, storage.StateSkipped,
+	}
+	recent = common(recentStates, recentLimit)
+	return
+}
+
+// activeStatesForTemplate reports which of the four active states are
+// currently visible to the user. Used to render the pills.
+func (f dashboardFilter) activeStatesForTemplate() []storage.State {
+	all := storage.ActiveStates()
+	return applyActiveSubset(all, f.ActiveSubs)
+}
+
+// ActiveFragmentQS is the "?q=...&state=...&type=...&sort=..." query the
+// dashboard builds into the htmx poll URL so the fragment follows the same
+// filter as the page it sits inside. Since is intentionally dropped here:
+// it is a window for the Recent block, not the Active one.
+func (f dashboardFilter) ActiveFragmentQS() string {
+	parts := make([]string, 0, 3+len(f.ActiveSubs))
+	if f.Q != "" {
+		parts = append(parts, "q="+url.QueryEscape(f.Q))
+	}
+	for _, s := range f.ActiveSubs {
+		parts = append(parts, "state="+url.QueryEscape(s))
+	}
+	if f.Type != "" {
+		parts = append(parts, "type="+url.QueryEscape(f.Type))
+	}
+	if f.Sort != "" {
+		parts = append(parts, "sort="+url.QueryEscape(f.Sort))
+	}
+	return "?" + strings.Join(parts, "&")
+}
+
+// applyActiveSubset keeps only the states the user wants. If the user
+// disabled none, the default (all) is returned unchanged.
+func applyActiveSubset(all []storage.State, subs []string) []storage.State {
+	if len(subs) == 0 {
+		return all
+	}
+	wanted := make(map[storage.State]bool, len(subs))
+	for _, s := range subs {
+		wanted[storage.State(s)] = true
+	}
+	out := make([]storage.State, 0, len(all))
+	for _, s := range all {
+		if wanted[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// sinceDuration maps the since= string to a time.Duration. Unknown values
+// return zero (no lower bound).
+func sinceDuration(s string) time.Duration {
+	switch s {
+	case "24h":
+		return 24 * time.Hour
+	case "7d":
+		return 7 * 24 * time.Hour
+	case "30d":
+		return 30 * 24 * time.Hour
+	default:
+		return 0
+	}
+}
+
+// parseDashboardFilter reads the URL query and returns a dashboardFilter.
+// Unknown values fall back to defaults; an empty result means "no filter".
+func parseDashboardFilter(r *http.Request) dashboardFilter {
+	q := r.URL.Query()
+	f := dashboardFilter{
+		Q:     strings.TrimSpace(q.Get("q")),
+		Type:  mediaTypeFilter(q.Get("type")),
+		Sort:  sortFilter(q.Get("sort")),
+		Since: sinceFilter(q.Get("since")),
+	}
+	// Multiple "state" params come from a series of <input type="checkbox"
+	// name="state">, one per active state. An empty list means "no subset
+	// chosen", which we treat as the default — every state visible — so the
+	// SQL does not carry a redundant filter.
+	if states := q["state"]; len(states) > 0 {
+		valid := make(map[storage.State]bool, len(storage.ActiveStates()))
+		for _, s := range storage.ActiveStates() {
+			valid[s] = true
+		}
+		for _, p := range states {
+			p = strings.TrimSpace(p)
+			if valid[storage.State(p)] {
+				f.ActiveSubs = append(f.ActiveSubs, p)
+			}
+		}
+	}
+	return f
+}
+
+func mediaTypeFilter(s string) string {
+	switch s {
+	case "movie":
+		return "movie"
+	case "tv":
+		return "tv"
+	default:
+		return ""
+	}
+}
+
+func sortFilter(s string) string {
+	if s == "title" {
+		return "title"
+	}
+	return "date"
+}
+
+func sinceFilter(s string) string {
+	switch s {
+	case "24h", "7d", "30d":
+		return s
+	default:
+		return ""
+	}
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
+	filter := parseDashboardFilter(r)
+	af, rf := filter.toStorage(dashboardLimit, 10)
 
-	active, err := s.store.ListRequests(r.Context(), storage.RequestFilter{
-		States: storage.ActiveStates(),
-		Limit:  dashboardLimit,
-	})
+	active, err := s.store.ListRequests(r.Context(), af)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 
-	recent, err := s.store.ListRequests(r.Context(), storage.RequestFilter{
-		States: []storage.State{
-			storage.StateCompleted, storage.StateFailed,
-			storage.StateCanceled, storage.StateSkipped,
-		},
-		Limit: 10,
-	})
+	recent, err := s.store.ListRequests(r.Context(), rf)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 
 	s.render(w, r, "dashboard", dashboardView{
-		page:   s.basePage(w, r, "dashboard"),
-		Active: s.rowsFor(r, active, now),
-		Recent: s.rowsFor(r, recent, now),
+		page:      s.basePage(w, r, "dashboard"),
+		Filter:    filter,
+		Active:    s.rowsFor(r, active, now),
+		Recent:    s.rowsFor(r, recent, now),
+		ActiveAll: storage.ActiveStates(),
 	})
 }
 
 // handleActiveFragment is what the dashboard polls.
 func (s *Server) handleActiveFragment(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
+	filter := parseDashboardFilter(r)
+	af, _ := filter.toStorage(20, 0)
 
 	// A shorter list than the page's: this is fetched every three seconds by
 	// every open browser, and nobody scrolls a live table.
-	active, err := s.store.ListRequests(r.Context(), storage.RequestFilter{
-		States: storage.ActiveStates(),
-		Limit:  20,
-	})
+	active, err := s.store.ListRequests(r.Context(), af)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -79,8 +230,10 @@ func (s *Server) handleActiveFragment(w http.ResponseWriter, r *http.Request) {
 	// would look like the cancel button being broken rather than like a
 	// missing field.
 	s.renderFragment(w, r, "active_table", activeFragmentView{
-		page:   s.basePage(w, r, "dashboard"),
-		Active: s.rowsFor(r, active, now),
+		page:      s.basePage(w, r, "dashboard"),
+		Filter:    filter,
+		Active:    s.rowsFor(r, active, now),
+		ActiveAll: storage.ActiveStates(),
 	})
 }
 
@@ -184,8 +337,13 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, r, "seasons", seasonsView{
-		page:    s.basePage(w, r, "search"),
-		Show:    showHeader{TMDBID: show.Ref.TMDBID, Title: show.Title, Year: show.Year},
+		page: s.basePage(w, r, "search"),
+		Show: showHeader{
+			TMDBID:    show.Ref.TMDBID,
+			Title:     show.Title,
+			Year:      show.Year,
+			PosterURL: posterPath(show.PosterPath, "w342"),
+		},
 		Seasons: seasons,
 	})
 }
@@ -287,7 +445,7 @@ func (s *Server) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		"request", res.Request.ID, "media", spec.String(),
 		"user", user.Username, "reused", res.Reused)
 
-	http.Redirect(w, r, fmt.Sprintf("/requests/%d", res.Request.ID), http.StatusSeeOther)
+	s.seeOther(w, r, fmt.Sprintf("/requests/%d", res.Request.ID))
 }
 
 // ---------------------------------------------------------------------------
@@ -375,12 +533,12 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if err := s.req.Cancel(r.Context(), id); err != nil {
 		s.log.Error("could not cancel a request", "request", id, "error", err)
 		s.flash(w, r, "Не удалось отменить: "+err.Error(), "bad")
-		http.Redirect(w, r, fmt.Sprintf("/requests/%d", id), http.StatusSeeOther)
+		s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 		return
 	}
 
 	s.flash(w, r, "Отмена запрошена. Торрент будет удалён, если он был добавлен.", "ok")
-	http.Redirect(w, r, fmt.Sprintf("/requests/%d", id), http.StatusSeeOther)
+	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 }
 
 func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
@@ -399,12 +557,12 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		s.log.Error("could not retry a request", "request", id, "error", err)
 		s.flash(w, r, "Не удалось перезапустить: "+err.Error(), "bad")
-		http.Redirect(w, r, fmt.Sprintf("/requests/%d", id), http.StatusSeeOther)
+		s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 		return
 	}
 
 	s.flash(w, r, "Запрос запущен снова: поиск начнётся с текущего момента.", "ok")
-	http.Redirect(w, r, fmt.Sprintf("/requests/%d", id), http.StatusSeeOther)
+	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +572,26 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	user := sessionUser(r)
 
-	items, err := s.store.ListNotifications(r.Context(), user.ID, false, 100)
+	// Only the unread inbox. Read ones are kept in the table so the
+	// operator can still inspect the history, but the page itself is
+	// "what's left to attend to", and a click on "Mark as read" should
+	// visibly remove the row.
+	items, err := s.store.ListNotifications(r.Context(), user.ID, true, 100)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+
+	// One query for all posters: notifications with request_id=0 (admin
+	// alerts) come back without a key, and the template falls back to a
+	// placeholder.
+	requestIDs := make([]int64, 0, len(items))
+	for _, n := range items {
+		if n.RequestID > 0 {
+			requestIDs = append(requestIDs, n.RequestID)
+		}
+	}
+	posters, err := s.store.MediaPostersByRequestIDs(r.Context(), requestIDs)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -429,6 +606,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 			Body:      n.Body,
 			When:      n.CreatedAt.Format("2006-01-02 15:04"),
 			Unread:    false,
+			PosterURL: posterPath(posters[n.RequestID], "w92"),
 		})
 	}
 
@@ -474,7 +652,20 @@ func (s *Server) handleNotificationsRead(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	http.Redirect(w, r, "/notifications", http.StatusSeeOther)
+	s.seeOther(w, r, "/notifications")
+}
+
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
+
+// handleHelp serves the documentation in views/help.html.
+//
+// Static: no DB calls, no query parameters. The page is reached from the
+// sidebar in the authed group, so by the time we get here the session is
+// already valid; the layout reads User out of the request context.
+func (s *Server) handleHelp(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "help", helpView{page: s.basePage(w, r, "help")})
 }
 
 // ---------------------------------------------------------------------------
@@ -517,12 +708,135 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	linked, err := s.store.ListTelegramIdentities(r.Context(), user.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	tg := make([]telegramRow, 0, len(linked))
+	for _, id := range linked {
+		tg = append(tg, telegramRow{
+			ID:        id.ExternalID,
+			CreatedAt: id.CreatedAt.Format("2006-01-02"),
+		})
+	}
+
+	mask, err := s.store.GetTelegramNotifyMask(r.Context(), user.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	opts := []notificationOption{
+		{Bit: 1, Name: "started", Label: "Поиск начался"},
+		{Bit: 2, Name: "completed", Label: "Загрузка завершилась"},
+		{Bit: 4, Name: "failed", Label: "Загрузка провалилась"},
+		{Bit: 8, Name: "skipped", Label: "Уже было в Plex"},
+	}
+	for i := range opts {
+		opts[i].Checked = mask&opts[i].Bit != 0
+	}
+
+	tab := r.URL.Query().Get("tab")
+	switch tab {
+	case "account", "telegram", "notifications", "invites", "users":
+	default:
+		tab = "account"
+	}
+
+	newInvite := r.URL.Query().Get("new_invite")
+	var newInviteURL string
+	if newInvite != "" {
+		// The full URL the admin hands to the invitee. Built server-side
+		// from the configured base URL and the request's base path, so
+		// /mediad/join works for any deployment that mounts under a
+		// prefix.
+		newInviteURL = strings.TrimRight(s.cfg.Server.BaseURL, "/") +
+			s.path("/join?code="+url.QueryEscape(newInvite))
+	}
+
 	s.render(w, r, "settings", settingsView{
-		page:      s.basePage(w, r, "settings"),
-		Invites:   invites,
-		Users:     users,
-		InviteTTL: humanDuration(storage.InviteTTL),
+		page:          s.basePage(w, r, "settings"),
+		Tab:           tab,
+		Invites:       invites,
+		Users:         users,
+		InviteTTL:     humanDuration(storage.InviteTTL),
+		NewInvite:     newInvite,
+		NewInviteURL:  newInviteURL,
+		Telegram:      tg,
+		NotifyOptions: opts,
 	})
+}
+
+// handleTelegramSettings is the form target for "link" and "unlink".
+//
+// The action is in the form's "action" field rather than the route, so a
+// single endpoint can serve two related operations without two routes and
+// two CSRF-protected forms.
+func (s *Server) handleTelegramSettings(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "не разобрать форму", http.StatusBadRequest)
+		return
+	}
+
+	user := sessionUser(r)
+	action := r.PostFormValue("action")
+
+	switch action {
+	case "link":
+		code, err := s.store.CreateLinkCode(r.Context(), user.ID)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		s.flash(w, r, "Код привязки: "+code+". Откройте бота и отправьте /link "+code+".", "ok")
+	case "unlink":
+		telegramID := r.PostFormValue("telegram_id")
+		if telegramID == "" {
+			http.Error(w, "не указан telegram id", http.StatusBadRequest)
+			return
+		}
+		removed, err := s.store.UnlinkTelegram(r.Context(), user.ID, telegramID)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if removed {
+			s.flash(w, r, "Telegram-аккаунт отвязан", "ok")
+		} else {
+			s.flash(w, r, "Этот Telegram-аккаунт не был привязан к вам", "warn")
+		}
+	default:
+		http.Error(w, "неизвестное действие", http.StatusBadRequest)
+		return
+	}
+	s.seeOther(w, r, "/settings")
+}
+
+// handleNotificationSettings records the Telegram notify mask.
+func (s *Server) handleNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "не разобрать форму", http.StatusBadRequest)
+		return
+	}
+
+	user := sessionUser(r)
+	mask := 0
+	for _, opt := range []struct {
+		name string
+		bit  int
+	}{
+		{"started", 1}, {"completed", 2}, {"failed", 4}, {"skipped", 8},
+	} {
+		if r.PostFormValue(opt.name) != "" {
+			mask |= opt.bit
+		}
+	}
+	if err := s.store.SetTelegramNotifyMask(r.Context(), user.ID, mask); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.flash(w, r, "Настройки уведомлений сохранены", "ok")
+	s.seeOther(w, r, "/settings")
 }
 
 func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
@@ -538,14 +852,14 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	// whose effect is to lock the owner out of their own account.
 	if _, err := s.store.Authenticate(r.Context(), user.Username, r.PostFormValue("current")); err != nil {
 		s.flash(w, r, "Текущий пароль неверен.", "bad")
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		s.seeOther(w, r, "/settings")
 		return
 	}
 
 	password := r.PostFormValue("password")
 	if err := storage.ValidatePassword(password); err != nil {
 		s.flash(w, r, err.Error(), "bad")
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		s.seeOther(w, r, "/settings")
 		return
 	}
 
@@ -564,7 +878,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("password changed", "user", user.Username)
 	s.flash(w, r, "Пароль изменён. Войдите заново.", "ok")
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	s.seeOther(w, r, "/login")
 }
 
 func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
@@ -581,8 +895,9 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("invite created", "by", user.Username)
-	s.flash(w, r, "Код приглашения: "+code, "ok")
-	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+	// Pass the code through the URL rather than a flash cookie: a clickable
+	// link survives a refresh, and the cookie-based flash is one-shot.
+	s.seeOther(w, r, fmt.Sprintf("/settings?tab=invites&new_invite=%s", url.QueryEscape(code)))
 }
 
 // ---------------------------------------------------------------------------
@@ -671,4 +986,75 @@ func refFromPath(kind, id string) (domain.MediaRef, error) {
 
 func pathID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+}
+
+// handleManualRelease accepts a user-submitted torrent link.
+//
+// The link is stored on the request row in selected_link; the workflow
+// picks it up on its next poll and calls AddTorrent with it. The
+// workflow is the only place that can actually start the download —
+// running qBittorrent's AddTorrent here would race with the workflow's
+// own add and leave two rows tagged with the same request id.
+func (s *Server) handleManualRelease(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "не разобрать форму", http.StatusBadRequest)
+		return
+	}
+
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "неверный id", http.StatusBadRequest)
+		return
+	}
+
+	link := strings.TrimSpace(r.PostFormValue("link"))
+	if err := s.store.SetSelectedLink(r.Context(), id, link); err != nil {
+		s.flash(w, r, "Ссылка не подходит: "+err.Error(), "bad")
+		s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+		return
+	}
+	if link == "" {
+		s.flash(w, r, "Ручной релиз снят.", "ok")
+	} else {
+		s.flash(w, r, "Ссылка сохранена. Workflow подхватит её на ближайшем тике.", "ok")
+	}
+	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+}
+
+// handleEditYear records a corrected year for the request's media row.
+//
+// A year fix is metadata-only: the request keeps running with its
+// existing deadline and search, and the next time the row is rendered
+// the new year shows up. The workflow does not need to know.
+func (s *Server) handleEditYear(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "не разобрать форму", http.StatusBadRequest)
+		return
+	}
+
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "не верный id", http.StatusBadRequest)
+		return
+	}
+
+	yearStr := strings.TrimSpace(r.PostFormValue("year"))
+	year, err := strconv.Atoi(yearStr)
+	if err != nil || year < 1800 || year > 2200 {
+		s.flash(w, r, "Год должен быть числом между 1800 и 2200.", "bad")
+		s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+		return
+	}
+
+	req, err := s.store.GetRequest(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err := s.store.SetMediaYear(r.Context(), req.MediaID, year); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.flash(w, r, "Год обновлён.", "ok")
+	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 }

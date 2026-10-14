@@ -1,52 +1,167 @@
 {{define "content"}}
-<h1>Что качается</h1>
+{{/*
+  One GET form so every control — text search, sort, type, since, and the
+  state pills in the Active block — round-trips through the same query
+  string. The htmx fragment below reads the same query string via the URL
+  built from .Filter.ActiveFragmentQS; a reload after the user changes the
+  form follows the new filter because the URL changes too.
+*/}}
+<form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
 
-{{/* The one piece of live behaviour in the interface.
-     It polls a fragment that reads the projection, so nothing on the
-     render path touches Temporal: SQL-backed visibility has no ORDER BY
-     at all, is eventually consistent, and a query needs a live worker. */}}
-<div hx-get="/fragments/active" hx-trigger="every 3s" hx-swap="innerHTML">
-  {{template "active_table" .}}
-</div>
+  <details open class="block" id="block-active">
+    <summary>
+      <span class="title">Что качается</span>
+      <span class="muted count">{{len .Active}}</span>
+    </summary>
 
-{{if .Recent}}
-  <h2>Недавно</h2>
-  <table>
-    <thead><tr><th>Что</th><th>Состояние</th><th>Итог</th></tr></thead>
-    <tbody>
-    {{range .Recent}}
-      <tr>
-        <td><a href="/requests/{{.ID}}">{{.Title}}</a></td>
-        <td><span class="state {{.State}}">{{.State}}</span></td>
-        <td class="muted">{{.Detail}}</td>
-      </tr>
+    <div class="filter-row state-pills">
+      <span class="muted">состояния:</span>
+      {{range .ActiveAll}}
+        <label class="pill {{if and $.Filter.ActiveSubs (not (hasString $.Filter.ActiveSubs .))}}off{{end}}">
+          <input type="checkbox" name="state" value="{{.}}"
+                 {{if or (not $.Filter.ActiveSubs) (hasString $.Filter.ActiveSubs .)}}checked{{end}}
+                 onchange="this.form.submit()">
+          <span>{{.}}</span>
+        </label>
+      {{end}}
+    </div>
+
+    {{/*
+      The fragment polls every three seconds. The URL embeds the current
+      filter, so a reload after the user changes the form follows the new
+      filter; htmx replaces only the table body.
+    */}}
+    <div hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
+         hx-trigger="every 3s"
+         hx-swap="innerHTML">
+      {{template "active_table" .}}
+    </div>
+  </details>
+
+  <details open class="block" id="block-recent">
+    <summary>
+      <span class="title">Недавно</span>
+      <span class="muted count">{{len .Recent}}</span>
+    </summary>
+
+    <div class="filter-row shared-filters">
+      <input type="text" name="q" value="{{.Filter.Q}}" placeholder="поиск" autocomplete="off" class="js-auto pill-input">
+      <label class="muted">тип
+        <select name="type" onchange="this.form.submit()">
+          <option value="" {{if eq .Filter.Type ""}}selected{{end}}>все</option>
+          <option value="movie" {{if eq .Filter.Type "movie"}}selected{{end}}>фильмы</option>
+          <option value="tv" {{if eq .Filter.Type "tv"}}selected{{end}}>сериалы</option>
+        </select>
+      </label>
+      <label class="muted">сортировка
+        <select name="sort" onchange="this.form.submit()">
+          <option value="date" {{if eq .Filter.Sort "date"}}selected{{end}}>по дате</option>
+          <option value="title" {{if eq .Filter.Sort "title"}}selected{{end}}>по названию</option>
+        </select>
+      </label>
+      <label class="muted">период
+        <select name="since" onchange="this.form.submit()">
+          <option value="" {{if eq .Filter.Since ""}}selected{{end}}>за всё время</option>
+          <option value="24h" {{if eq .Filter.Since "24h"}}selected{{end}}>за сутки</option>
+          <option value="7d" {{if eq .Filter.Since "7d"}}selected{{end}}>за неделю</option>
+          <option value="30d" {{if eq .Filter.Since "30d"}}selected{{end}}>за месяц</option>
+        </select>
+      </label>
+    </div>
+
+    {{if .Recent}}
+      <table>
+        <thead><tr><th colspan="2">Что</th><th>Состояние</th><th>Итог</th></tr></thead>
+        <tbody>
+        {{range .Recent}}
+          <tr>
+            <td class="thumb">
+              {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+            </td>
+            <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
+            <td><span class="state {{.State}}">{{.State}}</span></td>
+            <td class="muted">{{.Detail}}</td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    {{else}}
+      <p class="muted">Пусто.</p>
     {{end}}
-    </tbody>
-  </table>
-{{end}}
+  </details>
+</form>
+
+<script>
+  // Persist the open/closed state of each block in localStorage, mirroring
+  // the sidebar. Read once here so the page renders with the right state
+  // (no flash); the toggle handler on the <details> element writes back.
+  (function () {
+    var blocks = ["active", "recent"];
+    try {
+      blocks.forEach(function (name) {
+        var el = document.getElementById("block-" + name);
+        if (!el) return;
+        var saved = localStorage.getItem("mediad.dashboard." + name);
+        if (saved === "closed") el.open = false;
+        if (saved === "open") el.open = true;
+        el.addEventListener("toggle", function () {
+          try {
+            localStorage.setItem("mediad.dashboard." + name, el.open ? "open" : "closed");
+          } catch (e) {}
+        });
+      });
+    } catch (e) {}
+
+    // Auto-submit the filter form on text input, debounced so each keystroke
+    // does not round-trip to the server. The submit fires 300 ms after the
+    // last keystroke. Form is the closest <form> ancestor — fine here because
+    // the dashboard's form is the only one with these inputs.
+    try {
+      var auto = document.querySelectorAll(".js-auto");
+      auto.forEach(function (input) {
+        var form = input.form;
+        if (!form) return;
+        var t;
+        input.addEventListener("input", function () {
+          clearTimeout(t);
+          t = setTimeout(function () { form.submit(); }, 300);
+        });
+      });
+    } catch (e) {}
+  })();
+</script>
 {{end}}
 
 {{define "active_table"}}
+{{/*
+  The active fragment is rendered into the dashboard, polled every 3s.
+  Same shape as before; the dashboard's filter controls sit OUTSIDE this
+  fragment so a poll does not undo what the user just typed in the search
+  field.
+*/}}
 {{if .Active}}
 <table>
   <thead>
-    <tr><th>Что</th><th>Состояние</th><th>Прогресс</th><th></th></tr>
+    <tr><th colspan="2">Что</th><th>Состояние</th><th>Прогресс</th><th></th></tr>
   </thead>
   <tbody>
   {{range .Active}}
     <tr>
+      <td class="thumb">
+        {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+      </td>
       <td>
-        <a href="/requests/{{.ID}}">{{.Title}}</a>
+        <a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a>
         {{if .Watchers}}<span class="muted"> · {{.Watchers}}</span>{{end}}
       </td>
       <td><span class="state {{.State}}">{{.State}}</span></td>
       <td>{{template "progress" .}}</td>
       <td class="actions">
-        <form method="post" action="/requests/{{.ID}}/cancel">
+        <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">
           {{/* $, not ., because inside the range "." is the row: the token
                belongs to the page, which is one level out. */}}
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-          <button type="submit" class="link">отменить</button>
+          <button type="submit" class="link small">отменить</button>
         </form>
       </td>
     </tr>
