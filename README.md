@@ -412,41 +412,68 @@ test therefore sets only a tag, which is what identifies a torrent anyway.
 - A Telegram bot token from @BotFather, if you want the bot — everything else
   works without it
 
-## Getting started
+## Install
+
+The shortest path to a running `mediad`:
 
 ```bash
+git clone <repo> mediad && cd mediad
 cp .env.example .env
-# fill in POSTGRES_PASSWORD and MEDIAD_DB_PASSWORD at minimum
-make up
+# edit .env — see "What you need" for the minimum set of secrets
+make up          # PostgreSQL + Temporal
+make migrate     # apply the schema once Postgres is reachable
+make all         # worker + HTTP API in one process
 ```
 
-`make up` starts PostgreSQL, creates both Temporal databases and the
-application database, starts the Temporal server and its web UI.
-Then:
+`make up` waits until both databases are created and Temporal answers on
+`:7233`. The first run of `make all` prints a redacted configuration to
+stdout — if anything is missing, it surfaces here, before any request
+goes looking for it. Open <http://localhost:8081> in a browser; the
+setup wizard creates the administrator account.
+
+For a split deployment (worker and API as separate processes):
 
 ```bash
-make migrate   # apply the schema
-make config    # print the effective configuration, secrets redacted
-make all       # worker, interface and bot in one process
+make up         # terminal 1 — infrastructure
+make worker     # terminal 2 — Temporal worker
+make api        # terminal 3 — HTTP API + web UI
 ```
 
-Then open <http://localhost:8081> and create the administrator. The bot needs
-`MEDIAD_TELEGRAM_TOKEN` set to start; the interface and the worker do not.
-
-The Temporal Web UI is at <http://localhost:8233>, and mediad's own interface at
-<http://localhost:8081>. Opening it for the first time shows a setup wizard that
-creates the administrator account.
-
-During development it is usually easier to run the binary on the host and only
-the infrastructure in Docker:
+For a Docker-only deployment (application included in compose):
 
 ```bash
-make up        # infrastructure only
-make worker    # terminal 2
-make api       # terminal 3
+make up-all     # everything in containers
 ```
 
-The binary reads `MEDIAD_*` variables, while `.env.example` currently names the
+The Docker image is rebuilt by `make build`. The compose file pins
+PostgreSQL 16 and a specific Temporal image because `auto-setup` is
+deprecated; the schema is now created by the `temporal-schema-setup`
+admin container.
+
+The Telegram bot is the only optional piece. With
+`MEDIAD_TELEGRAM_TOKEN` (from `@BotFather`) and
+`MEDIAD_TELEGRAM_ENABLED=true` set, `make all` starts it; without them,
+the bot stays quiet and the rest of the system carries on.
+
+### Verifying the install
+
+- <http://localhost:8081> — the web UI.
+- <http://localhost:8233> — the Temporal Web UI.
+- `make config` — effective configuration with secrets redacted.
+- `make test` — unit tests (DB-backed ones skip without `MEDIAD_TEST_DSN`).
+
+If something is wrong, `make logs` tails the Temporal log and the
+default-level logs from the worker/API; the application itself logs to
+stdout at the level set by `MEDIAD_LOG_LEVEL`.
+
+For development it is usually easier to run the binary on the host and
+only the infrastructure in Docker (so config changes are immediate, and
+delve or a debugger can attach). Use `make up` for infrastructure, then
+`make worker` and `make api` in separate terminals.
+
+### A wart worth knowing about
+
+The binary reads `MEDIAD_*` variables, but `.env.example` currently names the
 secrets the short way (`TMDB_API_KEY`, `PLEX_TOKEN`, …) because that is what
 docker compose interpolates. Running on the host therefore needs the prefixed
 spelling, or the setting is silently absent and the default is used:
@@ -458,8 +485,7 @@ export MEDIAD_PLEX_TOKEN="$PLEX_TOKEN"
 # ...and so on for the indexer, qBittorrent and Telegram
 ```
 
-This is a wart, not a design: the names are normalised in stage 10 so that one
-`.env` works for both paths.
+The names are normalised in stage 10 so one `.env` works for both paths.
 
 ## Configuration
 
