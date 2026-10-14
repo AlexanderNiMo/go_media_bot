@@ -142,6 +142,11 @@ type Telegram struct {
 	// some other tool, with this project's bot switched off.
 	Enabled bool   `koanf:"enabled" yaml:"enabled"`
 	Token   string `koanf:"token"   yaml:"token"`
+	// Proxy routes the bot's HTTPS traffic to api.telegram.org through an
+	// HTTP CONNECT (http://, https://) or SOCKS5 (socks5://) proxy. Empty
+	// uses the standard net/http client. User info on the URL is sent as
+	// proxy credentials where applicable.
+	Proxy string `koanf:"proxy" yaml:"proxy"`
 }
 
 // Search controls the torrent search loop.

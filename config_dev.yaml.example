@@ -49,9 +49,14 @@ qbittorrent:
   api_key: ""
 
 # Telegram is off during dev: a developer who has set TELEGRAM_TOKEN for
-# another project can use this to suppress the bot.
+# another project can use this to suppress the bot. Set proxy to route
+# api.telegram.org through an HTTP CONNECT (http://, https://) or SOCKS5
+# (socks5://) proxy when the direct route is blocked. User info in the
+# URL is sent as proxy credentials where applicable.
 telegram:
   enabled: false
+  # token: 123456:bot-token-from-botfather
+  # proxy: socks5://user:pass@127.0.0.1:1080
 
 # The point of a dev profile: stages that take days in production take
 # minutes here.

@@ -4,6 +4,8 @@ go 1.27.2
 
 require (
 	github.com/autobrr/go-qbittorrent v1.19.0
+	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-telegram/bot v1.27.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/knadh/koanf/parsers/yaml v1.1.1
 	github.com/knadh/koanf/providers/env v1.1.0
@@ -15,6 +17,8 @@ require (
 	go.temporal.io/api v1.63.5
 	go.temporal.io/sdk v1.49.0
 	go.uber.org/fx v1.24.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/net v0.60.0
 	golang.org/x/time v0.3.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -24,8 +28,6 @@ require (
 	github.com/avast/retry-go v3.0.0+incompatible // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	github.com/go-chi/chi/v5 v5.3.2 // indirect
-	github.com/go-telegram/bot v1.27.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
@@ -51,9 +53,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
-	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect

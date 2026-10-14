@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +26,7 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"go.uber.org/fx"
+	xproxy "golang.org/x/net/proxy"
 
 	"github.com/alex/mediad/internal/config"
 	"github.com/alex/mediad/internal/domain"
@@ -151,7 +154,13 @@ func newBot(cfg *config.Config, store *storage.Store, req requestStarter,
 		return b, nil
 	}
 
-	api, err := tgbot.New(cfg.Telegram.Token, routes...)
+	httpc, err := telegramHTTPClient(cfg.Telegram.Proxy)
+	if err != nil {
+		return nil, err
+	}
+	all := append(routes, tgbot.WithHTTPClient(time.Minute, httpc))
+
+	api, err := tgbot.New(cfg.Telegram.Token, all...)
 	if err != nil {
 		return nil, fmt.Errorf("start the telegram bot: %w", err)
 	}
@@ -768,4 +777,48 @@ func displayName(u models.User) string {
 		return name
 	}
 	return strings.TrimSpace(u.FirstName)
+}
+
+// telegramHTTPClient builds the *http.Client the tgbot library uses to talk
+// to api.telegram.org. An empty proxy returns the library's default; an
+// http:// or https:// URL is an HTTP CONNECT proxy; a socks5:// URL goes
+// through a SOCKS5 dialer. User info on the URL is honored for auth.
+//
+// The timeout matches the library's poll interval (one minute), so a
+// hung connection fails within a poll rather than across many.
+func telegramHTTPClient(proxyURL string) (*http.Client, error) {
+	timeout := time.Minute
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return &http.Client{Timeout: timeout}, nil
+	}
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse telegram.proxy: %w", err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+		return &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(u),
+			},
+		}, nil
+	case "socks5":
+		var auth *xproxy.Auth
+		if u.User != nil {
+			pw, _ := u.User.Password()
+			auth = &xproxy.Auth{User: u.User.Username(), Password: pw}
+		}
+		dialer, err := xproxy.SOCKS5("tcp", u.Host, auth, xproxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("build the SOCKS5 dialer: %w", err)
+		}
+		return &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{Dial: dialer.Dial},
+		}, nil
+	default:
+		return nil, fmt.Errorf("telegram.proxy: unsupported scheme %q (want http, https, or socks5)", u.Scheme)
+	}
 }
