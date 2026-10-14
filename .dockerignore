@@ -1,0 +1,38 @@
+# What Docker's build context does NOT need.
+#
+# .dockerignore is independent of .gitignore: a gitignored file is still in
+# the build context if it lives in the working directory when `docker build`
+# runs. The patterns below keep the build small and skip anything that is
+# only meaningful on the developer host.
+
+# Postgres data directory, populated by `make up` and bind-mounted into the
+# postgres container. Has no place in the application image.
+data/
+
+# Built binary directory (the Dockerfile compiles from source, so anything
+# already built in `./bin/` is just dead weight).
+bin/
+
+# Debug binaries left behind by GoLand / VSCode sessions.
+__debug_bin*?
+
+# IDE and tool directories. .gitignore covers the same paths, but Docker
+# does not read .gitignore.
+.idea/
+.zed/
+.claude/
+.vscode/
+
+# Local configuration and secrets. .env and config_dev.yaml are in
+# .gitignore; config.yaml is too. Listed here so the build is independent
+# of the working tree's git state.
+.env
+config.yaml
+config_dev.yaml
+
+# Git metadata, in case the build runs against a non-clean tree.
+.git/
+
+# Test replay corpus: hundreds of kilobytes of Temporal histories that the
+# tests need but the binary does not.
+internal/request/testdata/histories/

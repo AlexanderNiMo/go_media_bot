@@ -49,7 +49,9 @@ up-all: ## Start the whole stack in Docker, application included
 	@# mediad is the single sink: it depends on the namespace, the migration and
 	@# Postgres, so it is the one service that cannot start until everything
 	@# else is ready. The profile has to be enabled for it to be visible at all.
-	docker compose --profile app up -d --wait mediad
+	@# --build forces the image to be rebuilt every time so source changes do
+	@# not require a separate `docker compose build` step.
+	docker compose --profile app up -d --build --wait mediad
 	@echo
 	@echo "mediad:          http://localhost:8081"
 	@echo "Temporal Web UI: http://localhost:8233"
