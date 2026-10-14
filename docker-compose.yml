@@ -270,7 +270,7 @@ services:
         condition: service_completed_successfully
       postgresql:
         condition: service_healthy
-    command: ["all"]
+    command: ["all", "--config", "/etc/mediad/config.yaml"]
     # Plex, qBittorrent and Prowlarr run on the host, not in this compose file.
     # With network_mode: "host" the container shares the host's network stack,
     # so `localhost` resolves to the host's loopback. host.docker.internal is
@@ -280,8 +280,10 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@localhost:5432/mediad?sslmode=disable
+      # TEMPORAL
       MEDIAD_TEMPORAL_HOST: localhost:7233
       MEDIAD_TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
+      # TMDB
       MEDIAD_TMDB_API_KEY: ${MEDIAD_TMDB_API_KEY:-}
       MEDIAD_TMDB_PROXY: ${MEDIAD_TMDB_PROXY:-}
       # The *_DOCKER variants override the host-facing values from .env, which
@@ -289,23 +291,37 @@ services:
       # rewrite of the URL because Compose does not do substitution inside a
       # value: there is no way to turn `localhost` into `host.docker.internal`
       # while leaving the port alone.
+      # PLEX
       MEDIAD_PLEX_URL: ${PLEX_URL_DOCKER:-${PLEX_URL:-}}
       MEDIAD_PLEX_TOKEN: ${MEDIAD_PLEX_TOKEN:-}
+      # INDEXER
       MEDIAD_INDEXER_BASE_URL: ${INDEXER_BASE_URL_DOCKER:-${INDEXER_BASE_URL:-}}
       MEDIAD_INDEXER_API_KEY: ${MEDIAD_INDEXER_API_KEY:-}
+      # QBITTORRENT
       MEDIAD_QBITTORRENT_URL: ${QBITTORRENT_URL_DOCKER:-${MEDIAD_QBITTORRENT_URL:-}}
       MEDIAD_QBITTORRENT_API_KEY: ${MEDIAD_QBITTORRENT_API_KEY:-}
       MEDIAD_QBITTORRENT_USERNAME: ${MEDIAD_QBITTORRENT_USERNAME:-}
       MEDIAD_QBITTORRENT_PASSWORD: ${MEDIAD_QBITTORRENT_PASSWORD:-}
+      # TELEGRAM
+      MEDIAD_TELEGRAM_ENABLED: ${MEDIAD_TELEGRAM_ENABLED:-false}
       MEDIAD_TELEGRAM_TOKEN: ${MEDIAD_TELEGRAM_TOKEN:-}
+      MEDIAD_TELEGRAM_PROXY: ${MEDIAD_TELEGRAM_PROXY:-}
+      # APP_SERVER
       MEDIAD_SERVER_LISTEN: ${MEDIAD_SERVER_LISTEN:-8081}
       MEDIAD_SERVER_BASEURL: ${MEDIAD_SERVER_BASEURL:-localhost}
       MEDIAD_SERVER_BASEPATH: ${MEDIAD_SERVER_BASEPATH:-}
+    # config.yaml is optional. The host's ./config.yaml (gitignored; see
+    # config_dev.yaml.example for the template) is mounted read-only into
+    # the container and passed to `mediad all` via --config. An empty file
+    # is a no-op: the loader treats it as "no file-based overrides" and the
+    # MEDIAD_* env vars layered on top still drive the configuration. The
+    # Makefile target `up-all` touches the file if it does not exist so
+    # the bind mount has a target.
+    volumes:
+      - ./config.yaml:/etc/mediad/config.yaml:ro
     # `ports:` is ignored under network_mode: "host" (compose binds the port
     # directly to the host), but kept for documentation. Same for
     # `expose:`.
-    networks:
-      - mediad
 
   # Creates the application's own database. Runs once, before anything opens a
   # connection to it; migrations are applied by the application itself.
@@ -381,8 +397,10 @@ services:
     depends_on:
       mediad-db-setup:
         condition: service_completed_successfully
-    command: ["migrate"]
+    command: ["migrate", "--config", "/etc/mediad/config.yaml"]
     environment:
       MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@postgresql:5432/mediad?sslmode=disable
+    volumes:
+      - ./config.yaml:/etc/mediad/config.yaml:ro
     networks:
       - mediad

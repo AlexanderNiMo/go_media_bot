@@ -46,6 +46,10 @@ up: ## Start the infrastructure and wait until it is actually ready
 
 up-all: ## Start the whole stack in Docker, application included
 	@test -f .env || { echo "no .env — copy .env.example and fill it in"; exit 1; }
+	@# config.yaml is optional for the application (an empty file is a no-op
+	@# for the loader), but the volume mount in compose has to bind-mount a
+	@# host file. Touch one if it does not exist so the bind target exists.
+	@test -f config.yaml || touch config.yaml
 	@# One-shot services (db-setup, migrate, schema-setup, namespace-setup)
 	@# run to completion and then linger as Exited (0). Their previous exit
 	@# code is what service_completed_successfully checks. After a fresh
