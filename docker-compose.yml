@@ -71,7 +71,7 @@ services:
   # because upgrading Temporal is then a two-line change: bump the admin-tools
   # tag, let this run, then bump the server tag. Schema first, always.
   temporal-schema-setup:
-    image: temporalio/admin-tools:1.32.1
+    image: temporalio/admin-tools:1.31.0
     container_name: mediad-temporal-schema
     restart: on-failure:10
     depends_on:
@@ -117,7 +117,7 @@ services:
       - mediad
 
   temporal:
-    image: temporalio/server:1.32.1
+    image: temporalio/server:1.31.0
     container_name: mediad-temporal
     restart: unless-stopped
     depends_on:
@@ -170,12 +170,12 @@ services:
   # in this file: the script has grown past what is comfortable to read
   # between YAML keys, and a regression test or manual run is easier when
   # the script is its own file. Alpine + the official CLI installer, not
-  # temporalio/admin-tools:1.32.1 — admin-tools' bundled CLI hits a gRPC
+  # temporalio/admin-tools:1.31.0 — admin-tools' bundled CLI hits a gRPC
   # deadline against the matching server image pair (TCP works, the gRPC
   # call never completes); the CLI binary fetched by
   # https://temporal.download/cli.sh works.
   temporal-namespace-setup:
-    build: ./scripts/temporal-namespace-setup
+    image: temporalio/admin-tools:1.31.0
     container_name: mediad-temporal-namespace
     restart: on-failure:10
     depends_on:
@@ -184,11 +184,30 @@ services:
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        until temporal operator cluster health --address "$$TEMPORAL_ADDRESS" >/dev/null 2>&1; do
+          sleep 2
+        done
+
+        if temporal operator namespace describe -n "$$DEFAULT_NAMESPACE" \
+             --address "$$TEMPORAL_ADDRESS" >/dev/null 2>&1; then
+          echo "namespace $$DEFAULT_NAMESPACE already exists"
+        else
+          # Retention applies to CLOSED executions only. Our workflows stay
+          # open for up to two years, so it does not touch them; ContinueAsNew
+          # is what keeps their history bounded, not this.
+          temporal operator namespace create -n "$$DEFAULT_NAMESPACE" \
+            --retention 7d --address "$$TEMPORAL_ADDRESS"
+          echo "namespace $$DEFAULT_NAMESPACE created"
+        fi
     networks:
       - mediad
 
   temporal-ui:
-    image: temporalio/ui:2.55.0
+    image: temporalio/ui:2.49.1
     container_name: mediad-temporal-ui
     restart: unless-stopped
     depends_on:
