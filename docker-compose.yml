@@ -238,10 +238,23 @@ services:
   # The application. Not started by `docker compose up` by default — run it
   # from the host with `make worker` / `make api` while developing, or bring it
   # up explicitly with `docker compose --profile app up -d`.
+  #
+  # network_mode: "host" — the same fix that namespace-setup needs. The
+  # Docker bridge drops HTTP/2 SETTINGS frames between the application
+  # container and the Temporal container in some configurations, and the
+  # gRPC connection from `client.Dial` (in go.temporal.io/sdk) times out
+  # with `context deadline exceeded` after 30 attempts (~60 s). On the host
+  # network the same call completes in milliseconds. Trade-off: this
+  # service is no longer on `mediad`, so it cannot reach other services by
+  # name; PostgreSQL and Temporal are reached via `localhost:5432` and
+  # `localhost:7233`, which compose's port mappings publish on the host.
+  # `networks: [mediad]` below is dropped because compose rejects
+  # `network_mode` + `networks` as mutually exclusive.
   mediad:
     build: .
     container_name: mediad-app
     profiles: ["app"]
+    network_mode: "host"
     restart: unless-stopped
     depends_on:
       # Depends on the namespace container, not on temporal being healthy:
@@ -258,19 +271,19 @@ services:
       postgresql:
         condition: service_healthy
     command: ["all"]
-    # Plex, qBittorrent and Prowlarr run on the host, not in this compose file,
-    # and inside a container `localhost` is the container itself. Without this
-    # the application reaches nothing, and the resulting failure is a login
-    # error against a torrent client that is running perfectly well a few
-    # centimetres away — which reads like a credentials problem.
+    # Plex, qBittorrent and Prowlarr run on the host, not in this compose file.
+    # With network_mode: "host" the container shares the host's network stack,
+    # so `localhost` resolves to the host's loopback. host.docker.internal is
+    # kept for compatibility with *_DOCKER URL variants that already target
+    # the host gateway explicitly.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@postgresql:5432/mediad?sslmode=disable
-      MEDIAD_TEMPORAL_HOST: temporal:7233
+      MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@localhost:5432/mediad?sslmode=disable
+      MEDIAD_TEMPORAL_HOST: localhost:7233
       MEDIAD_TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
-      MEDIAD_TMDB_API_KEY: ${TMDB_API_KEY:-}
-      MEDIAD_TMDB_PROXY: ${TMDB_PROXY:-}
+      MEDIAD_TMDB_API_KEY: ${MEDIAD_TMDB_API_KEY:-}
+      MEDIAD_TMDB_PROXY: ${MEDIAD_TMDB_PROXY:-}
       # The *_DOCKER variants override the host-facing values from .env, which
       # are written for a process running on the host. Two names rather than a
       # rewrite of the URL because Compose does not do substitution inside a
@@ -279,17 +292,18 @@ services:
       MEDIAD_PLEX_URL: ${PLEX_URL_DOCKER:-${PLEX_URL:-}}
       MEDIAD_PLEX_TOKEN: ${MEDIAD_PLEX_TOKEN:-}
       MEDIAD_INDEXER_BASE_URL: ${INDEXER_BASE_URL_DOCKER:-${INDEXER_BASE_URL:-}}
-      MEDIAD_INDEXER_API_KEY: ${INDEXER_API_KEY:-}
-      MEDIAD_QBITTORRENT_URL: ${QBITTORRENT_URL_DOCKER:-${QBITTORRENT_URL:-}}
-      MEDIAD_QBITTORRENT_API_KEY: ${QBITTORRENT_API_KEY:-}
-      MEDIAD_QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
-      MEDIAD_QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+      MEDIAD_INDEXER_API_KEY: ${MEDIAD_INDEXER_API_KEY:-}
+      MEDIAD_QBITTORRENT_URL: ${QBITTORRENT_URL_DOCKER:-${MEDIAD_QBITTORRENT_URL:-}}
+      MEDIAD_QBITTORRENT_API_KEY: ${MEDIAD_QBITTORRENT_API_KEY:-}
+      MEDIAD_QBITTORRENT_USERNAME: ${MEDIAD_QBITTORRENT_USERNAME:-}
+      MEDIAD_QBITTORRENT_PASSWORD: ${MEDIAD_QBITTORRENT_PASSWORD:-}
       MEDIAD_TELEGRAM_TOKEN: ${MEDIAD_TELEGRAM_TOKEN:-}
       MEDIAD_SERVER_LISTEN: ${MEDIAD_SERVER_LISTEN:-8081}
       MEDIAD_SERVER_BASEURL: ${MEDIAD_SERVER_BASEURL:-localhost}
       MEDIAD_SERVER_BASEPATH: ${MEDIAD_SERVER_BASEPATH:-}
-    ports:
-      - "${MEDIAD_SERVER_LISTEN:-8081}:8081"
+    # `ports:` is ignored under network_mode: "host" (compose binds the port
+    # directly to the host), but kept for documentation. Same for
+    # `expose:`.
     networks:
       - mediad
 

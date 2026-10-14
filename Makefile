@@ -46,11 +46,22 @@ up: ## Start the infrastructure and wait until it is actually ready
 
 up-all: ## Start the whole stack in Docker, application included
 	@test -f .env || { echo "no .env — copy .env.example and fill it in"; exit 1; }
-	@# mediad is the single sink: it depends on the namespace, the migration and
-	@# Postgres, so it is the one service that cannot start until everything
-	@# else is ready. The profile has to be enabled for it to be visible at all.
-	@# --build forces the image to be rebuilt every time so source changes do
-	@# not require a separate `docker compose build` step.
+	@# One-shot services (db-setup, migrate, schema-setup, namespace-setup)
+	@# run to completion and then linger as Exited (0). Their previous exit
+	@# code is what service_completed_successfully checks. After a fresh
+	@# `./data/` wipe the cached Exited (0) is a lie: the postgres data
+	@# directory is empty, the `mediad` role no longer exists, and compose
+	@# would happily skip the setup, leaving mediad-app to fail on auth
+	@# against a database that has not been initialised. Same trap on the
+	@# Temporal side: a wiped persistence store looks "ready" to compose
+	@# while the cluster is starting up against empty tables.
+	@# `rm -sf` clears the cached state so the next `up` actually runs them.
+	docker compose rm -sf temporal-schema-setup temporal-namespace-setup mediad-db-setup mediad-migrate 2>/dev/null || true
+	@# mediad is the single sink: it depends on the namespace, the migration
+	@# and Postgres, so it is the one service that cannot start until
+	@# everything else is ready. --build forces the image to be rebuilt
+	@# every time so source changes do not require a separate
+	@# `docker compose build` step.
 	docker compose up -d --build --wait mediad
 	@echo
 	@echo "mediad:          http://localhost:8081"
