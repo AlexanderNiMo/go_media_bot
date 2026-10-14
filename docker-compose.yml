@@ -17,6 +17,14 @@
 
 name: mediad
 
+# A single named network rather than the implicit default so the wiring is
+# visible in the file. Every service is on it explicitly — service-to-service
+# DNS resolution goes through the same Compose-managed bridge either way, but
+# listing the attachment makes the dependency graph auditable.
+networks:
+  mediad:
+    name: mediad
+
 services:
   postgresql:
     image: postgres:16
@@ -54,6 +62,8 @@ services:
       timeout: 5s
       retries: 60
       start_period: 30s
+    networks:
+      - mediad
 
   # Creates both Temporal databases and brings their schema up to date.
   #
@@ -103,6 +113,8 @@ services:
           update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
 
         echo "temporal schema is up to date"
+    networks:
+      - mediad
 
   temporal:
     image: temporalio/server:1.32.1
@@ -148,6 +160,8 @@ services:
       timeout: 3s
       retries: 60
       start_period: 30s
+    networks:
+      - mediad
 
   # Creates the namespace. `default` is only created automatically by the CLI
   # dev server; with a real server every namespace is explicit.
@@ -180,6 +194,8 @@ services:
             --retention 7d --address "$$TEMPORAL_ADDRESS"
           echo "namespace $$DEFAULT_NAMESPACE created"
         fi
+    networks:
+      - mediad
 
   temporal-ui:
     image: temporalio/ui:2.55.0
@@ -212,6 +228,8 @@ services:
       TEMPORAL_CORS_ORIGINS: http://localhost:8233
     ports:
       - "8233:8080"
+    networks:
+      - mediad
 
   # The application. Not started by `docker compose up` by default — run it
   # from the host with `make worker` / `make api` while developing, or bring it
@@ -265,6 +283,8 @@ services:
       MEDIAD_TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
     ports:
       - "8081:8081"
+    networks:
+      - mediad
 
   # Creates the application's own database. Runs once, before anything opens a
   # connection to it; migrations are applied by the application itself.
@@ -319,6 +339,8 @@ services:
           "GRANT ALL PRIVILEGES ON DATABASE $$APP_DB TO $$APP_USER"
         psql -h postgresql -U "$$SUPERUSER" -d "$$APP_DB" -c \
           "GRANT ALL ON SCHEMA public TO $$APP_USER"
+    networks:
+      - mediad
 
   # Applies the application's own migrations, once, and exits.
   #
@@ -341,3 +363,5 @@ services:
     command: ["migrate"]
     environment:
       MEDIAD_POSTGRES_DSN: postgres://mediad:${MEDIAD_DB_PASSWORD:?set MEDIAD_DB_PASSWORD in .env}@postgresql:5432/mediad?sslmode=disable
+    networks:
+      - mediad

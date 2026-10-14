@@ -51,7 +51,7 @@ up-all: ## Start the whole stack in Docker, application included
 	@# else is ready. The profile has to be enabled for it to be visible at all.
 	@# --build forces the image to be rebuilt every time so source changes do
 	@# not require a separate `docker compose build` step.
-	docker compose --profile app up -d --build --wait mediad
+	docker compose up -d --build --wait mediad
 	@echo
 	@echo "mediad:          http://localhost:8081"
 	@echo "Temporal Web UI: http://localhost:8233"
