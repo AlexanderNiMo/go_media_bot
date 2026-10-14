@@ -120,6 +120,17 @@ tr.unread td { font-weight: 500; }
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
 }
+.poster .rating {
+  position: absolute;
+  bottom: 0.4rem;
+  right: 0.4rem;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ffd86b;
+  font-size: 0.75em;
+  font-weight: 600;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+}
 .poster .type {
   position: absolute;
   top: 0.4rem;

@@ -16,6 +16,7 @@
         <div class="poster">
           {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{else}}<span class="noposter">постер недоступен</span>{{end}}
           {{if .Year}}<span class="year">{{.Year}}</span>{{end}}
+          {{if .Rating}}<span class="rating">⭐ {{.Rating | printf "%.1f"}}</span>{{end}}
           <span class="type">{{.Kind}}</span>
         </div>
         <span class="card-title">{{.Title}}</span>

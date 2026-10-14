@@ -72,6 +72,10 @@ type searchCard struct {
 	Year      int
 	Kind      string
 	PosterURL string
+	// Rating is TMDB's user score (0–10), zero when the title has no votes.
+	// Not IMDb: TMDB does not expose the IMDb score, this is the closest
+	// available signal without a second API key.
+	Rating float64
 }
 
 // seasonCard is one season of a series.
@@ -471,6 +475,7 @@ func searchCardFor(r tmdb.SearchResult) searchCard {
 		// Our own endpoint, not tmdb.PosterURL: the browser may not be able to
 		// reach image.tmdb.org at all, which is the whole reason this exists.
 		PosterURL: posterPath(r.PosterPath, defaultPosterSize),
+		Rating:    r.VoteAverage,
 	}
 	if r.OriginalTitle != r.Title {
 		card.Original = r.OriginalTitle

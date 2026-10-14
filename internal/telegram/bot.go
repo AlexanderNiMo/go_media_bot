@@ -450,16 +450,16 @@ func (b *Bot) search(ctx context.Context, update *models.Update, query string) {
 		return
 	}
 
-	// The poster of the top result goes above the caption as a preview;
-	// sendOptions falls back to text when the URL is empty or Telegram
-	// rejects the image, so a missing poster never blocks the answer.
+	// The album of all result posters above the caption gives the user every
+	// thumbnail at a glance; the buttons below it carry the choice. The album
+	// is decorative — the button message is what handleSelect gets a message_id
+	// back for and edits on press.
 	if msg := messageOf(update); msg != nil {
-		b.sendOptions(ctx, msg.Chat.ID,
-			tmdb.PosterURL(results[0].PosterPath, "w500"),
+		b.sendOptionsAlbum(ctx, msg.Chat.ID, results,
 			fmt.Sprintf("Нашлось: %d. Что из этого?", len(results)),
 			resultsKeyboard(sessionID, results))
 	}
-}
+	}
 
 // choose acts on a pressed button.
 func (b *Bot) choose(ctx context.Context, chatID int64, user *storage.User,

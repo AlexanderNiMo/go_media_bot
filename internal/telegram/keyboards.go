@@ -61,6 +61,12 @@ func resultsKeyboard(sessionID string, results []tmdb.SearchResult) *models.Inli
 		if r.Ref.Type == domain.MediaTypeTV {
 			label += " · сериал"
 		}
+		if r.VoteAverage > 0 {
+			// TMDB's user score (0–10). Not IMDb, but the same number a
+			// catalogue usually shows next to a title; star makes it scannable
+			// in a list of buttons.
+			label += fmt.Sprintf(" · ⭐ %.1f", r.VoteAverage)
+		}
 
 		rows = append(rows, []models.InlineKeyboardButton{{
 			Text: truncateRunes(label, 60),
@@ -157,6 +163,38 @@ func (b *Bot) sendOptions(ctx context.Context, chatID int64, photoURL, caption s
 		b.log.Warn("could not send a photo; falling back to text", "chat", chatID, "error", err)
 		b.sendMarkup(ctx, chatID, caption, markup)
 	}
+}
+
+// sendOptionsAlbum answers a multi-result choice: every result with a poster
+// is sent as one Telegram media group (a horizontal strip of thumbnails),
+// followed by a separate message carrying the caption and the inline keyboard.
+// Two bubbles instead of one is the price of seeing every option at a glance;
+// Telegram does not allow images inside keyboard buttons. If no result has a
+// poster, the album is skipped and only the button message is sent.
+//
+// The button message is the one Telegram gives back a message_id for in the
+// callback, which is what subsequent edits target — the album is decorative.
+func (b *Bot) sendOptionsAlbum(ctx context.Context, chatID int64,
+	results []tmdb.SearchResult, caption string, markup *models.InlineKeyboardMarkup) {
+	var media []models.InputMedia
+	for _, r := range results {
+		if r.PosterPath == "" {
+			continue
+		}
+		media = append(media, &models.InputMediaPhoto{
+			Media: tmdb.PosterURL(r.PosterPath, "w300"),
+		})
+	}
+	if len(media) > 0 {
+		if _, err := b.api.SendMediaGroup(ctx, &tgbot.SendMediaGroupParams{
+			ChatID: chatID,
+			Media:  media,
+		}); err != nil {
+			b.log.Warn("could not send a media group; sending only the buttons",
+				"chat", chatID, "count", len(media), "error", err)
+		}
+	}
+	b.sendMarkup(ctx, chatID, caption, markup)
 }
 
 func (b *Bot) sendMarkup(ctx context.Context, chatID int64, text string,
