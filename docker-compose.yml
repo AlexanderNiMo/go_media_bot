@@ -174,15 +174,21 @@ services:
   # deadline against the matching server image pair (TCP works, the gRPC
   # call never completes); the CLI binary fetched by
   # https://temporal.download/cli.sh works.
+  #
+  # network_mode: "host" — the gRPC call from inside the docker bridge to the
+  # temporal container times out (TCP works, the call never completes); on the
+  # host network it goes through immediately. TEMPORAL_ADDRESS points at the
+  # published port on the host rather than the in-network hostname.
   temporal-namespace-setup:
     image: temporalio/admin-tools:1.31.0
+    network_mode: "host"
     container_name: mediad-temporal-namespace
     restart: on-failure:10
     depends_on:
       temporal:
         condition: service_healthy
     environment:
-      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_ADDRESS: localhost:7233
       DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -203,8 +209,6 @@ services:
             --retention 7d --address "$$TEMPORAL_ADDRESS"
           echo "namespace $$DEFAULT_NAMESPACE created"
         fi
-    networks:
-      - mediad
 
   temporal-ui:
     image: temporalio/ui:2.49.1
