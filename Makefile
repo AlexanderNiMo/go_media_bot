@@ -68,7 +68,7 @@ up-all: ## Start the whole stack in Docker, application included
 	@# `docker compose build` step.
 	docker compose up -d --build --wait mediad
 	@echo
-	@echo "mediad:          http://localhost:8081"
+	@echo "mediad:          http://$(MEDIAD_SERVER_LISTEN)"
 	@echo "Temporal Web UI: http://localhost:8233"
 
 down: ## Stop the stack (keeps all data)
