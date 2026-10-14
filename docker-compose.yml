@@ -175,40 +175,24 @@ services:
   # call never completes); the CLI binary fetched by
   # https://temporal.download/cli.sh works.
   #
-  # network_mode: "host" — the gRPC call from inside the docker bridge to the
-  # temporal container times out (TCP works, the call never completes); on the
-  # host network it goes through immediately. TEMPORAL_ADDRESS points at the
-  # published port on the host rather than the in-network hostname.
+  # If this does not work end-to-end (the gRPC call from inside the bridge to
+  # the temporal container has been seen to time out), fall back to
+  # `network_mode: "host"` with `TEMPORAL_ADDRESS: localhost:7233` — the CLI
+  # works on the host network, the bridge is the trouble. The Dockerfile path
+  # is preferred when possible because it does not leak the container out of
+  # the project's network.
   temporal-namespace-setup:
-    image: temporalio/admin-tools:1.31.0
-    network_mode: "host"
+    build: ./scripts/temporal-namespace-setup
     container_name: mediad-temporal-namespace
     restart: on-failure:10
     depends_on:
       temporal:
         condition: service_healthy
     environment:
-      TEMPORAL_ADDRESS: localhost:7233
+      TEMPORAL_ADDRESS: temporal:7233
       DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        until temporal operator cluster health --address "$$TEMPORAL_ADDRESS" >/dev/null 2>&1; do
-          sleep 2
-        done
-
-        if temporal operator namespace describe -n "$$DEFAULT_NAMESPACE" \
-             --address "$$TEMPORAL_ADDRESS" >/dev/null 2>&1; then
-          echo "namespace $$DEFAULT_NAMESPACE already exists"
-        else
-          # Retention applies to CLOSED executions only. Our workflows stay
-          # open for up to two years, so it does not touch them; ContinueAsNew
-          # is what keeps their history bounded, not this.
-          temporal operator namespace create -n "$$DEFAULT_NAMESPACE" \
-            --retention 7d --address "$$TEMPORAL_ADDRESS"
-          echo "namespace $$DEFAULT_NAMESPACE created"
-        fi
+    networks:
+      - mediad
 
   temporal-ui:
     image: temporalio/ui:2.49.1
@@ -294,8 +278,11 @@ services:
       MEDIAD_QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
       MEDIAD_QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
       MEDIAD_TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
+      MEDIAD_SERVER_LISTEN: ${MEDIAD_SERVER_LISTEN:8081}
+      MEDIAD_SERVER_BASEURL: ${MEDIAD_SERVER_BASEURL:localhost}
+      MEDIAD_SERVER_BASEPATH: ${MEDIAD_SERVER_BASEPATH:-}
     ports:
-      - "8081:8081"
+      - "${MEDIAD_SERVER_LISTEN:-8081}:8081"
     networks:
       - mediad
 
