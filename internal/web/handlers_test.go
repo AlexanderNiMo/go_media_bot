@@ -870,6 +870,31 @@ func TestPasswordChangeRequiresTheCurrentOne(t *testing.T) {
 // Static assets
 // ---------------------------------------------------------------------------
 
+func TestHelpRenders(t *testing.T) {
+	s, _ := newTestServer(t)
+	c := signedIn(t, s)
+
+	body := c.body("/help")
+	if !strings.Contains(body, "Помощь") {
+		t.Errorf("GET /help did not render the heading: %s", truncateForTest(body, 200))
+	}
+	if !strings.Contains(body, "Состояния запроса") {
+		t.Errorf("GET /help did not render the state glossary: %s", truncateForTest(body, 200))
+	}
+}
+
+// TestHelpRequiresAuth — the link is only shown to signed-in users, so
+// the route should agree and bounce an anonymous request to /login.
+func TestHelpRequiresAuth(t *testing.T) {
+	s, _ := newTestServer(t)
+	c := newClient(t, s)
+
+	resp := c.get("/help")
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("GET /help without a session returned %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	}
+}
+
 func TestStaticAssetsAreServed(t *testing.T) {
 	s, _ := newTestServer(t)
 	c := newClient(t, s)
@@ -900,4 +925,118 @@ func readBody(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read the body: %v", err)
 	}
 	return string(b)
+}
+
+// TestBasePathRedirectsRootToPrefix — a user typing the host root in a
+// deployment that lives under a prefix is sent to the prefix rather than
+// being shown a 404. The 302 is what makes the bookmarked "/." work.
+func TestBasePathRedirectsRootToPrefix(t *testing.T) {
+	s := &Server{cfg: &config.Config{Server: config.Server{BasePath: "/mediad"}}, log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	h := s.basePath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("handler reached for path %q", r.URL.Path)
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusFound {
+		t.Errorf("code = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/mediad/" {
+		t.Errorf("Location = %q, want /mediad/", loc)
+	}
+}
+
+// TestBasePathStripsAndDispatches — the routes underneath see the path
+// without the prefix. The dispatch proves the prefix is not lying to chi.
+func TestBasePathStripsAndDispatches(t *testing.T) {
+	s := &Server{cfg: &config.Config{Server: config.Server{BasePath: "/mediad"}}, log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	var seen string
+	h := s.basePath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Path
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mediad/login", nil))
+
+	if seen != "/login" {
+		t.Errorf("handler saw %q, want /login", seen)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200", rec.Code)
+	}
+}
+
+// TestBasePathRejectsOutsideRequests — a request that does not match the
+// prefix is a 404, not a redirect. A redirect would loop or expose the
+// interface at the host root.
+func TestBasePathRejectsOutsideRequests(t *testing.T) {
+	s := &Server{cfg: &config.Config{Server: config.Server{BasePath: "/mediad"}}, log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	h := s.basePath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("handler reached for %q", r.URL.Path)
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("code = %d, want 404", rec.Code)
+	}
+}
+
+// TestBasePathIsTransparentWhenEmpty — a deployment without a prefix sees
+// the middleware pass the request through unchanged.
+func TestBasePathIsTransparentWhenEmpty(t *testing.T) {
+	s := &Server{cfg: &config.Config{}, log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	var seen string
+	h := s.basePath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Path
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+
+	if seen != "/login" {
+		t.Errorf("handler saw %q, want /login", seen)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200", rec.Code)
+	}
+}
+
+// TestPathHelperJoinsBasePathAndRoute — the template and the Go code use the
+// same function, so the two are guaranteed to agree.
+func TestPathHelperJoinsBasePathAndRoute(t *testing.T) {
+	for _, tc := range []struct {
+		base, route, want string
+	}{
+		{"", "/login", "/login"},
+		{"/mediad", "/login", "/mediad/login"},
+		{"/mediad/", "/login", "/mediad/login"},
+		{"/", "/login", "/login"},
+	} {
+		if got := pathFunc(tc.base, tc.route); got != tc.want {
+			t.Errorf("pathFunc(%q, %q) = %q, want %q", tc.base, tc.route, got, tc.want)
+		}
+	}
+}
+
+// TestFaviconIsServed pins the route the browser hits on every page. A
+// missing favicon floods the access log with 404s the moment the interface
+// loads once, so the route is worth a regression test.
+func TestFaviconIsServed(t *testing.T) {
+	s, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.handleFavicon(rec, httptest.NewRequest(http.MethodGet, "/favicon.ico", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Errorf("Content-Type = %q, want image/svg+xml", ct)
+	}
+	if !strings.HasPrefix(rec.Body.String(), "<svg") {
+		t.Errorf("body does not look like an SVG, got %q",
+			truncateForTest(rec.Body.String(), 80))
+	}
 }
