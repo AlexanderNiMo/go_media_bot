@@ -3,7 +3,7 @@
      token belongs to the page one level out. */}}
 {{with .Request}}
 <div class="confirm">
-  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+  {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
   <div>
     <h1>{{.Title}} <span class="state {{.State}}">{{.State}}</span></h1>
   </div>

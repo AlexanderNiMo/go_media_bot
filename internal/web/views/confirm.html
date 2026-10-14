@@ -2,7 +2,7 @@
 <h1>Запросить</h1>
 
 <div class="confirm">
-  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="">{{end}}
+  {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="">{{end}}
   <div>
     <h2>{{.Title}}</h2>
     <p class="muted">{{.Kind}}{{if .Year}} · {{.Year}}{{end}}{{if .Runtime}} · {{.Runtime}} мин{{end}}</p>

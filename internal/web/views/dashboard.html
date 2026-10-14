@@ -76,7 +76,7 @@
         {{range .Recent}}
           <tr>
             <td class="thumb">
-              {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+              {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
             </td>
             <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
             <td><span class="state {{.State}}">{{.State}}</span></td>
@@ -148,7 +148,7 @@
   {{range .Active}}
     <tr>
       <td class="thumb">
-        {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+        {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
       </td>
       <td>
         <a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a>

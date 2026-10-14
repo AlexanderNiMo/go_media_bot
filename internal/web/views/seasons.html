@@ -1,6 +1,6 @@
 {{define "content"}}
 <div class="confirm">
-  {{if .Show.PosterURL}}<img src="{{.Show.PosterURL}}" alt="" loading="lazy">{{end}}
+  {{if .Show.PosterURL}}<img src="{{path $.BasePath .Show.PosterURL}}" alt="" loading="lazy">{{end}}
   <div>
     <h1>{{.Show.Title}}{{if .Show.Year}} <span class="muted">{{.Show.Year}}</span>{{end}}</h1>
     <p class="muted">Сериал. Запрос ставится на один сезон — «весь сериал» запросить нельзя.</p>

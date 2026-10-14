@@ -16,7 +16,7 @@
         <tr class="{{if .Unread}}unread{{end}}">
           <td><input type="checkbox" class="notif-check" name="id" value="{{.ID}}"></td>
           <td class="thumb">
-            {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+            {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
           </td>
           <td class="muted mono">{{.When}}</td>
           <td>{{if .RequestID}}<a href="{{path $.BasePath "/requests/"}}{{.RequestID}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
