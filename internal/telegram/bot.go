@@ -179,10 +179,14 @@ func registerBot(lc fx.Lifecycle, b *Bot) {
 
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {
-			// Start does not block: it begins polling in the background.
-			b.api.Start(ctx)
+			// tgbot.Bot.Start blocks until the polling goroutines exit
+			// (i.e. ctx is canceled), so calling it directly would freeze fx
+			// app.Start past its 90s timeout and the process would die with
+			// "context deadline exceeded" before any user message could be
+			// received. Run it in the background; OnStop's cancel brings the
+			// goroutines back.
+			go b.api.Start(ctx)
 			b.log.Info("telegram bot polling")
-
 			go b.deliver(ctx)
 			return nil
 		},
@@ -446,8 +450,15 @@ func (b *Bot) search(ctx context.Context, update *models.Update, query string) {
 		return
 	}
 
-	b.replyMarkup(ctx, update, fmt.Sprintf("Нашлось: %d. Что из этого?", len(results)),
-		resultsKeyboard(sessionID, results))
+	// The poster of the top result goes above the caption as a preview;
+	// sendOptions falls back to text when the URL is empty or Telegram
+	// rejects the image, so a missing poster never blocks the answer.
+	if msg := messageOf(update); msg != nil {
+		b.sendOptions(ctx, msg.Chat.ID,
+			tmdb.PosterURL(results[0].PosterPath, "w500"),
+			fmt.Sprintf("Нашлось: %d. Что из этого?", len(results)),
+			resultsKeyboard(sessionID, results))
+	}
 }
 
 // choose acts on a pressed button.

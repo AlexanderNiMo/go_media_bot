@@ -131,6 +131,34 @@ func (b *Bot) send(ctx context.Context, chatID int64, text string) {
 	b.sendMarkup(ctx, chatID, text, nil)
 }
 
+// sendOptions answers with an image and an inline keyboard attached to it.
+//
+// Telegram puts the image above the caption, so a poster of the top result
+// is the preview the user sees before tapping a button. An empty photoURL
+// falls back to a plain text message (SendPhoto with an empty URL is a
+// client error, not a graceful skip); a SendPhoto error from Telegram
+// (image unreachable, etc.) also drops back to text so a missing poster
+// never blocks the answer.
+func (b *Bot) sendOptions(ctx context.Context, chatID int64, photoURL, caption string,
+	markup *models.InlineKeyboardMarkup) {
+	if photoURL == "" {
+		b.sendMarkup(ctx, chatID, caption, markup)
+		return
+	}
+	params := &tgbot.SendPhotoParams{
+		ChatID:  chatID,
+		Photo:   &models.InputFileString{Data: photoURL},
+		Caption: caption,
+	}
+	if markup != nil {
+		params.ReplyMarkup = markup
+	}
+	if _, err := b.api.SendPhoto(ctx, params); err != nil {
+		b.log.Warn("could not send a photo; falling back to text", "chat", chatID, "error", err)
+		b.sendMarkup(ctx, chatID, caption, markup)
+	}
+}
+
 func (b *Bot) sendMarkup(ctx context.Context, chatID int64, text string,
 	markup *models.InlineKeyboardMarkup) {
 	params := &tgbot.SendMessageParams{ChatID: chatID, Text: text}
