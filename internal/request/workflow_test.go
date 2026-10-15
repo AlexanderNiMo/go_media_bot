@@ -127,6 +127,28 @@ func (s *WorkflowSuite) expectNoise() {
 		Return(func(_ context.Context, _ int64) (string, error) {
 			return "", nil
 		}).Maybe()
+	// FetchCandidates is called by the manual-pick fallback when the
+	// auto-selector returns nothing on media that is more than two years
+	// old. The default is "no candidates" so the workflow falls through
+	// to the backoff; tests that exercise the manual-pick path override
+	// this stub.
+	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ SearchInput) ([]storage.Candidate, error) {
+			return nil, nil
+		}).Maybe()
+	// StoreCandidates is the persistence step that the workflow calls
+	// after FetchCandidates returns a non-empty list. The default
+	// "no candidates" above never reaches it, so this stub is a
+	// safety net for tests that DO drive the manual-mode path.
+	s.env.OnActivity("StoreCandidates", mock.Anything, mock.Anything).
+		Return(nil).Maybe()
+	// GetPickedCandidate is the manual-mode poll. Same safety net.
+	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
+		Return(storage.Candidate{}, storage.ErrNoSuchCandidate).Maybe()
+	// ClearCandidates runs on the manual-mode timeout and on a successful
+	// pick. Same safety net.
+	s.env.OnActivity("ClearCandidates", mock.Anything, mock.Anything).
+		Return(nil).Maybe()
 }
 
 // expectDelete stubs the torrent removal and returns a counter of the calls.

@@ -236,8 +236,9 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 	}{
 		{"request", struct {
 			page
-			Request requestDetail
-		}{p, detail}},
+			Request    requestDetail
+			Candidates []storage.Candidate
+		}{p, detail, nil}},
 		{"requests", struct {
 			page
 			State    string

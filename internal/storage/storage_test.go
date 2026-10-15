@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/alex/mediad/internal/domain"
 )
 
 // testDSNEnv names the connection string for an administrative connection to
@@ -1107,4 +1109,176 @@ func TestTelegramNotifyMaskRoundTrip(t *testing.T) {
 	if err := store.SetTelegramNotifyMask(ctx, uid, -1); err == nil {
 		t.Error("SetTelegramNotifyMask accepted -1, want an out-of-range error")
 	}
+}
+
+// TestCandidatesRoundTrip covers the four-step dance the manual-pick
+// flow does: store a list, list it back, mark one as picked, clear the
+// rest. The order matters: StoreCandidates is the workflow's
+// "I have a list" write, ListCandidates is the web page read,
+// GetPickedCandidate is the workflow's poll for a pick, and
+// ClearCandidates is the cleanup before downloadCycle takes over.
+func TestCandidatesRoundTrip(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+	uid := insertUser(t, pool, "alex")
+	rid := insertTestRequest(t, pool, ctx, store, uid, "tv-1-s1", 9999)
+
+	// Empty list: ListCandidates returns nil, not an error. A workflow
+	// that runs before the first manual-mode entry needs to be able
+	// to ask "any candidates yet?" without having to special-case
+	// the not-found path.
+	got, err := store.ListCandidates(ctx, rid)
+	if err != nil {
+		t.Fatalf("ListCandidates on empty: %v", err)
+	}
+	if got != nil {
+		t.Errorf("ListCandidates on empty = %v, want nil", got)
+	}
+
+	// Store a list of three.
+	original := []Candidate{
+		{Rank: 1, Title: "Release A", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 1024, Seeders: 5, RejectionReason: "russian_audio"},
+		{Rank: 2, Title: "Release B", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2048, Seeders: 3, RejectionReason: "size_under"},
+		{Rank: 3, Title: "Release C", Indexer: "rutor", InfoHash: "h3", MagnetLink: "magnet:?xt=3", SizeBytes: 4096, Seeders: 8, RejectionReason: "quality"},
+	}
+	if err := store.StoreCandidates(ctx, rid, original); err != nil {
+		t.Fatalf("StoreCandidates: %v", err)
+	}
+
+	// List comes back in rank order with the same fields. The
+	// round-trip uses the same struct, so a field that is dropped
+	// or reordered surfaces here.
+	got, err = store.ListCandidates(ctx, rid)
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ListCandidates = %d, want 3", len(got))
+	}
+	for i, c := range got {
+		if c.Rank != i+1 {
+			t.Errorf("got[%d].Rank = %d, want %d", i, c.Rank, i+1)
+		}
+		if c.Title != original[i].Title {
+			t.Errorf("got[%d].Title = %q, want %q", i, c.Title, original[i].Title)
+		}
+		if c.MagnetLink != original[i].MagnetLink {
+			t.Errorf("got[%d].MagnetLink = %q, want %q", i, c.MagnetLink, original[i].MagnetLink)
+		}
+		if c.PickedAt != nil {
+			t.Errorf("got[%d].PickedAt = %v, want nil before pick", i, c.PickedAt)
+		}
+	}
+
+	// Storing a new list replaces the old one entirely. The manual-mode
+	// path does this on every search tick that finds a fresh batch.
+	if err := store.StoreCandidates(ctx, rid, []Candidate{
+		{Rank: 1, Title: "Release X", Indexer: "rutor", InfoHash: "hX", MagnetLink: "magnet:?xt=X", SizeBytes: 100, Seeders: 1, RejectionReason: "ok"},
+	}); err != nil {
+		t.Fatalf("StoreCandidates (replace): %v", err)
+	}
+	got, _ = store.ListCandidates(ctx, rid)
+	if len(got) != 1 || got[0].Title != "Release X" {
+		t.Errorf("after replace: %d items, %v", len(got), got)
+	}
+
+	// Mark a candidate picked and re-store the original three.
+	if err := store.StoreCandidates(ctx, rid, original); err != nil {
+		t.Fatalf("StoreCandidates (restore): %v", err)
+	}
+	picked, err := store.MarkPicked(ctx, rid, 2)
+	if err != nil {
+		t.Fatalf("MarkPicked: %v", err)
+	}
+	if picked.Rank != 2 || picked.Title != "Release B" {
+		t.Errorf("MarkPicked returned rank %d title %q, want 2/\"Release B\"", picked.Rank, picked.Title)
+	}
+
+	// The poll for the picked row should see the same record, and
+	// only the picked row.
+	var pickedAfterPoll Candidate
+	pickedAfterPoll, err = store.GetPickedCandidate(ctx, rid)
+	if err != nil {
+		t.Fatalf("GetPickedCandidate: %v", err)
+	}
+	if pickedAfterPoll.Rank != 2 || pickedAfterPoll.Title != "Release B" {
+		t.Errorf("GetPickedCandidate = rank %d title %q, want 2/\"Release B\"", pickedAfterPoll.Rank, pickedAfterPoll.Title)
+	}
+	if pickedAfterPoll.PickedAt == nil {
+		t.Error("GetPickedCandidate.PickedAt is nil, want a timestamp")
+	}
+
+	// The list still has all three rows, but the picked one has a
+	// non-nil PickedAt. The web UI uses that to render a "you picked
+	// this" badge; the workflow uses the picked row to build the
+	// download.
+	got, _ = store.ListCandidates(ctx, rid)
+	if len(got) != 3 {
+		t.Fatalf("after pick, len = %d, want 3", len(got))
+	}
+	var pickedCount int
+	for _, c := range got {
+		if c.PickedAt != nil {
+			pickedCount++
+		}
+	}
+	if pickedCount != 1 {
+		t.Errorf("picked rows = %d, want 1", pickedCount)
+	}
+
+	// ClearCandidates wipes the list. The workflow calls this on
+	// the manual-mode timeout and on a successful pick. After
+	// clear, the picked row is gone and the list is empty.
+	if err := store.ClearCandidates(ctx, rid); err != nil {
+		t.Fatalf("ClearCandidates: %v", err)
+	}
+	got, _ = store.ListCandidates(ctx, rid)
+	if got != nil {
+		t.Errorf("ListCandidates after clear = %v, want nil", got)
+	}
+	if _, err := store.GetPickedCandidate(ctx, rid); !errors.Is(err, ErrNoSuchCandidate) {
+		t.Errorf("GetPickedCandidate after clear = %v, want ErrNoSuchCandidate", err)
+	}
+}
+
+// TestMarkPickedOnEmptyList — a wrong rank returns ErrNoSuchCandidate.
+// The web handler maps this to a 404, the bot maps it to a polite
+// "no such candidate" message. Both paths depend on the typed error.
+func TestMarkPickedOnEmptyList(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+	uid := insertUser(t, pool, "alex")
+	rid := insertTestRequest(t, pool, ctx, store, uid, "tv-2-s1", 9999)
+
+	if _, err := store.MarkPicked(ctx, rid, 1); !errors.Is(err, ErrNoSuchCandidate) {
+		t.Errorf("MarkPicked on empty list = %v, want ErrNoSuchCandidate", err)
+	}
+}
+
+// insertTestRequest creates a request the candidate tests can attach
+// candidates to. It exists in this file rather than the shared
+// helpers because the other tests build their requests through
+// CreateRequestInput and the wiring that goes with it; the candidate
+// tests only need a row to hang candidates off.
+func insertTestRequest(t *testing.T, pool *pgxpool.Pool, ctx context.Context, store *Store, uid int64, workflowID string, tmdbID int64) int64 {
+	t.Helper()
+	var season int
+	req, err := store.CreateRequest(ctx, CreateRequestInput{
+		WorkflowID:     workflowID,
+		FirstRunID:     workflowID + "-run-1",
+		SearchDeadline: time.Now().Add(48 * time.Hour),
+		NextRunAt:      time.Now().Add(time.Minute),
+		Spec: domain.MediaSpec{
+			Ref:    domain.MediaRef{Type: domain.MediaTypeTV, TMDBID: tmdbID, Season: &season},
+			Title:  workflowID,
+			Year:   1999,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRequest: %v", err)
+	}
+	if err := store.AddWatcher(ctx, req.ID, uid); err != nil {
+		t.Fatalf("AddWatcher: %v", err)
+	}
+	return req.ID
 }
