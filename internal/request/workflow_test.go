@@ -1032,13 +1032,13 @@ func (s *WorkflowSuite) TestManualModeEntersForOldMedia() {
 // difference between an auto-pick and a manual-pick.
 func (s *WorkflowSuite) TestManualModeResolvesOnPick() {
 	picked := storage.Candidate{
-		Rank:       1,
-		Title:      "old film 1080p",
-		Indexer:    "rutor",
-		InfoHash:   "userpicked1",
-		MagnetLink: "magnet:?xt=urn:btih:userpicked1",
-		SizeBytes:  4 << 30,
-		Seeders:    10,
+		Rank:            1,
+		Title:           "old film 1080p",
+		Indexer:         "rutor",
+		InfoHash:        "userpicked1",
+		MagnetLink:      "magnet:?xt=urn:btih:userpicked1",
+		SizeBytes:       4 << 30,
+		Seeders:         10,
 		RejectionReason: "russian_audio",
 	}
 	// Registered before expectNoise so this stub wins the FIFO match.

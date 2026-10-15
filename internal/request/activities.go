@@ -707,18 +707,18 @@ func (a *Activities) ClearCandidates(ctx context.Context, requestID int64) error
 // The "not picked" signal travels back to the workflow as a
 // non-retryable typed ApplicationError rather than as the
 // storage's sentinel error. Three things motivate the wrapper:
-//   1. A plain `errors.New(...)` does not survive the activity
-//      boundary as a typed value — the SDK converts it to a
-//      generic ApplicationError, and the workflow's `errors.As`
-//      check misses.
-//   2. The "not picked" signal is a permanent state, not a
-//      transient failure. A retry policy of 10 attempts on a
-//      row that does not exist yet costs 10 polls' worth of
-//      activity time for no information, and the workflow's
-//      poll cadence is the right place to wait.
-//   3. Same shape as the qBittorrent NoDiskSpace path: a
-//      non-retryable typed ApplicationError that the workflow
-//      branches on with `errors.As` + `Type()`.
+//  1. A plain `errors.New(...)` does not survive the activity
+//     boundary as a typed value — the SDK converts it to a
+//     generic ApplicationError, and the workflow's `errors.As`
+//     check misses.
+//  2. The "not picked" signal is a permanent state, not a
+//     transient failure. A retry policy of 10 attempts on a
+//     row that does not exist yet costs 10 polls' worth of
+//     activity time for no information, and the workflow's
+//     poll cadence is the right place to wait.
+//  3. Same shape as the qBittorrent NoDiskSpace path: a
+//     non-retryable typed ApplicationError that the workflow
+//     branches on with `errors.As` + `Type()`.
 func (a *Activities) GetPickedCandidate(ctx context.Context, requestID int64) (storage.Candidate, error) {
 	c, err := a.store.GetPickedCandidate(ctx, requestID)
 	if errors.Is(err, storage.ErrNoSuchCandidate) {

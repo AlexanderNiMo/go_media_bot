@@ -3,6 +3,7 @@ package request
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -380,12 +381,28 @@ func maybeEnterManualMode(ctx workflow.Context, in *Input, state *State) (search
 
 // buildCandidateList renders the candidate list for a manual-mode
 // notification body. Plain text — the bot splits on newlines.
+//
+// Plain strings.Builder + strconv rather than fmt.Fprintf: the
+// workflow vet flags fmt.Fprintf as non-deterministic, because
+// fmt's %v verb goes through internal/fmtsort.Sort which is not
+// stable. The format string here only uses %d and %s, which are
+// deterministic for fixed arguments, but the check is
+// conservative and the safe replacement is short.
 func buildCandidateList(candidates []storage.Candidate) string {
 	var b strings.Builder
 	for _, c := range candidates {
-		fmt.Fprintf(&b, "%d. [%s] %s\n   seeders: %d  size: %s  rejected: %s\n",
-			c.Rank, c.Indexer, c.Title, c.Seeders,
-			humanSize(c.SizeBytes), c.RejectionReason)
+		b.WriteString(strconv.Itoa(c.Rank))
+		b.WriteString(". [")
+		b.WriteString(c.Indexer)
+		b.WriteString("] ")
+		b.WriteString(c.Title)
+		b.WriteString("\n   seeders: ")
+		b.WriteString(strconv.Itoa(c.Seeders))
+		b.WriteString("  size: ")
+		b.WriteString(humanSize(c.SizeBytes))
+		b.WriteString("  rejected: ")
+		b.WriteString(c.RejectionReason)
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -1008,7 +1025,7 @@ func initialState(ctx workflow.Context, in Input) State {
 		// start of the workflow has ManualSince zero; the workflow enters
 		// StateManual by writing the field, and a ContinueAsNew carries
 		// it across.
-		ManualSince:      in.StartManualSince,
+		ManualSince: in.StartManualSince,
 	}
 }
 

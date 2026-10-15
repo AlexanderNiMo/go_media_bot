@@ -422,9 +422,9 @@ func TestAddSendsVersionAppropriatePauseFlag(t *testing.T) {
 //   - the option is present and "true" when the spec says true.
 func TestAddSendsSequentialAndFirstLastFlags(t *testing.T) {
 	for _, tc := range []struct {
-		name                  string
-		seq, flacp            bool
-		wantSeq, wantFlacp    string // "" = field absent
+		name               string
+		seq, flacp         bool
+		wantSeq, wantFlacp string // "" = field absent
 	}{
 		{name: "both off", seq: false, flacp: false, wantSeq: "", wantFlacp: ""},
 		{name: "seq on", seq: true, flacp: false, wantSeq: "true", wantFlacp: ""},
@@ -437,8 +437,8 @@ func TestAddSendsSequentialAndFirstLastFlags(t *testing.T) {
 			c := newTestClient(t, fake)
 
 			if _, _, err := c.Add(context.Background(), AddSpec{
-				Link:              "magnet:?xt=1",
-				Tags:              []string{TagFor(2)},
+				Link:               "magnet:?xt=1",
+				Tags:               []string{TagFor(2)},
 				SequentialDownload: tc.seq,
 				FirstLastPiecePrio: tc.flacp,
 			}); err != nil {

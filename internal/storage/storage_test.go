@@ -1316,9 +1316,9 @@ func insertTestRequest(t *testing.T, pool *pgxpool.Pool, ctx context.Context, st
 		SearchDeadline: time.Now().Add(48 * time.Hour),
 		NextRunAt:      time.Now().Add(time.Minute),
 		Spec: domain.MediaSpec{
-			Ref:    domain.MediaRef{Type: domain.MediaTypeTV, TMDBID: tmdbID, Season: &season},
-			Title:  workflowID,
-			Year:   1999,
+			Ref:   domain.MediaRef{Type: domain.MediaTypeTV, TMDBID: tmdbID, Season: &season},
+			Title: workflowID,
+			Year:  1999,
 		},
 	})
 	if err != nil {
