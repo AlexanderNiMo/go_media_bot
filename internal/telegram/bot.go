@@ -166,6 +166,24 @@ func newBot(cfg *config.Config, store *storage.Store, req requestStarter,
 	}
 
 	b.api = api
+
+	// The library calls getMe itself during New; we need the result for the
+	// web UI's link-instruction text, and the library throws it away. The
+	// second call is a single short HTTP round-trip; not worth a fork in
+	// the library. A pre-set BotUsername in config wins, so a deployment
+	// behind a firewalled api.telegram.org can still tell users which bot
+	// to message.
+	if cfg.Telegram.BotUsername == "" {
+		gctx, gcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		me, err := b.api.GetMe(gctx)
+		gcancel()
+		if err != nil {
+			log.Warn("could not fetch the bot's username via getMe; the link-instruction will not show a handle", "error", err)
+		} else {
+			cfg.Telegram.BotUsername = me.Username
+		}
+	}
+
 	return b, nil
 }
 
@@ -459,7 +477,7 @@ func (b *Bot) search(ctx context.Context, update *models.Update, query string) {
 			fmt.Sprintf("Нашлось: %d. Что из этого?", len(results)),
 			resultsKeyboard(sessionID, results))
 	}
-	}
+}
 
 // choose acts on a pressed button.
 func (b *Bot) choose(ctx context.Context, chatID int64, user *storage.User,
@@ -826,7 +844,7 @@ func telegramHTTPClient(proxyURL string) (*http.Client, error) {
 			return nil, fmt.Errorf("build the SOCKS5 dialer: %w", err)
 		}
 		return &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
 			Transport: &http.Transport{Dial: dialer.Dial},
 		}, nil
 	default:

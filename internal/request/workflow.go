@@ -486,9 +486,9 @@ func completeDownload(ctx workflow.Context, in *Input, state *State, contentPath
 		// Surface what landed, not just that something did. The body goes
 		// to the notification row, where "downloaded" alone is the kind
 		// of message a user files and forgets.
-		Reason:    describeRelease(*state.Selected),
-		Attempts:  state.Attempt,
-		Selected:  state.Selected,
+		Reason:   describeRelease(*state.Selected),
+		Attempts: state.Attempt,
+		Selected: state.Selected,
 	}
 
 	return finishWith(ctx, in, state, result, storage.NotificationCompleted)

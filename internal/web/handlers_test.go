@@ -1067,3 +1067,33 @@ func TestRequireAuthRedirectAbsorbsBasePath(t *testing.T) {
 		t.Errorf("Location = %q, want %q", loc, want)
 	}
 }
+
+// TestSettingsTelegramTabLinksToBot — the link-instruction on the
+// Telegram settings tab points the user at t.me/<bot username> when the
+// bot's handle is known. Without this, the page only says "open the
+// bot" with no way for the user to know which bot — they are searching
+// Telegram blind, and a deployment that lost the handle at startup is
+// silent about it.
+func TestSettingsTelegramTabLinksToBot(t *testing.T) {
+	s, _ := newTestServer(t)
+	signedIn(t, s)
+
+	s.cfg.Telegram.BotUsername = "mediad_dev_bot"
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/settings?tab=telegram", nil)
+	s.handleSettings(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200; body: %s", rec.Code, truncateForTest(rec.Body.String(), 300))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="https://t.me/mediad_dev_bot"`) {
+		t.Errorf("the link-instruction does not point at the bot; rendered body:\n%s",
+			truncateForTest(body, 600))
+	}
+	if !strings.Contains(body, "@mediad_dev_bot") {
+		t.Errorf("the link-instruction does not show the @handle; rendered body:\n%s",
+			truncateForTest(body, 600))
+	}
+}

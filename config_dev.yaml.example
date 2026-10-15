@@ -180,6 +180,12 @@ telegram:
   enabled: false
   # Bot token from @BotFather. Treat as a secret.
   # token: 123456:bot-token-from-botfather
+  # The bot's @handle as Telegram returns it from getMe. Populated at
+  # startup when token is set; the link-instruction on the settings
+  # page points the user at t.me/<bot_username>. Set by hand here to
+  # override the getMe result when the Telegram API is unreachable but
+  # the deployment still has the answer.
+  # bot_username: mediad_bot
   # Optional HTTP CONNECT (http://, https://) or SOCKS5 (socks5://) proxy
   # for api.telegram.org. User info in the URL is sent as proxy creds.
   # proxy: socks5://user:pass@127.0.0.1:1080

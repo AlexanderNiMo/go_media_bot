@@ -1,0 +1,23 @@
+#!/bin/sh
+# Pre-commit hook: format the tree and run the same checks CI runs before
+# letting a commit go through. A green commit should land green in CI
+# without a follow-up fixup; this hook is the wall between "I think this
+# works" and "this is what CI will see".
+#
+# Install: `make install-hooks` (or copy this file to .git/hooks/pre-commit
+# and chmod +x it). The Makefile target is the supported path.
+set -eu
+
+echo "→ make fmt"
+make fmt
+
+# Re-stage anything the formatter changed. git commit snapshots the
+# index, not the working tree; without re-staging, a gofmt fix would
+# not be part of the commit even though it sits on disk. -u stages
+# updates to tracked files only, which is exactly what fmt produces.
+git add -u
+
+echo "→ make check-ci"
+make check-ci
+
+echo "pre-commit checks passed"

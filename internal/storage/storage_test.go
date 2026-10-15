@@ -1039,7 +1039,7 @@ func TestUnlinkTelegramRemovesOnlyTheMatchingChat(t *testing.T) {
 	alex := insertUser(t, pool, "alex")
 	bob := insertUser(t, pool, "bob")
 	for _, u := range []struct {
-		uid int64
+		uid  int64
 		chat string
 	}{{alex, "alex-1"}, {bob, "bob-1"}} {
 		if _, err := pool.Exec(ctx, `

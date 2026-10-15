@@ -158,6 +158,9 @@ func fixtures(t *testing.T) map[string]any {
 			Invites:   []inviteRow{{Code: "abc", CreatedAt: "2026-01-01", ExpiresAt: "2026-01-08", State: "действует"}},
 			Users:     []storage.User{{ID: 1, Username: "alex", IsAdmin: true}, {ID: 2}},
 			InviteTTL: "7 дн",
+			// BotUsername is empty in the smoke fixture; a separate test
+			// exercises the populated case.
+			BotUsername: "mediad_bot",
 		},
 		"login": loginView{page: testPage(), Next: "/requests"},
 		"help":  helpView{page: testPage()},

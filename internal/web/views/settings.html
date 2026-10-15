@@ -68,8 +68,9 @@
     <button type="submit">Привязать Telegram</button>
   </form>
   <p class="muted">
-    После нажатия будет выдан код; в Telegram откройте бот и отправьте
-    <code>/link &lt;код&gt;</code>. Код живёт {{.InviteTTL}} и тратится с первого применения.
+    После нажатия будет выдан код; в Telegram откройте
+    {{if .BotUsername}}<a href="https://t.me/{{.BotUsername}}">@{{.BotUsername}}</a>{{else}}бота{{end}}
+    и отправьте <code>/link &lt;код&gt;</code>. Код живёт {{.InviteTTL}} и тратится с первого применения.
   </p>
 </article>
 

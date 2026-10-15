@@ -16,7 +16,7 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-db tidy fmt vet workflowcheck replay capture inspect-histories check check-ci
+.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-db tidy fmt vet workflowcheck replay capture inspect-histories check check-ci install-hooks
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -26,7 +26,7 @@ help: ## Show this help
 
 up: ## Start the infrastructure and wait until it is actually ready
 	@test -f .env || { echo "no .env — copy .env.example and fill it in"; exit 1; }
-    docker compose up -d --wait temporal-ui
+	docker compose up -d --wait temporal-ui
 	@echo
 	@echo "Temporal Web UI:  http://localhost:8233"
 	@echo "To run the application on the host: make worker / make api"
@@ -122,3 +122,12 @@ check: fmt vet build test ## Format, vet, build and test
 check-ci: workflowcheck check test-db ## What CI runs: determinism, build, tests
 	@MEDIAD_REQUIRE_REPLAY=1 go test ./internal/request/ -run TestReplay -count=1
 	@echo "all CI checks passed"
+
+# install-hooks: copy the tracked pre-commit hook into .git/hooks/ and
+# make it executable. .git/hooks/ is per-clone and gitignored, so the
+# hook source has to live in the tree (scripts/git-hooks/) and land in
+# .git/hooks/ via this target. Run it once after `git clone`; rerun
+# after pulling changes to the hook itself.
+install-hooks: ## Install the pre-commit hook into .git/hooks/
+	@install -m 0755 scripts/git-hooks/pre-commit .git/hooks/pre-commit
+	@echo "installed .git/hooks/pre-commit"

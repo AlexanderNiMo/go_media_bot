@@ -173,18 +173,18 @@ func orDefault(v, def int) int {
 // ---------------------------------------------------------------------------
 
 type prowlarrRelease struct {
-	Title       string `json:"title"`
-	GUID        string `json:"guid"`
-	Size        int64  `json:"size"`
-	Seeders     *int   `json:"seeders"`
-	Leechers    *int   `json:"leechers"`
-	DownloadURL string `json:"downloadUrl"`
-	MagnetURL   string `json:"magnetUrl"`
-	InfoHash    string `json:"infoHash"`
-	Indexer     string `json:"indexer"`
-	IndexerID   int    `json:"indexerId"`
+	Title       string             `json:"title"`
+	GUID        string             `json:"guid"`
+	Size        int64              `json:"size"`
+	Seeders     *int               `json:"seeders"`
+	Leechers    *int               `json:"leechers"`
+	DownloadURL string             `json:"downloadUrl"`
+	MagnetURL   string             `json:"magnetUrl"`
+	InfoHash    string             `json:"infoHash"`
+	Indexer     string             `json:"indexer"`
+	IndexerID   int                `json:"indexerId"`
 	Categories  []prowlarrCategory `json:"categories"`
-	PublishDate string `json:"publishDate"`
+	PublishDate string             `json:"publishDate"`
 }
 
 func (r prowlarrRelease) toRelease() domain.Release {
@@ -257,8 +257,8 @@ func parseProwlarrTime(s string) time.Time {
 // the id twice, and a download that matches the higher-level category must
 // pass through the same filter.
 type prowlarrCategory struct {
-	ID             int                 `json:"id"`
-	SubCategories  []prowlarrCategory  `json:"subCategories"`
+	ID            int                `json:"id"`
+	SubCategories []prowlarrCategory `json:"subCategories"`
 }
 
 func flattenProwlarrCategories(cats []prowlarrCategory) []int {

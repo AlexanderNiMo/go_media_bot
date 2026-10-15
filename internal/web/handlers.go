@@ -763,6 +763,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		NewInvite:     newInvite,
 		NewInviteURL:  newInviteURL,
 		Telegram:      tg,
+		BotUsername:   s.cfg.Telegram.BotUsername,
 		NotifyOptions: opts,
 	})
 }

@@ -217,8 +217,13 @@ type settingsView struct {
 	// invitee, including the base path. Rendered as a copyable link.
 	NewInviteURL string
 
-	Telegram      []telegramRow
-	NewLinkCode   string
+	Telegram    []telegramRow
+	NewLinkCode string
+	// BotUsername is the bot's @handle when known, empty otherwise. The
+	// link-instruction text links to t.me/<BotUsername> when set, and
+	// falls back to "the bot" when empty so the page is still useful on
+	// a deployment where the Telegram API was unreachable at startup.
+	BotUsername   string
 	NotifyOptions []notificationOption
 }
 

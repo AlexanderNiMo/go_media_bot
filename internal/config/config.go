@@ -142,6 +142,12 @@ type Telegram struct {
 	// some other tool, with this project's bot switched off.
 	Enabled bool   `koanf:"enabled" yaml:"enabled"`
 	Token   string `koanf:"token"   yaml:"token"`
+	// BotUsername is the bot's @handle as returned by Telegram's getMe. It
+	// is populated at startup when Token is set, and the link-instruction
+	// text on the settings page points the user at t.me/<BotUsername>. Set
+	// it by hand in config to override the getMe result (useful when the
+	// API call is firewalled but the deployment still has the answer).
+	BotUsername string `koanf:"bot_username" yaml:"bot_username"`
 	// Proxy routes the bot's HTTPS traffic to api.telegram.org through an
 	// HTTP CONNECT (http://, https://) or SOCKS5 (socks5://) proxy. Empty
 	// uses the standard net/http client. User info on the URL is sent as
@@ -176,11 +182,11 @@ type Download struct {
 
 // Quality is the release acceptance policy.
 type Quality struct {
-	MinResolution       int      `koanf:"min_resolution"        yaml:"min_resolution"`
-	PreferredResolution int      `koanf:"preferred_resolution" yaml:"preferred_resolution"`
-	MinSeeders          int      `koanf:"min_seeders"           yaml:"min_seeders"`
-	MinSizeGB           float64  `koanf:"min_size_gb"           yaml:"min_size_gb"`
-	MaxSizeGB           float64  `koanf:"max_size_gb"           yaml:"max_size_gb"`
+	MinResolution       int     `koanf:"min_resolution"        yaml:"min_resolution"`
+	PreferredResolution int     `koanf:"preferred_resolution" yaml:"preferred_resolution"`
+	MinSeeders          int     `koanf:"min_seeders"           yaml:"min_seeders"`
+	MinSizeGB           float64 `koanf:"min_size_gb"           yaml:"min_size_gb"`
+	MaxSizeGB           float64 `koanf:"max_size_gb"           yaml:"max_size_gb"`
 	// Per-type caps. A 50 GB film is almost always a remux of a theatrical
 	// master, and a 50 GB single episode is not a real release, so the
 	// general MaxSizeGB above is a backstop rather than the day-to-day
