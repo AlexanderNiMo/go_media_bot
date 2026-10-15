@@ -1205,14 +1205,40 @@ func TestRequireAuthRedirectAbsorbsBasePath(t *testing.T) {
 // bot" with no way for the user to know which bot — they are searching
 // Telegram blind, and a deployment that lost the handle at startup is
 // silent about it.
+//
+// The test calls s.handleSettings directly (bypassing the routes)
+// because the link rendering does not depend on a session, and the
+// direct call is the cheapest way to assert on the rendered body.
+// The sessions middleware is what would put a user in the context,
+// and the handler reads it via sessionUser(r) and then accesses
+// user.IsAdmin — a nil deref on this Go (1.27.2, macOS 27) hangs
+// rather than panicking, so the test must put a user in the context
+// before calling the handler.
 func TestSettingsTelegramTabLinksToBot(t *testing.T) {
 	s, _ := newTestServer(t)
 	signedIn(t, s)
 
 	s.cfg.Telegram.BotUsername = "mediad_dev_bot"
 
-	rec := httptest.NewRecorder()
+	// signedIn created the admin account; pull it back out of
+	// the store so the handler has a real user.ID for the
+	// ListInvites / ListUsers / ListTelegramIdentities calls
+	// the settings page makes. A fake user would let the
+	// page render but trip a 500 on the first DB query that
+	// uses the id.
+	users, err := s.store.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("expected 1 user from signedIn, got %d", len(users))
+	}
+	admin := users[0]
+
 	r := httptest.NewRequest(http.MethodGet, "/settings?tab=telegram", nil)
+	r = r.WithContext(context.WithValue(r.Context(), ctxUser, &admin))
+
+	rec := httptest.NewRecorder()
 	s.handleSettings(rec, r)
 
 	if rec.Code != http.StatusOK {
