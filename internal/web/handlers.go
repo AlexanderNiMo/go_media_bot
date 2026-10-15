@@ -739,7 +739,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		{Bit: 1, Name: "started", Label: "Поиск начался"},
 		{Bit: 2, Name: "completed", Label: "Загрузка завершилась"},
 		{Bit: 4, Name: "failed", Label: "Загрузка провалилась"},
-		{Bit: 8, Name: "skipped", Label: "Уже было в Plex"},
+		// Bit 8 covers two kinds on the watcher side: "skipped"
+		// (request was already in Plex) and "manual" (the
+		// workflow is waiting for you to pick a release from a
+		// candidate list). They share the same bit because the
+		// user-facing decision is the same: do you want the bot
+		// to bother you about an out-of-band result?
+		{Bit: 8, Name: "skipped_and_manual", Label: "Уже было в Plex или пора выбрать релиз"},
 	}
 	for i := range opts {
 		opts[i].Checked = mask&opts[i].Bit != 0

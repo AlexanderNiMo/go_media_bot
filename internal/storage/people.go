@@ -41,14 +41,20 @@ const (
 // Idempotent: the primary key is (request_id, user_id), so asking twice is a
 // no-op rather than an error. A user re-asking for something they already
 // watch is a normal thing to do.
+//
+// The notify_mask is 15 (all four bits set: started, completed, failed,
+// manual). There is no opt-out today; setting a smaller mask would mean
+// dropping a notification kind for the watcher entirely. 15 keeps the
+// watcher informed of every phase the workflow goes through, including
+// the manual-pick entry that asks them to choose a release.
 func (s *Store) AddWatcher(ctx context.Context, requestID, userID int64) error {
 	const q = `
-		INSERT INTO request_watchers (request_id, user_id)
-		VALUES ($1, $2)
+		INSERT INTO request_watchers (request_id, user_id, notify_mask)
+		VALUES ($1, $2, 15)
 		ON CONFLICT (request_id, user_id) DO NOTHING`
-
-	if _, err := s.pool.Exec(ctx, q, requestID, userID); err != nil {
-		return fmt.Errorf("add watcher %d to request %d: %w", userID, requestID, err)
+	_, err := s.pool.Exec(ctx, q, requestID, userID)
+	if err != nil {
+		return fmt.Errorf("add watcher %d/%d: %w", requestID, userID, err)
 	}
 	return nil
 }
