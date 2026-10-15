@@ -747,6 +747,177 @@ func TestCancelNeedsANumber(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Manual pick
+//
+// /pick is the telegram half of the manual-pick flow: the user
+// selects a release from the candidate list the workflow
+// surfaced. The bot writes picked_at; the workflow polls on its
+// next tick and goes to download. These tests cover the bot half
+// only; the workflow half is in the workflow tests.
+// ---------------------------------------------------------------------------
+
+// TestPickMarksTheCandidate — the happy path. The user is
+// watching the request, runs /pick <id> <rank>, the candidate's
+// picked_at is set, and the bot tells the user the workflow
+// will pick it up.
+func TestPickMarksTheCandidate(t *testing.T) {
+	h := newHarness(t)
+	user := h.link(t)
+	ctx := context.Background()
+
+	id := h.seedRequest(t, "Старый фильм", storage.StateManual)
+	if err := h.store.AddWatcher(ctx, id, user.ID); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+	if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 5, RejectionReason: "russian_audio"},
+		{Rank: 2, Title: "old film 720p", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2 << 30, Seeders: 3, RejectionReason: "size_under"},
+	}); err != nil {
+		t.Fatalf("store candidates: %v", err)
+	}
+
+	h.press(t, h.message("/pick "+strconv.FormatInt(id, 10)+" 2"))
+
+	// The picked row's timestamp is set, and only that one. The
+	// other row stays untouched so the user can change their mind
+	// (the UI re-displays the list with the picked one marked).
+	list, err := h.store.ListCandidates(ctx, id)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	var pickedCount int
+	var pickedCandidate storage.Candidate
+	for _, c := range list {
+		if c.PickedAt != nil {
+			pickedCount++
+			pickedCandidate = c
+		}
+	}
+	if pickedCount != 1 {
+		t.Fatalf("picked count = %d, want 1", pickedCount)
+	}
+	if pickedCandidate.Rank != 2 {
+		t.Errorf("picked rank = %d, want 2", pickedCandidate.Rank)
+	}
+
+	// And the bot's reply is the success one, not an error.
+	if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "rank 2") {
+		t.Errorf("got %q, want a confirmation naming rank 2", got)
+	}
+}
+
+// TestPickUnlinkedChat — without a /link the bot has no
+// account behind the chat, and no row to mark. The reply
+// matches handleCancel's first-error reply, which is what the
+// user has seen for every other "must be linked" command and
+// the place to point them at /link.
+func TestPickUnlinkedChat(t *testing.T) {
+	h := newHarness(t)
+
+	h.press(t, h.message("/pick 1 1"))
+
+	if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "привяж") {
+		t.Errorf("got %q, want a /link prompt", got)
+	}
+}
+
+// TestPickSomeoneElsesRequest — the id is a small number and
+// any chat could /pick 12 rank 1. Same defensive check as
+// /cancel: the chat must be a watcher on the request, otherwise
+// the bot refuses.
+func TestPickSomeoneElsesRequest(t *testing.T) {
+	h := newHarness(t)
+	h.link(t)
+	ctx := context.Background()
+
+	id := h.seedRequest(t, "Чужой фильм", storage.StateManual)
+
+	other, err := h.store.CreateAccount(ctx, "bob", "another-long-secret", false)
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := h.store.AddWatcher(ctx, id, other.ID); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+	if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 5, RejectionReason: "russian_audio"},
+	}); err != nil {
+		t.Fatalf("store candidates: %v", err)
+	}
+
+	h.press(t, h.message("/pick "+strconv.FormatInt(id, 10)+" 1"))
+
+	if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "не ваш") {
+		t.Errorf("got %q, want a refusal", got)
+	}
+
+	// The candidate list is untouched.
+	list, _ := h.store.ListCandidates(ctx, id)
+	for _, c := range list {
+		if c.PickedAt != nil {
+			t.Errorf("a candidate was marked picked for a stranger: rank %d", c.Rank)
+		}
+	}
+}
+
+// TestPickBadRank — a rank that does not exist on the list
+// returns ErrNoSuchCandidate from storage, which the bot maps
+// to a polite "Такого кандидата нет (rank=N)." The user gets
+// feedback specific to the rank they typed, not a generic
+// error.
+func TestPickBadRank(t *testing.T) {
+	h := newHarness(t)
+	user := h.link(t)
+	ctx := context.Background()
+
+	id := h.seedRequest(t, "Старый фильм", storage.StateManual)
+	if err := h.store.AddWatcher(ctx, id, user.ID); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+	if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 5, RejectionReason: "russian_audio"},
+	}); err != nil {
+		t.Fatalf("store candidates: %v", err)
+	}
+
+	h.press(t, h.message("/pick "+strconv.FormatInt(id, 10)+" 5"))
+
+	got := h.stub.last("sendMessage").Text
+	if !strings.Contains(got, "Такого кандидата") {
+		t.Errorf("got %q, want a 'no such candidate' message", got)
+	}
+	if !strings.Contains(got, "rank=5") {
+		t.Errorf("got %q, want the rank named in the message", got)
+	}
+}
+
+// TestPickBadArgs — the parser refuses the obvious wrong
+// inputs before reaching storage.
+func TestPickBadArgs(t *testing.T) {
+	h := newHarness(t)
+	h.link(t)
+
+	cases := []struct {
+		command string
+		want    string
+	}{
+		{"/pick", "Формат"},
+		{"/pick 1", "Формат"},
+		{"/pick abc 1", "числом"},
+		{"/pick 1 abc", "положительным"},
+		{"/pick 1 0", "положительным"},
+		{"/pick 1 -3", "положительным"},
+	}
+	for _, tc := range cases {
+		h.press(t, h.message(tc.command))
+		got := h.stub.last("sendMessage").Text
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%q: got %q, want substring %q", tc.command, got, tc.want)
+		}
+	}
+}
+
 // seedRequest inserts a request row, since starting one needs a worker.
 func (h *harness) seedRequest(t *testing.T, title string, state storage.State) int64 {
 	t.Helper()

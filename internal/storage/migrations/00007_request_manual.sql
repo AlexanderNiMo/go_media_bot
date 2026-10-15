@@ -80,6 +80,8 @@ CREATE INDEX IF NOT EXISTS ix_request_candidates_picked
 CREATE INDEX IF NOT EXISTS ix_request_candidates_request
     ON request_candidates (request_id);
 
+-- +goose StatementEnd
+
 -- +goose Down
 -- +goose StatementBegin
 
