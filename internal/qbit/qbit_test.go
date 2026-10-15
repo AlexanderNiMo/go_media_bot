@@ -410,6 +410,52 @@ func TestAddSendsVersionAppropriatePauseFlag(t *testing.T) {
 	}
 }
 
+// TestAddSendsSequentialAndFirstLastFlags — the two qBittorrent add-options
+// that change *how* pieces are fetched (not where, not whether). The wire
+// protocol names are stable across 4.x and 5.x — no version-aware name
+// dance like the "paused" / "stopped" rename — so the test does not need to
+// vary by version. What it does need to assert is that:
+//   - the option is *absent* from the form when the spec says false (the
+//     client is allowed to interpret "absent" as "default", which on a
+//     stock qBittorrent means "off"); sending "false" would also be valid
+//     but is noisier in the access log;
+//   - the option is present and "true" when the spec says true.
+func TestAddSendsSequentialAndFirstLastFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		seq, flacp            bool
+		wantSeq, wantFlacp    string // "" = field absent
+	}{
+		{name: "both off", seq: false, flacp: false, wantSeq: "", wantFlacp: ""},
+		{name: "seq on", seq: true, flacp: false, wantSeq: "true", wantFlacp: ""},
+		{name: "flacp on", seq: false, flacp: true, wantSeq: "", wantFlacp: "true"},
+		{name: "both on", seq: true, flacp: true, wantSeq: "true", wantFlacp: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeQBittorrent()
+			fake.addedIDs = []string{"h1"}
+			c := newTestClient(t, fake)
+
+			if _, _, err := c.Add(context.Background(), AddSpec{
+				Link:              "magnet:?xt=1",
+				Tags:              []string{TagFor(2)},
+				SequentialDownload: tc.seq,
+				FirstLastPiecePrio: tc.flacp,
+			}); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			sent := fake.addCalls[0]
+			if got := sent.Get("seqdl"); got != tc.wantSeq {
+				t.Errorf("seqdl = %q, want %q (or absent)", got, tc.wantSeq)
+			}
+			if got := sent.Get("flacp"); got != tc.wantFlacp {
+				t.Errorf("flacp = %q, want %q (or absent)", got, tc.wantFlacp)
+			}
+		})
+	}
+}
+
 func TestFindByTag(t *testing.T) {
 	fake := newFakeQBittorrent()
 	tag := TagFor(5)
