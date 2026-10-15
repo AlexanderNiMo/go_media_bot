@@ -963,6 +963,53 @@ func TestNotificationsCarryNoPayload(t *testing.T) {
 	}
 }
 
+// TestAddWatcherIncludesManualBit — the manual-mode notification lives
+// at bit 8 of the watcher's notify_mask. Before this wire, new
+// watchers defaulted to 7 (started + completed + failed), and the
+// manual row was never created because 7 & 8 == 0. AddWatcher now
+// inserts 15 so every notification kind reaches a fresh watcher by
+// default. The migration in 00008 catches up existing rows.
+func TestAddWatcherIncludesManualBit(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+	mediaID := insertMedia(t, pool, "movie", 603, nil, "The Matrix")
+	uid := insertUser(t, pool, "alex")
+
+	var requestID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+		VALUES ($1, 'movie-603', 'pending', now() + interval '2 years')
+		RETURNING id`, mediaID).Scan(&requestID); err != nil {
+		t.Fatalf("insert request: %v", err)
+	}
+	if err := store.AddWatcher(ctx, requestID, uid); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+
+	var mask int
+	if err := pool.QueryRow(ctx,
+		`SELECT notify_mask FROM request_watchers WHERE request_id = $1 AND user_id = $2`,
+		requestID, uid).Scan(&mask); err != nil {
+		t.Fatalf("read mask: %v", err)
+	}
+	if mask != 15 {
+		t.Errorf("AddWatcher mask = %d, want 15 (started|completed|failed|manual)", mask)
+	}
+
+	// And the bit really does pass the manual notification through:
+	// CreateNotifications with NotificationManual produces a row for
+	// this watcher. Without the bit, the row would be skipped (zero
+	// rows returned).
+	created, err := store.CreateNotifications(ctx, requestID,
+		NotificationManual, "Pick a release", "candidates available", nil)
+	if err != nil {
+		t.Fatalf("CreateNotifications: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("manual notification: %d rows, want 1 (mask=15 includes bit 8)", len(created))
+	}
+}
+
 // TestNotificationsSkipWatchersWhoOptedOut — the mask is what stops a
 // notification kind from being delivered to somebody who does not want it,
 // while the kinds that always go out still do.
