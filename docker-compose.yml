@@ -1,26 +1,12 @@
 # Infrastructure for mediad: PostgreSQL and a self-hosted Temporal server.
 #
-# Version pins matter here. `temporalio/auto-setup`, which used to create the
-# schema for you, is deprecated and the temporalio/docker-compose repository
-# that shipped it was archived in January 2026; schema creation is now a
-# one-shot admin-tools container (see temporal-schema-setup below). Any guide
-# using auto-setup is stale.
-#
 # Ports that cross the container boundary:
 #   7233  Temporal frontend gRPC — the only one the application needs
 #   8233  Temporal Web UI
 #   5432  PostgreSQL, published on loopback only, for psql and dumps
-#
-# Ports 6933/6934/6935/6939 are internode membership (ringpop). They are never
-# published: the four Temporal services run in one process here and talk to
-# themselves.
 
 name: mediad
 
-# A single named network rather than the implicit default so the wiring is
-# visible in the file. Every service is on it explicitly — service-to-service
-# DNS resolution goes through the same Compose-managed bridge either way, but
-# listing the attachment makes the dependency graph auditable.
 networks:
   mediad:
     name: mediad
@@ -33,26 +19,8 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-temporal}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      # PGDATA points at a SUBDIRECTORY, and that is load-bearing rather than
-      # cosmetic.
-      #
-      # The image runs initdb into PGDATA on first start, and refuses to
-      # proceed if the directory is not empty:
-      #   directory "/var/lib/postgresql/data" exists but is not empty
-      # A directory bind-mounted from the host is almost never empty — a
-      # .DS_Store on macOS, lost+found when mounting the root of an ext4 disk,
-      # or just a file someone left there. Naming a subdirectory lets Postgres
-      # create it itself, so whatever is in the mount point stops mattering.
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      # A local directory rather than a named volume, so the data is visible,
-      # rsync-able, and survives `docker compose down -v`.
-      #
-      # Two consequences to know about. On Linux the directory must be owned by
-      # uid 999 (the postgres user in the image): sudo chown -R 999:999 ./data/postgres
-      # And this must be a LOCAL disk: Postgres relies on locking and fsync
-      # semantics that NFS and SMB do not guarantee, and the failure mode is
-      # silent corruption rather than a startup error.
       - ./data/postgres:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:5432:5432"
@@ -66,10 +34,6 @@ services:
       - mediad
 
   # Creates both Temporal databases and brings their schema up to date.
-  #
-  # A separate one-shot container rather than part of the server's entrypoint
-  # because upgrading Temporal is then a two-line change: bump the admin-tools
-  # tag, let this run, then bump the server tag. Schema first, always.
   temporal-schema-setup:
     image: temporalio/admin-tools:1.31.0
     container_name: mediad-temporal-schema
@@ -83,8 +47,6 @@ services:
       POSTGRES_SEEDS: postgresql
       POSTGRES_USER: ${POSTGRES_USER:-temporal}
       POSTGRES_PWD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      # temporal-sql-tool reads SQL_USER and SQL_PASSWORD, not POSTGRES_*.
-      # Both pairs are set because the two tools read different names.
       SQL_USER: ${POSTGRES_USER:-temporal}
       SQL_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     entrypoint: ["/bin/sh", "-c"]
@@ -163,22 +125,13 @@ services:
     networks:
       - mediad
 
-  # Creates the namespace. `default` is only created automatically by the CLI
-  # dev server; with a real server every namespace is explicit.
+  # Creates the namespace.
   #
   # Why a separate Dockerfile under scripts/ rather than an inline command
-  # in this file: the script has grown past what is comfortable to read
-  # between YAML keys, and a regression test or manual run is easier when
-  # the script is its own file. Alpine + the official CLI installer, not
-  # temporalio/admin-tools:1.31.0 — admin-tools' bundled CLI hits a gRPC
+  # in this file: bundled CLI hits a gRPC
   # deadline against the matching server image pair (TCP works, the gRPC
-  # call never completes); the CLI binary fetched by
-  # https://temporal.download/cli.sh works.
-  #
-  # If this does not work end-to-end (the gRPC call from inside the bridge to
-  # the temporal container has been seen to time out), fall back to
-  # `network_mode: "host"` with `TEMPORAL_ADDRESS: localhost:7233` — the CLI
-  # works on the host network, the bridge is the trouble. The Dockerfile path
+  # call never completes); (the gRPC call from inside the bridge to
+  # the temporal container has been seen to time out). The Dockerfile path
   # is preferred when possible because it does not leak the container out of
   # the project's network.
   #
@@ -206,38 +159,21 @@ services:
     container_name: mediad-temporal-ui
     restart: unless-stopped
     depends_on:
-      # On the namespace, not merely on the server being healthy. The UI is
-      # pointed at TEMPORAL_DEFAULT_NAMESPACE below, and a UI whose namespace
-      # does not exist yet opens on an error — which is how a stack that is
-      # still starting looks identical to one that is misconfigured.
       temporal-namespace-setup:
         condition: service_completed_successfully
-      # Ordering, not a data dependency, and it is what makes a single target
-      # sufficient: the UI is the last service of an infrastructure-only run,
-      # so naming it in `up -d` has to wait for the other branch of the graph
-      # as well. Without this, `docker compose up -d temporal-ui` starts
-      # Temporal and silently leaves the application's database uncreated.
-      #
-      # On the migration rather than directly on db-setup: the migration
-      # already depends on the database existing, so this one edge carries the
-      # whole chain, and a database with no tables is not a stack that is up.
       mediad-migrate:
         condition: service_completed_successfully
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_UI_PORT: "8080"
       TEMPORAL_DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-mediad}
-      # Must match how you actually reach the UI, or the UI's own API calls
-      # are blocked by CORS.
       TEMPORAL_CORS_ORIGINS: http://localhost:8233
     ports:
       - "8233:8080"
     networks:
       - mediad
 
-  # The application. Not started by `docker compose up` by default — run it
-  # from the host with `make worker` / `make api` while developing, or bring it
-  # up explicitly with `docker compose --profile app up -d`.
+  # The application.
   #
   # network_mode: "host" — the same fix that namespace-setup needs. The
   # Docker bridge drops HTTP/2 SETTINGS frames between the application
@@ -248,8 +184,6 @@ services:
   # service is no longer on `mediad`, so it cannot reach other services by
   # name; PostgreSQL and Temporal are reached via `localhost:5432` and
   # `localhost:7233`, which compose's port mappings publish on the host.
-  # `networks: [mediad]` below is dropped because compose rejects
-  # `network_mode` + `networks` as mutually exclusive.
   mediad:
     build: .
     container_name: mediad-app
@@ -257,25 +191,13 @@ services:
     network_mode: "host"
     restart: unless-stopped
     depends_on:
-      # Depends on the namespace container, not on temporal being healthy:
-      # "the server is up" and "the namespace exists" are different conditions,
-      # and namespace registration takes up to 15 seconds.
       temporal-namespace-setup:
         condition: service_completed_successfully
-      # And on its own database existing, with its schema applied. The
-      # application migrates on startup too, but it cannot migrate a database
-      # nobody has created yet — without this it starts, fails to connect, and
-      # restarts until the setup container happens to win the race.
       mediad-migrate:
         condition: service_completed_successfully
       postgresql:
         condition: service_healthy
     command: ["all", "--config", "/etc/mediad/config.yaml"]
-    # Plex, qBittorrent and Prowlarr run on the host, not in this compose file.
-    # With network_mode: "host" the container shares the host's network stack,
-    # so `localhost` resolves to the host's loopback. host.docker.internal is
-    # kept for compatibility with *_DOCKER URL variants that already target
-    # the host gateway explicitly.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -286,11 +208,6 @@ services:
       # TMDB
       MEDIAD_TMDB_API_KEY: ${MEDIAD_TMDB_API_KEY:-}
       MEDIAD_TMDB_PROXY: ${MEDIAD_TMDB_PROXY:-}
-      # The *_DOCKER variants override the host-facing values from .env, which
-      # are written for a process running on the host. Two names rather than a
-      # rewrite of the URL because Compose does not do substitution inside a
-      # value: there is no way to turn `localhost` into `host.docker.internal`
-      # while leaving the port alone.
       # PLEX
       MEDIAD_PLEX_URL: ${PLEX_URL_DOCKER:-${PLEX_URL:-}}
       MEDIAD_PLEX_TOKEN: ${MEDIAD_PLEX_TOKEN:-}
@@ -311,21 +228,11 @@ services:
       MEDIAD_SERVER_LISTEN: ${MEDIAD_SERVER_LISTEN:-0.0.0.0:8081}
       MEDIAD_SERVER_BASE_URL: ${MEDIAD_SERVER_BASE_URL:-localhost}
       MEDIAD_SERVER_BASE_PATH: ${MEDIAD_SERVER_BASE_PATH:-}
-    # config.yaml is optional. The host's ./config.yaml (gitignored; see
-    # config_dev.yaml.example for the template) is mounted read-only into
-    # the container and passed to `mediad all` via --config. An empty file
-    # is a no-op: the loader treats it as "no file-based overrides" and the
-    # MEDIAD_* env vars layered on top still drive the configuration. The
-    # Makefile target `up-all` touches the file if it does not exist so
-    # the bind mount has a target.
+    # config.yaml is optional.
     volumes:
       - ./config.yaml:/etc/mediad/config.yaml:ro
-    # `ports:` is ignored under network_mode: "host" (compose binds the port
-    # directly to the host), but kept for documentation. Same for
-    # `expose:`.
 
-  # Creates the application's own database. Runs once, before anything opens a
-  # connection to it; migrations are applied by the application itself.
+  # Creates the application's own database.
   mediad-db-setup:
     image: postgres:16
     container_name: mediad-db-setup
@@ -381,16 +288,6 @@ services:
       - mediad
 
   # Applies the application's own migrations, once, and exits.
-  #
-  # A container rather than a `make` step, because the tables are part of what
-  # "the stack is up" means: a database with no schema is a stack that looks
-  # started and fails on the first request. Being a service also puts it in the
-  # dependency graph, so anything that needs the schema can say so instead of
-  # hoping the ordering worked out.
-  #
-  # The application applies migrations on startup anyway, so this is not the
-  # only path — it is the one that makes the schema exist before anything else
-  # connects, including a worker run from the host.
   mediad-migrate:
     build: .
     container_name: mediad-migrate

@@ -26,19 +26,7 @@ help: ## Show this help
 
 up: ## Start the infrastructure and wait until it is actually ready
 	@test -f .env || { echo "no .env — copy .env.example and fill it in"; exit 1; }
-	@# One target, and the graph does the rest. temporal-ui is the last service
-	@# of this half of the stack and depends on the namespace, which depends on
-	@# the Temporal schema, which depends on Postgres — and on the migration,
-	@# which carries the application database and its tables. Naming it waits
-	@# for all of it.
-	@#
-	@# --wait is what makes this mean something: without it the command returns
-	@# once the containers are created, and "up succeeded" is a statement about
-	@# Docker's API rather than about whether the stack can serve a request.
-	@# One-shot services exit rather than becoming healthy, so they are not
-	@# listed as targets — they are reached through depends_on and their exit
-	@# code is checked by the condition on the services that wait for them.
-	docker compose up -d --wait temporal-ui
+    docker compose up -d --wait temporal-ui
 	@echo
 	@echo "Temporal Web UI:  http://localhost:8233"
 	@echo "To run the application on the host: make worker / make api"
@@ -46,26 +34,8 @@ up: ## Start the infrastructure and wait until it is actually ready
 
 up-all: ## Start the whole stack in Docker, application included
 	@test -f .env || { echo "no .env — copy .env.example and fill it in"; exit 1; }
-	@# config.yaml is optional for the application (an empty file is a no-op
-	@# for the loader), but the volume mount in compose has to bind-mount a
-	@# host file. Touch one if it does not exist so the bind target exists.
 	@test -f config.yaml || touch config.yaml
-	@# One-shot services (db-setup, migrate, schema-setup, namespace-setup)
-	@# run to completion and then linger as Exited (0). Their previous exit
-	@# code is what service_completed_successfully checks. After a fresh
-	@# `./data/` wipe the cached Exited (0) is a lie: the postgres data
-	@# directory is empty, the `mediad` role no longer exists, and compose
-	@# would happily skip the setup, leaving mediad-app to fail on auth
-	@# against a database that has not been initialised. Same trap on the
-	@# Temporal side: a wiped persistence store looks "ready" to compose
-	@# while the cluster is starting up against empty tables.
-	@# `rm -sf` clears the cached state so the next `up` actually runs them.
 	docker compose rm -sf temporal-schema-setup temporal-namespace-setup mediad-db-setup mediad-migrate 2>/dev/null || true
-	@# mediad is the single sink: it depends on the namespace, the migration
-	@# and Postgres, so it is the one service that cannot start until
-	@# everything else is ready. --build forces the image to be rebuilt
-	@# every time so source changes do not require a separate
-	@# `docker compose build` step.
 	docker compose up -d --build --wait mediad
 	@echo
 	@echo "mediad:          http://$(MEDIAD_SERVER_LISTEN)"
@@ -134,10 +104,6 @@ WORKFLOWCHECK := $(shell go env GOPATH)/bin/workflowcheck
 
 workflowcheck: ## Static check for non-deterministic calls in workflow code
 	@test -x "$(WORKFLOWCHECK)" || go install go.temporal.io/sdk/contrib/tools/workflowcheck@latest
-	@# Run through go vet rather than invoking workflowcheck directly, and that
-	@# is not cosmetic: workflowcheck exits 0 even when it reports a problem, so
-	@# a CI job calling it directly would pass on a broken workflow. go vet
-	@# turns the diagnostics into a non-zero exit.
 	go vet -vettool "$(WORKFLOWCHECK)" ./...
 
 replay: ## Replay every recorded history against the current workflow code

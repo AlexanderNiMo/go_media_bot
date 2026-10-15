@@ -1,80 +1,279 @@
-# Dev overrides for `mediad`. Loaded on top of defaults and config.yaml when
-# no --config flag is given, and overridden in turn by MEDIAD_* env vars.
+# Dev overrides for `mediad`.
 #
-# Real file: config_dev.yaml — in .gitignore, copy of this one. That way each
-# developer can tweak the local settings without touching the committed file.
+# Loaded on top of the compiled-in defaults and (optionally) config.yaml when
+# the binary is started without --config. MEDIAD_* env vars override this file
+# in turn, so secrets stay out of YAML.
 #
-# Sections that are not in your config.yaml or this file keep their compiled-in
-# defaults. Add a key only when you mean to override it.
+# Real file: config_dev.yaml — in .gitignore, copy of this one. Each
+# developer tweaks their own copy without touching the committed template.
+#
+# Sections and keys you do not set keep their defaults. Add a key only when
+# you want to override it; the loader fails loudly on typos.
 
+
+# ---------------------------------------------------------------------------
+# Log
+# ---------------------------------------------------------------------------
+# slog handler for the whole process.
 log:
+  # debug | info | warn | error. Default: info.
   level: debug
+  # text | json. text is friendlier in a dev terminal; json is what
+  # anything log-aggregating would prefer. Default: text.
   format: text
 
-# Local services. These match the values in .zed/debug.json, so a developer's
-# in-process worker (mediad worker) and the Docker stack agree on the same
-# hosts.
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+# The HTTP front door.
 server:
+  # listen address. Default: 0.0.0.0:8081 (8080 is qBittorrent's default
+  # web UI port, and this service is expected to run on the same host).
+  # listen: 0.0.0.0:8081
+  # Base URL the app uses to build absolute links in emails and notifications.
+  # Must be reachable from the client; a private localhost only works in dev.
   base_url: http://localhost:8081
+  # URL prefix the interface is mounted under. "" puts it at the host
+  # root; "/mediad" makes it reachable at https://example.com/mediad/...
+  # Templates and the path middleware prepend it to every internal link, so
+  # the same binary serves a single-tenant deployment and one behind a
+  # shared reverse proxy.
   # base_path: /mediad
 
+
+# ---------------------------------------------------------------------------
+# Postgres
+# ---------------------------------------------------------------------------
+# The application's own database, not the two Temporal owns. Migrations are
+# applied by the application on startup; the DSN just has to point at a
+# server where the user has CREATE / DDL.
 postgres:
-  # `mediad_dev` is a separate database; the test suite creates and drops
-  # its own throwaway databases, but development traffic should not share
-  # that lifecycle.
-  dsn: postgres://mediad:devpass@localhost:5432/mediad?sslmode=disable
+  # DSN, libpq-style. sslmode=disable is fine for a LAN deployment.
+  dsn: postgres://mediad:***@localhost:5432/mediad?sslmode=disable
+  # Pool size. Default: 10. The repo's request throughput is low, so dev
+  # can drop this if Postgres is short on slots.
   max_conns: 5
 
+
+# ---------------------------------------------------------------------------
+# Temporal
+# ---------------------------------------------------------------------------
+# The workflow engine.
 temporal:
+  # host:port of the frontend service. Default: localhost:7233.
   host: localhost:7233
+  # Namespace the request workflows run in. Must exist before the worker
+  # starts; the included `make up` creates it. Default: mediad.
   namespace: mediad
+  # Task queue workers poll. The server's `make up` also names the worker
+  # process; they have to agree. Default: mediad.
   task_queue: mediad
 
-# Plex on the home network.
+
+# ---------------------------------------------------------------------------
+# TMDB
+# ---------------------------------------------------------------------------
+# The metadata source for search results and season listings. The API key
+# is the only mandatory field; without one, search degrades gracefully
+# ("tmdb.api_key is not set" at startup, every search returns empty).
+tmdb:
+  # v3 API key from https://www.themoviedb.org/settings/api.
+  api_key: ""
+  # Locale TMDB returns metadata in. Default: ru-RU.
+  # language: ru-RU
+  # In-memory cache TTL for search results. Default: 24h.
+  # cache_ttl: 24h
+  # Optional HTTP CONNECT (http://, https://) or SOCKS5 (socks5://) proxy
+  # for the TMDB client. User info in the URL is sent as proxy creds.
+  proxy: ""
+
+
+# ---------------------------------------------------------------------------
+# Plex
+# ---------------------------------------------------------------------------
+# Media server we check before downloading anything — if the title is
+# already in a Plex library, the search loop short-circuits.
 plex:
+  # Base URL of the Plex Media Server. Default: http://localhost:32400.
   url: http://192.168.1.107:32400
+  # X-Plex-Token from any Plex page's XML/JSON. Treat as a secret.
   token: ""
+  # How long the in-memory cache of section names lives. Default: 1h.
+  # sections_ttl: 1h
+  # How often a running search re-checks Plex for the title. Default: 6h.
+  # check_ttl: 6h
+  # How long to wait for an item to appear in Plex after the download
+  # watcher declares the torrent done. Default: 6h.
+  # verify_timeout: 6h
 
-# Prowlarr aggregates every configured tracker. Empty token would still
-# work for unauthenticated endpoints, but Prowlarr requires the key.
+
+# ---------------------------------------------------------------------------
+# Indexer
+# ---------------------------------------------------------------------------
+# Torrent indexer front end. Prowlarr aggregates every configured tracker
+# behind a single API; torznab talks to a single Jackett indexer; jackett
+# is the multi-indexer path. Empty token would still work for
+# unauthenticated endpoints, but Prowlarr/Jackett require one.
 indexer:
+  # prowlarr | torznab | jackett. Default: jackett.
   mode: prowlarr
+  # Base URL of the indexer API. Default: http://localhost:9118 (Jackett).
   base_url: http://192.168.1.107:9696
+  # Prowlarr API key (Settings → General → API Key), or Jackett indexer
+  # feed token. Treat as a secret.
   api_key: ""
+  # Prowlarr only: which indexers to query. Empty means "all enabled in
+  # Prowlarr". When a single tracker is the answer, name it here so an
+  # outage on the rest does not stall the search.
+  # indexer_ids: []
+  # Per-second rate cap on the indexer. The server fans out across
+  # several task-queue partitions and can burst above the configured
+  # average, so leave headroom: 0.25 req/s is the default for exactly
+  # this reason. A burst that trips a tracker's rate limit gets the IP
+  # banned, not merely slowed down.
+  # rate_per_second: 0.25
+  # In-memory cache TTL for the indexer caps (categories, supported
+  # search params). Default: 24h.
+  # caps_ttl: 24h
 
-# qBittorrent on the home network. The port is the Web UI port, not the
-# listen port.
+
+# ---------------------------------------------------------------------------
+# qBittorrent
+# ---------------------------------------------------------------------------
+# Torrent client. SavePath is deliberately not here: the client owns the
+# download location and the user is expected to configure per-category
+# paths in the qBittorrent UI.
 qbittorrent:
+  # Base URL of the Web UI. Default: http://localhost:8080. The port is
+  # the Web UI port, not the BitTorrent listen port.
   url: http://192.168.1.107:8113
+  # Bearer token for qBittorrent 5.1+. When set it takes precedence over
+  # the username and password, and no login request is made at all —
+  # which also removes the failure mode where repeated failed logins get
+  # the client's IP banned.
   api_key: ""
+  # Legacy session login. Only used when api_key is empty.
+  username: ""
+  password: ""
+  # qBittorrent category assigned to new torrents. Default: mediad.
+  # category: mediad
+  # How often the download watcher polls the client. Default: 30s.
+  # poll_interval: 30s
+  # Per-type save paths. Either may be empty, in which case qBittorrent's
+  # own default takes over for that media type — the two fields are
+  # independent, not coupled.
+  # save_path_movies: /downloads/movies
+  # save_path_series: /downloads/tv
 
-# Telegram is off during dev: a developer who has set TELEGRAM_TOKEN for
-# another project can use this to suppress the bot. Set proxy to route
-# api.telegram.org through an HTTP CONNECT (http://, https://) or SOCKS5
-# (socks5://) proxy when the direct route is blocked. User info in the
-# URL is sent as proxy credentials where applicable.
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+# Chat front end. Long polling is used rather than webhooks: the service
+# is self-hosted and is not expected to be reachable from the internet.
 telegram:
+  # false keeps the bot component idle even when a token is set in the
+  # environment. A developer who has TELEGRAM_TOKEN set for another
+  # project can use this to suppress this one. Without a token, the bot
+  # stays quiet regardless of this flag. Default: true.
   enabled: false
+  # Bot token from @BotFather. Treat as a secret.
   # token: 123456:bot-token-from-botfather
+  # Optional HTTP CONNECT (http://, https://) or SOCKS5 (socks5://) proxy
+  # for api.telegram.org. User info in the URL is sent as proxy creds.
   # proxy: socks5://user:pass@127.0.0.1:1080
 
-# The point of a dev profile: stages that take days in production take
-# minutes here.
-search:
-  search_deadline: 30m
-  backoff_ladder: [10s, 20s, 40s, 80s, 160s, 320s]
-  jitter: 1s
-  poll_interval: 5s
-  continue_as_new_history: 200
 
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+# The torrent-search loop. There is deliberately no attempt limit: over
+# a two-year horizon any fixed count is reached and then becomes the
+# real deadline. BackoffLadder is what bounds the request rate instead.
+search:
+  # Hard cap on how long a single request keeps trying before going
+  # abandoned. Default: 17520h (2 years).
+  # search_deadline: 17520h
+  # Wait between search attempts, scaled by retry count. The first
+  # element is used after the first miss, the second after the second,
+  # and so on — the last element is reused for every retry after the
+  # ladder runs out. Default: [1h, 2h, 4h, 8h, 12h, 24h].
+  # Dev profile: short ladder so a failed search is visible in minutes.
+  backoff_ladder: [10s, 20s, 40s, 80s, 160s, 320s]
+  # Random +/- added to NextRunAt so requests created in one batch do
+  # not stay aligned forever and turn every hour into a spike against
+  # the indexer. Default: 10m.
+  jitter: 1s
+  # How often the workflow polls itself for progress. The UI needs
+  # progress every 30s; the workflow only needs done/stalled/expired.
+  # Polling at 30s for a two-day download would cost ~50k history
+  # events, which is the termination limit. Default: 5m.
+  poll_interval: 5s
+  # Number of history events per workflow execution before
+  # ContinueAsNew rolls the workflow. Default: 5000. A request can
+  # run for two years; without this, the history would eventually
+  # hit Temporal's event cap.
+  # continue_as_new_history: 5000
+
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+# Bounds on a single torrent attempt.
 download:
+  # Maximum wall-clock time from "torrent added to client" to "Plex sees
+  # the file". After this, the workflow gives up on this release and
+  # moves on to the next. Default: 48h.
   deadline: 1m
-  zero_stall_after: 10s
+  # Period with no progress (and a peer count above 0) that counts as
+  # stalled. Default: 45m. A download chugging along at 100 KB/s is
+  # still downloading; what the watcher cares about is the gap between
+  # progress events, not absolute throughput.
+  # zero_stall_after: 45m
+  # How long a torrent may be absent from the client before that counts
+  # as gone. A single miss proves nothing: an add is asynchronous, and
+  # a client that is restarting reports nothing for a moment. Default: 3m.
   missing_grace: 5s
+  # How many stall events trigger a re-search. Default: 3.
   max_stalls: 2
 
+
+# ---------------------------------------------------------------------------
+# Quality
+# ---------------------------------------------------------------------------
+# Release acceptance policy. The release scorer in internal/release/ is
+# pure (no I/O, no clock) and table-driven; these settings are its
+# inputs.
 quality:
-  russian_audio: false
+  # Minimum horizontal resolution. Default: 1080.
+  # min_resolution: 1080
+  # Preferred resolution — used to break ties between acceptable
+  # candidates. Default: 2160.
+  # preferred_resolution: 2160
+  # Reject releases with fewer seeders than this. Default: 3.
   min_seeders: 1
+  # Reject releases smaller than this (GB). Default: 1.5.
   min_size_gb: 0.1
+  # Backstop on release size; anything bigger is rejected regardless of
+  # the per-type caps below. Default: 60.
   max_size_gb: 200
+  # Per-type caps. A 50 GB film is almost always a remux of a theatrical
+  # master, and a 50 GB single episode is not a real release, so the
+  # general max_size_gb above is a backstop rather than the day-to-day
+  # limit. 0 disables the per-type check and falls back to max_size_gb.
+  # Defaults: 25 (movie), 50 (per-episode series).
+  # max_size_gb_movies: 25
+  # max_size_gb_series: 50
+  # Source names that are rejected outright (CAM, TS, etc.). Default:
+  # [CAM, TS, TELESYNC, HDTS, DVDSCR].
+  # excluded_sources: [CAM, TS, TELESYNC, HDTS, DVDSCR]
+  # When true, releases without Russian audio are downgraded so a
+  # Russian-audio release at the same tier is preferred. Default: true.
+  # The koanf tag is russian_audio (the field is RequireRussianAudio in
+  # Go); the YAML key has to match the tag, not the field name.
+  russian_audio: false
+  # Substrings the release scorer looks for in the title when
+  # russian_audio is on. Defaults cover the common forms; extend only
+  # when a tracker uses something this list does not catch.
+  # russian_markers: [rus, russian, ru, лицензия]
