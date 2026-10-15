@@ -913,6 +913,110 @@ func TestStaticAssetsAreServed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Manual pick (web)
+// ---------------------------------------------------------------------------
+
+// TestRequestPickCandidate — the web half of /requests/{id}/pick.
+// The handler is a thin wrapper around store.MarkPicked: it parses
+// the form, calls the storage, and redirects to the request page
+// with a flash. The "the picked row is in the database" check
+// is what the workflow's manual-mode poll reads on its next
+// tick, so the test is really about the data path rather than
+// the page layout.
+func TestRequestPickCandidate(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+	ctx := context.Background()
+
+	id := seedRequest(t, store, storage.StateManual)
+	if err := store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 5, RejectionReason: "russian_audio"},
+		{Rank: 2, Title: "old film 720p", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2 << 30, Seeders: 3, RejectionReason: "size_under"},
+	}); err != nil {
+		t.Fatalf("store candidates: %v", err)
+	}
+
+	t.Run("marks the picked row", func(t *testing.T) {
+		// The handler redirects to /requests/{id} after success,
+		// which the test client follows; the final status is
+		// therefore 200, not 303. What matters for the data
+		// path is that MarkPicked wrote picked_at, and what
+		// matters for the UX is that the user lands on the
+		// request page rather than on an error. Both are
+		// checked below.
+		resp := c.post("/requests/"+strconv.FormatInt(id, 10)+"/pick",
+			url.Values{"rank": {"2"}})
+		defer resp.Body.Close()
+
+		if loc := resp.Request.URL.Path; loc != "/requests/"+strconv.FormatInt(id, 10) {
+			t.Errorf("landed on %s, want /requests/%d (the redirect should have gone there)", loc, id)
+		}
+
+		// Storage side effect. The picked row's timestamp is
+		// set, and only that one. The other row stays
+		// untouched so the user can change their mind on the
+		// web page.
+		list, err := store.ListCandidates(ctx, id)
+		if err != nil {
+			t.Fatalf("list candidates: %v", err)
+		}
+		var picked []storage.Candidate
+		for _, c := range list {
+			if c.PickedAt != nil {
+				picked = append(picked, c)
+			}
+		}
+		if len(picked) != 1 {
+			t.Fatalf("picked count = %d, want 1", len(picked))
+		}
+		if picked[0].Rank != 2 {
+			t.Errorf("picked rank = %d, want 2", picked[0].Rank)
+		}
+	})
+
+	t.Run("bad rank", func(t *testing.T) {
+		// A non-numeric rank is rejected before the storage
+		// call. A 0 or negative rank is the same.
+		for _, bad := range []string{"abc", "0", "-3"} {
+			resp := c.post("/requests/"+strconv.FormatInt(id, 10)+"/pick",
+				url.Values{"rank": {bad}})
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("rank=%q: status = %d, want 400", bad, resp.StatusCode)
+			}
+		}
+	})
+
+	t.Run("non-existent rank", func(t *testing.T) {
+		// The form parses, the id is valid, the rank is a
+		// positive integer — but no row at that rank. Storage
+		// returns ErrNoSuchCandidate, the handler maps it
+		// to a 404 with a body that names the rank.
+		resp := c.post("/requests/"+strconv.FormatInt(id, 10)+"/pick",
+			url.Values{"rank": {"5"}})
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", resp.StatusCode)
+		}
+		body := readBody(t, resp)
+		if !strings.Contains(body, "rank=5") {
+			t.Errorf("body does not name the rank: %s", truncateForTest(body, 200))
+		}
+	})
+
+	t.Run("bad id", func(t *testing.T) {
+		// A non-numeric id is rejected at the router level
+		// (pathID returns an error before the form is read).
+		resp := c.post("/requests/not-a-number/pick",
+			url.Values{"rank": {"1"}})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
