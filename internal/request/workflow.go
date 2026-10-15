@@ -484,9 +484,13 @@ func manualPhase(ctx workflow.Context, in *Input, state *State) (*Result, error)
 				"request", in.RequestID, "rank", picked.Rank, "title", picked.Title)
 			return downloadCycle(ctx, in, state)
 		}
-		// ErrNoSuchCandidate means "not yet picked". Anything else
-		// is a real error and we should not silently swallow it.
-		if !errors.Is(err, storage.ErrNoSuchCandidate) {
+		// NoSuchCandidate is the activity's typed "not yet picked"
+		// signal. It travels as a Temporal ApplicationError with
+		// type "NoSuchCandidate"; the storage sentinel itself does
+		// not survive the activity boundary. Anything else is a
+		// real error and we should not silently swallow it.
+		var appErr *temporal.ApplicationError
+		if !(errors.As(err, &appErr) && appErr.Type() == "NoSuchCandidate") {
 			return nil, err
 		}
 

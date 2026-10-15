@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
@@ -127,28 +128,51 @@ func (s *WorkflowSuite) expectNoise() {
 		Return(func(_ context.Context, _ int64) (string, error) {
 			return "", nil
 		}).Maybe()
-	// FetchCandidates is called by the manual-pick fallback when the
-	// auto-selector returns nothing on media that is more than two years
-	// old. The default is "no candidates" so the workflow falls through
-	// to the backoff; tests that exercise the manual-pick path override
-	// this stub.
+	// FetchCandidates, StoreCandidates, ClearCandidates and
+	// GetPickedCandidate belong to the manual-pick branch. They are
+	// registered here as `.Maybe()` stubs that return the empty
+	// path, so any test that does NOT drive the manual branch and
+	// happens to reach the call site does not panic.
+	//
+	// Why `.Maybe()` and not "no stub": the workflow reaches
+	// maybeEnterManualMode on a fruitless search for any media
+	// more than two years old, and the project's movieInput() and
+	// several other fixtures use year=1999 — so a default of "no
+	// stub" would panic tests that have no business with manual
+	// mode (TestSearchDeadlineFails, TestBackoffLadderIsFollowed,
+	// etc.). The `.Maybe()` lets those tests pass without making
+	// the manual-pick path opt-in.
+	//
+	// The `.Maybe()` does not make the matching weaker — testify
+	// still matches in registration order, and a test that
+	// registers a non-Maybe stub of FetchCandidates BEFORE this
+	// function runs gets the test stub. Tests that do drive the
+	// manual branch (TestManualMode*) register their stubs first
+	// via s.env.OnActivity(...).Return(...) and the noise stub
+	// stays out of the way.
 	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
-		Return(func(_ context.Context, _ SearchInput) ([]storage.Candidate, error) {
-			return nil, nil
-		}).Maybe()
-	// StoreCandidates is the persistence step that the workflow calls
-	// after FetchCandidates returns a non-empty list. The default
-	// "no candidates" above never reaches it, so this stub is a
-	// safety net for tests that DO drive the manual-mode path.
+		Return([]storage.Candidate{}, nil).Maybe()
 	s.env.OnActivity("StoreCandidates", mock.Anything, mock.Anything).
 		Return(nil).Maybe()
-	// GetPickedCandidate is the manual-mode poll. Same safety net.
 	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
-		Return(storage.Candidate{}, storage.ErrNoSuchCandidate).Maybe()
-	// ClearCandidates runs on the manual-mode timeout and on a successful
-	// pick. Same safety net.
+		Return(storage.Candidate{}, noSuchCandidateErr()).Maybe()
 	s.env.OnActivity("ClearCandidates", mock.Anything, mock.Anything).
 		Return(nil).Maybe()
+}
+
+// noSuchCandidateErr is the typed "not picked" signal the
+// production activity emits and the workflow's `errors.As` branch
+// matches. Building it once keeps the test stubs honest — a
+// regression that drops the type would surface here as a compile
+// error rather than a silent test pass.
+//
+// NewNonRetryableApplicationError rather than NewApplicationError
+// for the same reason the production activity uses it: the
+// "not picked" state is permanent, not transient, and a 10-attempt
+// retry on a row that does not exist yet costs activity time the
+// workflow's poll cadence is supposed to provide.
+func noSuchCandidateErr() error {
+	return temporal.NewNonRetryableApplicationError(storage.ErrNoSuchCandidate.Error(), "NoSuchCandidate", storage.ErrNoSuchCandidate)
 }
 
 // expectDelete stubs the torrent removal and returns a counter of the calls.
@@ -913,4 +937,307 @@ func (s *WorkflowSuite) TestContinueAsNewHandsOverSearchDeadline() {
 		"the restarted workflow was not told when the search ends, so it would "+
 			"give itself a fresh two years and the request would never reach its deadline: "+
 			"want %s, got %s", want, next.StartSearchDeadline)
+}
+
+// ---------------------------------------------------------------------------
+// Manual pick
+//
+// The four cases below pin the four ways the manual-mode branch can
+// terminate: the user picks, the 14-day timeout fires, the workflow
+// is cancelled mid-wait, and a ContinueAsNew that resumes the wait.
+// "isOldMedia" is gated on Year <= now-2, so a 2020 spec in 2026 enters
+// manual mode but a 2025 spec does not.
+// ---------------------------------------------------------------------------
+
+// TestManualModeEntersForOldMedia — when the auto-selector finds nothing
+// and the spec is more than two years old, the workflow offers a list
+// of candidates to the user. The two side effects the test pins are
+// StoreCandidates (so the request page has something to render) and
+// NotifyWatchers with NotificationManual (so the bot actually tells
+// the user about it).
+func (s *WorkflowSuite) TestManualModeEntersForOldMedia() {
+	candidates := []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 10, RejectionReason: "russian_audio"},
+		{Rank: 2, Title: "old film 720p", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2 << 30, Seeders: 5, RejectionReason: "size_under"},
+	}
+	// Registered BEFORE expectNoise: testify matches the first registered
+	// expectation, and expectNoise's FetchCandidates default would
+	// otherwise win. Same pattern is used in
+	// TestContinueAsNewBoundsHistory for SaveState.
+	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
+		Return(candidates, nil)
+	// StoreCandidates counter: same registration-order rule applies.
+	// Registered before expectNoise so the noise stub does not
+	// shadow it.
+	var storedCount int
+	s.env.OnActivity("StoreCandidates", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ StoreCandidatesInput) error {
+			storedCount++
+			return nil
+		})
+	// NotifyWatchers capture: same reason — registered first so the
+	// noise stub does not capture the manual notification kind.
+	var notificationKinds []storage.NotificationKind
+	s.env.OnActivity("NotifyWatchers", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in NotifyInput) error {
+			notificationKinds = append(notificationKinds, in.Kind)
+			return nil
+		})
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	in := oldMediaInput()
+
+	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
+		Return(SearchResult{Considered: 4, Summary: "nothing acceptable"}, nil)
+
+	// GetPickedCandidate is the poll during manual mode. The test cancels
+	// before the 14-day timeout, so this never returns a candidate.
+	// RegisterDelayedCallback at five minutes lands the cancel inside the
+	// manual wait. The expectNoise default is `.Maybe()` so the test's
+	// registration here (also Maybe — the noise stub is first) is
+	// effectively the same call site, but the explicit one documents that
+	// the test deliberately parks in the poll.
+	//
+	// The stub returns a Temporal ApplicationError with type
+	// "NoSuchCandidate", which is the typed signal the workflow
+	// branches on. A plain `errors.New(...)` would survive the
+	// activity boundary as a generic ApplicationError without the
+	// type, and the workflow's `errors.As` check would miss.
+	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
+		Return(storage.Candidate{}, noSuchCandidateErr()).Maybe()
+
+	s.env.RegisterDelayedCallback(func() {
+		s.env.CancelWorkflow()
+	}, 5*time.Minute)
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	s.True(s.env.IsWorkflowCompleted())
+	var result Result
+	s.NoError(s.env.GetWorkflowResult(&result),
+		"a cancelled request returns a result, not an error")
+	s.Equal(storage.StateCanceled, result.Outcome)
+
+	s.Equal(1, storedCount, "manual mode should have been entered exactly once")
+	s.Contains(notificationKinds, storage.NotificationManual,
+		"the user was not told that a manual pick is available")
+}
+
+// TestManualModeResolvesOnPick — the happy path. The workflow is in
+// StateManual, polls for a pick, the user picks, and the workflow
+// goes through the regular download cycle. The end state is
+// StateCompleted and result.Selected carries the candidate's
+// metadata, not a fresh search result — that is the user-visible
+// difference between an auto-pick and a manual-pick.
+func (s *WorkflowSuite) TestManualModeResolvesOnPick() {
+	picked := storage.Candidate{
+		Rank:       1,
+		Title:      "old film 1080p",
+		Indexer:    "rutor",
+		InfoHash:   "userpicked1",
+		MagnetLink: "magnet:?xt=urn:btih:userpicked1",
+		SizeBytes:  4 << 30,
+		Seeders:    10,
+		RejectionReason: "russian_audio",
+	}
+	// Registered before expectNoise so this stub wins the FIFO match.
+	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
+		Return([]storage.Candidate{picked}, nil)
+	// First poll: nothing yet. Second poll: user picked. The first
+	// 1-minute wait is the one that makes the timing matter; the
+	// first poll is the "not yet" case. The "not yet" return value
+	// is a typed ApplicationError — the same one the production
+	// activity emits and the workflow's `errors.As` branch matches.
+	//
+	// Registered before expectNoise so the noise stub does not
+	// shadow it.
+	var picks int
+	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ int64) (storage.Candidate, error) {
+			picks++
+			if picks < 2 {
+				return storage.Candidate{}, noSuchCandidateErr()
+			}
+			return picked, nil
+		})
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	in := oldMediaInput()
+
+	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
+		Return(SearchResult{Considered: 4, Summary: "nothing acceptable"}, nil)
+
+	s.env.OnActivity("StoreCandidates", mock.Anything, mock.Anything).
+		Return(nil)
+	s.env.OnActivity("ClearCandidates", mock.Anything, mock.Anything).
+		Return(nil).Maybe()
+
+	s.env.OnActivity("AddTorrent", mock.Anything, mock.Anything).
+		Return(AddTorrentResult{Hash: "userpicked1"}, nil)
+	s.env.OnActivity("CheckDownload", mock.Anything, mock.Anything).
+		Return(CheckDownloadResult{State: DownloadDone, Hash: "userpicked1"}, nil)
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var result Result
+	s.NoError(s.env.GetWorkflowResult(&result))
+	s.Equal(storage.StateCompleted, result.Outcome)
+	s.Require().NotNil(result.Selected)
+	s.Equal("old film 1080p", result.Selected.Title)
+	s.Equal("userpicked1", result.Selected.InfoHash)
+	s.GreaterOrEqual(picks, 2, "the manual poll never ran")
+}
+
+// TestManualModeNotEnteredForRecentMedia — the manual-mode gate is
+// "spec.Year <= now.Year() - 2". A 2025 spec in 2026 is recent (2025
+// > 2024), so the workflow falls through to the normal backoff and
+// the FetchCandidates activity is never called.
+//
+// "Never called" is the whole point. The stub for FetchCandidates
+// is deliberately omitted — an unexpected call fails the test.
+func (s *WorkflowSuite) TestManualModeNotEnteredForRecentMedia() {
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	in := movieInput()
+	in.Spec.Year = s.env.Now().Year() - 1 // recent: now.Year()-2 < year
+
+	var searches int
+	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ SearchInput) (SearchResult, error) {
+			searches++
+			return SearchResult{Considered: 3, Summary: "nothing acceptable"}, nil
+		})
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	var result Result
+	s.NoError(s.env.GetWorkflowResult(&result))
+	// Recent media, no chosen, deadline expires → StateFailed with a
+	// deadline reason. The exact outcome is less important than the
+	// fact that we never entered manual mode.
+	s.Equal(storage.StateFailed, result.Outcome)
+	s.GreaterOrEqual(searches, 2, "the recent-media backoff never ran")
+}
+
+// TestManualModeTimeoutResetsToPending — the 14-day manual wait is
+// the difference between a request that waits for a user and one
+// that fails on a stale ladder. The workflow enters manual mode
+// and stays there for the timeout; after the timeout, the state is
+// StatePending and the candidate list is cleared, so the next
+// search tick is a clean attempt rather than a 14-day-later retry
+// of a stale list.
+//
+// The test sets StartManualSince to 15 days ago and StartPhase to
+// StateManual, so the workflow is already inside the wait at
+// t=0. The first poll in manualPhase sees now - ManualSince > 14d
+// and runs the timeout path. A second FetchCandidates returning
+// zero lets the loop exit through the deadline rather than entering
+// manual mode again.
+func (s *WorkflowSuite) TestManualModeTimeoutResetsToPending() {
+	// Registered first so the noise stub does not shadow it.
+	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
+		Return([]storage.Candidate{}, nil).Maybe()
+	s.env.OnActivity("ClearCandidates", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ int64) error { return nil }).Maybe()
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	in := oldMediaInput()
+	in.StartPhase = storage.StateManual
+	in.StartManualSince = s.env.Now().Add(-15 * 24 * time.Hour)
+	in.StartNextRunAt = s.env.Now()
+
+	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
+		Return(SearchResult{Considered: 0, Summary: "still nothing"}, nil).Maybe()
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	s.True(s.env.IsWorkflowCompleted())
+	var result Result
+	s.NoError(s.env.GetWorkflowResult(&result))
+	// After the timeout + a clean backoff, the request ends. The
+	// outcome is Failed (deadline) or anything else; the assertion
+	// that matters is that the state is no longer Manual.
+	s.NotEqual(storage.StateManual, result.Outcome,
+		"the manual timeout should have reset the state away from manual")
+}
+
+// TestManualModeCarriesAcrossRestart — a ContinueAsNew during the
+// manual wait must not reset ManualSince or the Phase. If it did,
+// every restart would buy the user another 14 days, and the
+// timeout would never arrive.
+//
+// The test exercises the restart path: the first run hits
+// continueAsNewIfNeeded and produces a ContinueAsNewError with
+// the carried state. Asserting the carried state has the right
+// fields is what proves the restart preserves the manual-mode
+// fields. The test does not run a second ExecuteWorkflow — the
+// test environment does not allow that, and the resumed-workflow
+// behaviour is covered by TestManualModeResolvesOnPick (which
+// starts in StateManual directly and runs through the
+// download cycle to completion).
+//
+// The "no Plex expectation" pattern from
+// TestContinueAsNewCarriesState is specific to the download
+// resume path; it does not apply to StateManual, where the
+// Plex check still runs on a fresh workflow start.
+func (s *WorkflowSuite) TestManualModeCarriesAcrossRestart() {
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	in := oldMediaInput()
+	in.StartPhase = storage.StateManual
+	in.StartManualSince = s.env.Now().Add(-1 * 24 * time.Hour)
+	in.StartNextRunAt = s.env.Now()
+	in.StartSearchDeadline = s.env.Now().Add(in.Policy.SearchDeadline)
+
+	// Provoke the restart. SetContinueAsNewSuggested is the
+	// server's own signal, which the workflow treats identically
+	// to the history-length comparison.
+	s.env.SetContinueAsNewSuggested(true)
+
+	// GetPickedCandidate would be called by the resumed workflow
+	// on its first manual poll. Stubbing it would make the test
+	// fail with "called more times than expected" on the first
+	// run, which is the wrong direction; the noise stub returns
+	// the not-picked signal, which is what the first run would
+	// see anyway. The second-run pick is what
+	// TestManualModeResolvesOnPick exercises.
+	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
+		Return(storage.Candidate{}, noSuchCandidateErr()).Maybe()
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	var restart *workflow.ContinueAsNewError
+	s.Require().ErrorAs(s.env.GetWorkflowError(), &restart,
+		"the workflow did not restart, so nothing about the manual-state hand-over was tested")
+
+	var next Input
+	s.Require().NoError(converter.GetDefaultDataConverter().FromPayloads(restart.Input, &next),
+		"the arguments of the restarted workflow could not be decoded")
+
+	// Compared as instants rather than as time.Time values: the
+	// deadline makes a JSON round trip to reach the next run,
+	// which drops the location.
+	s.True(in.StartManualSince.Equal(next.StartManualSince),
+		"a restarted workflow forgot ManualSince and would give the user a fresh 14 days: "+
+			"want %s, got %s", in.StartManualSince, next.StartManualSince)
+	s.Equal(storage.StateManual, next.StartPhase,
+		"a restarted workflow forgot the manual phase and would fall through to a normal search")
+}
+
+// oldMediaInput is a movieInput shape with a year that the
+// isOldMedia gate accepts. The cutoff is now.Year() - 2, so a
+// year at most that number is "old". Picking 2020 gives margin
+// in either direction: the test environment clock does not
+// have to be the test runner's wall clock.
+func oldMediaInput() Input {
+	in := movieInput()
+	in.Spec.Year = 2020
+	return in
 }

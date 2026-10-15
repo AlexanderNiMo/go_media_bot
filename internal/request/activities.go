@@ -678,8 +678,14 @@ func (a *Activities) PopManualLink(ctx context.Context, requestID int64) (string
 // the storage activity rather than the workflow itself because the
 // result is large and only the storage needs to carry it across the
 // activity boundary.
-func (a *Activities) StoreCandidates(ctx context.Context, requestID int64, candidates []storage.Candidate) error {
-	return a.store.StoreCandidates(ctx, requestID, candidates)
+//
+// StoreCandidatesInput rather than (int64, []Candidate) for the same
+// reason FetchCandidates takes SearchInput: the slice is large and
+// the struct is a single, named argument that survives the activity
+// boundary without a positional pairing. The activity body unpacks
+// the two fields it actually uses.
+func (a *Activities) StoreCandidates(ctx context.Context, in StoreCandidatesInput) error {
+	return a.store.StoreCandidates(ctx, in.RequestID, in.Candidates)
 }
 
 // ClearCandidates removes the candidate list for a request.
@@ -697,6 +703,27 @@ func (a *Activities) ClearCandidates(ctx context.Context, requestID int64) error
 // Polled by the workflow on every tick of the manual-mode loop. The
 // partial index on `picked_at IS NOT NULL` keeps the poll at
 // index-scan cost even when the candidate list has grown.
+//
+// The "not picked" signal travels back to the workflow as a
+// non-retryable typed ApplicationError rather than as the
+// storage's sentinel error. Three things motivate the wrapper:
+//   1. A plain `errors.New(...)` does not survive the activity
+//      boundary as a typed value — the SDK converts it to a
+//      generic ApplicationError, and the workflow's `errors.As`
+//      check misses.
+//   2. The "not picked" signal is a permanent state, not a
+//      transient failure. A retry policy of 10 attempts on a
+//      row that does not exist yet costs 10 polls' worth of
+//      activity time for no information, and the workflow's
+//      poll cadence is the right place to wait.
+//   3. Same shape as the qBittorrent NoDiskSpace path: a
+//      non-retryable typed ApplicationError that the workflow
+//      branches on with `errors.As` + `Type()`.
 func (a *Activities) GetPickedCandidate(ctx context.Context, requestID int64) (storage.Candidate, error) {
-	return a.store.GetPickedCandidate(ctx, requestID)
+	c, err := a.store.GetPickedCandidate(ctx, requestID)
+	if errors.Is(err, storage.ErrNoSuchCandidate) {
+		return storage.Candidate{}, temporal.NewNonRetryableApplicationError(
+			storage.ErrNoSuchCandidate.Error(), "NoSuchCandidate", err)
+	}
+	return c, err
 }
