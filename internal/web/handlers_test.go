@@ -883,15 +883,42 @@ func TestHelpRenders(t *testing.T) {
 	}
 }
 
-// TestHelpRequiresAuth — the link is only shown to signed-in users, so
-// the route should agree and bounce an anonymous request to /login.
-func TestHelpRequiresAuth(t *testing.T) {
+// TestHelpIsPublic — the help page is documentation, and a new
+// user should be able to read what the bot does before signing
+// in. The route is registered outside the requireAuth group,
+// and the page renders without a session.
+//
+// "Without a session" is the property the test pins: an
+// anonymous request returns 200, and the body has the help
+// content rather than a redirect to /login. The follow-up
+// assertions cover the visible "username/logout" block, which
+// the layout hides when User is nil — that is what makes a
+// public help page render at all.
+func TestHelpIsPublic(t *testing.T) {
 	s, _ := newTestServer(t)
 	c := newClient(t, s)
 
 	resp := c.get("/help")
-	if resp.StatusCode != http.StatusSeeOther {
-		t.Errorf("GET /help without a session returned %d, want %d", resp.StatusCode, http.StatusSeeOther)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /help without a session returned %d, want 200", resp.StatusCode)
+	}
+
+	body := readBody(t, resp)
+
+	// The page rendered with the help content.
+	for _, want := range []string{"Помощь", "Что это", "Как добавить запрос"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the help page does not show %q", want)
+		}
+	}
+
+	// And the auth-only chrome is hidden. The username block
+	// would otherwise show the "Выйти" submit; a public page
+	// must not.
+	if strings.Contains(body, "Выйти") {
+		t.Errorf("the help page rendered the logout button for an anonymous user")
 	}
 }
 

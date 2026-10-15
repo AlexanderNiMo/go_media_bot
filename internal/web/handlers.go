@@ -670,9 +670,11 @@ func (s *Server) handleNotificationsRead(w http.ResponseWriter, r *http.Request)
 
 // handleHelp serves the documentation in views/help.html.
 //
-// Static: no DB calls, no query parameters. The page is reached from the
-// sidebar in the authed group, so by the time we get here the session is
-// already valid; the layout reads User out of the request context.
+// Public: a new user should be able to read what the bot does
+// before signing in. The page is static — no DB calls, no query
+// parameters — and the layout already handles a nil user
+// (the username/logout block is hidden). The route is registered
+// outside the requireAuth group at module.go for the same reason.
 func (s *Server) handleHelp(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "help", helpView{page: s.basePage(w, r, "help")})
 }

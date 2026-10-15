@@ -89,6 +89,15 @@ func (s *Server) routes() http.Handler {
 	r.Post("/join", s.handleJoin)
 	r.Post("/logout", s.handleLogout)
 
+	// The help page is documentation: it explains what the bot
+	// does, what the request states mean, and how to add a
+	// request. New users want to read this before they have
+	// signed in, and the page is static — no DB calls, no user
+	// data — so a session is not required. The layout already
+	// handles User == nil (the username/logout block is hidden),
+	// which is what makes a public help page render correctly.
+	r.Get("/help", s.handleHelp)
+
 	// Everything else needs a session. One group with one middleware, so that
 	// a route added later is authenticated by default rather than by whoever
 	// remembers to wrap it.
@@ -125,8 +134,6 @@ func (s *Server) routes() http.Handler {
 
 		r.Get("/notifications", s.handleNotifications)
 		r.Post("/notifications/read", s.handleNotificationsRead)
-
-		r.Get("/help", s.handleHelp)
 
 		r.Get("/settings", s.handleSettings)
 		r.Post("/settings/password", s.handlePassword)
