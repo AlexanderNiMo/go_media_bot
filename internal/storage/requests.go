@@ -31,12 +31,17 @@ const (
 	StateFailed      State = "failed"
 	StateCanceled    State = "canceled"
 	StateSkipped     State = "skipped"
+	// StateManual means the indexer returned candidates but none passed
+	// the selector, the user is shown the list, and the workflow is
+	// waiting for a manual pick. Active: the request has not given up
+	// yet, it is just paused on human input.
+	StateManual State = "manual"
 )
 
 // Active reports whether a state means the request is still being worked on.
 func (s State) Active() bool {
 	switch s {
-	case StatePending, StateSearching, StateAdding, StateDownloading:
+	case StatePending, StateSearching, StateAdding, StateDownloading, StateManual:
 		return true
 	default:
 		return false
@@ -392,7 +397,7 @@ type RequestFilter struct {
 // ActiveStates is the set of states that mean a request is still being worked
 // on.
 func ActiveStates() []State {
-	return []State{StatePending, StateSearching, StateAdding, StateDownloading}
+	return []State{StatePending, StateSearching, StateAdding, StateDownloading, StateManual}
 }
 
 // AllStates is every state a request can be in, for callers that have to
@@ -402,7 +407,7 @@ func ActiveStates() []State {
 func AllStates() []State {
 	return []State{
 		StatePending, StateSearching, StateAdding, StateDownloading,
-		StateCompleted, StateFailed, StateCanceled, StateSkipped,
+		StateCompleted, StateFailed, StateCanceled, StateSkipped, StateManual,
 	}
 }
 

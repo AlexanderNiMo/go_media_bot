@@ -512,14 +512,23 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("could not list watchers", "request", id, "error", err)
 	}
 
+	// Candidates are loaded separately from the projection because they
+	// live in a different table — request_candidates — and the list
+	// can be large. Showing them only on the detail page is enough.
+	candidates, err := s.store.ListCandidates(r.Context(), id)
+	if err != nil {
+		s.log.Warn("could not list candidates", "request", id, "error", err)
+	}
+
 	events, err := s.store.ListEvents(r.Context(), id, 30)
 	if err != nil {
 		s.log.Warn("could not list events", "request", id, "error", err)
 	}
 
 	s.render(w, r, "request", requestView{
-		page:    s.basePage(w, r, "dashboard"),
-		Request: detailFor(req, watchers, events, time.Now()),
+		page:       s.basePage(w, r, "dashboard"),
+		Request:    detailFor(req, watchers, events, time.Now()),
+		Candidates: candidates,
 	})
 }
 
@@ -1019,6 +1028,44 @@ func (s *Server) handleManualRelease(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.flash(w, r, "Ссылка сохранена. Workflow подхватит её на ближайшем тике.", "ok")
 	}
+	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+}
+
+// handlePickCandidate marks a candidate as picked. The workflow polls
+// request_candidates.picked_at on its next tick and treats the first
+// row with a non-null picked_at as the user's choice.
+//
+// MarkPicked only sets a timestamp; the row is deleted by the workflow
+// (via ClearCandidates) once the picked release is consumed. The
+// partial index on picked_at keeps the workflow's poll cheap.
+func (s *Server) handlePickCandidate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "не разобрать форму", http.StatusBadRequest)
+		return
+	}
+
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "неверный id", http.StatusBadRequest)
+		return
+	}
+
+	rank, err := strconv.Atoi(r.PostFormValue("rank"))
+	if err != nil || rank <= 0 {
+		http.Error(w, "неверный rank", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := s.store.MarkPicked(r.Context(), id, rank); err != nil {
+		if errors.Is(err, storage.ErrNoSuchCandidate) {
+			http.Error(w, "такого кандидата нет (rank="+strconv.Itoa(rank)+")", http.StatusNotFound)
+			return
+		}
+		s.fail(w, r, err)
+		return
+	}
+
+	s.flash(w, r, "Выбрано. Workflow подхватит на ближайшем тике.", "ok")
 	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 }
 

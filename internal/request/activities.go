@@ -279,6 +279,84 @@ func (a *Activities) SearchReleases(ctx context.Context, in SearchInput) (Search
 	return result, nil
 }
 
+// FetchCandidates runs the same indexer search and selector pass as
+// SearchReleases and returns every release the selector rejected, with
+// the reason. Used by the manual-pick flow when the search deadline is
+// still in the future but nothing the auto-selector would accept
+// turned up.
+//
+// The cost is two round-trips per manual entry: this activity runs
+// the indexer again, on top of the SearchReleases call that already
+// returned empty. Indexer caching keeps the second one cheap; the
+// alternative (a state field carrying the full list through workflow
+// events) bloats the event history for every request, not just the
+// ones that go manual, and the wasted cycles are negligible next to the
+// rest of a request's lifetime.
+func (a *Activities) FetchCandidates(ctx context.Context, in SearchInput) ([]storage.Candidate, error) {
+	log := a.logOrDefault().With("request", in.RequestID, "media", in.Spec.Ref.String())
+
+	req := indexer.ForMedia(in.Spec, categoriesFor(in.Spec), in.Limit)
+	releases, err := a.indexer.Search(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("search indexer: %w", err)
+	}
+	if len(releases) == 0 {
+		return nil, nil
+	}
+
+	identities := make([]string, 0, len(releases))
+	for _, r := range releases {
+		identities = append(identities, r.Identity())
+	}
+	blacklist, err := a.store.IsBlacklisted(ctx, identities)
+	if err != nil {
+		// A blacklist that cannot be read must not fail the search: the
+		// worst case is picking a release that was already found wanting,
+		// which the download loop will catch again.
+		log.Warn("could not read the release blacklist", "error", err)
+		blacklist = map[string]bool{}
+	}
+
+	verdict := release.NewSelector(a.profile).Select(in.Spec, releases, blacklist)
+	log.Info("fetched candidates for manual pick",
+		"considered", verdict.Considered, "rejected", len(verdict.Rejected))
+
+	out := make([]storage.Candidate, 0, len(verdict.Rejected))
+	for i, r := range verdict.Rejected {
+		reason := string(r.Reason)
+		if r.Detail != "" {
+			reason = reason + ": " + r.Detail
+		}
+		out = append(out, storage.Candidate{
+			Rank:            i + 1,
+			Title:           r.Release.Title,
+			Indexer:         r.Release.Indexer,
+			InfoHash:        r.Release.InfoHash,
+			MagnetLink:      r.Release.MagnetURI,
+			SourceURL:       r.Release.DownloadURL,
+			SizeBytes:       r.Release.SizeBytes,
+			Seeders:         r.Release.Seeders,
+			Leechers:        r.Release.Leechers,
+			RejectionReason: reason,
+		})
+	}
+	return out, nil
+}
+
+// logOrDefault returns a.log or a discard logger if a.log is nil.
+//
+// Activity methods all need a logger; some are registered in tests
+// with a zero-value Activities struct (no log). Returning a discard
+// logger instead of panicking keeps the tests passing through and
+// means the new manual-mode activities don't have to special-case
+// the no-log path themselves.
+func (a *Activities) logOrDefault() *slog.Logger {
+	if a.log != nil {
+		return a.log
+	}
+	return slog.New(slog.DiscardHandler)
+}
+
 // categoriesFor returns the indexer categories worth searching.
 //
 // These are the standard Torznab category numbers: 2000 is Films, 5000 is TV.
@@ -591,4 +669,34 @@ func (a *Activities) PopManualLink(ctx context.Context, requestID int64) (string
 		a.log.Info("picked up a manual link", "request", requestID)
 	}
 	return link, nil
+}
+
+// StoreCandidates replaces the candidate list for a request.
+//
+// Called when the workflow enters StateManual. The list is also written
+// by the indexer pass that the search just made; the persistence is in
+// the storage activity rather than the workflow itself because the
+// result is large and only the storage needs to carry it across the
+// activity boundary.
+func (a *Activities) StoreCandidates(ctx context.Context, requestID int64, candidates []storage.Candidate) error {
+	return a.store.StoreCandidates(ctx, requestID, candidates)
+}
+
+// ClearCandidates removes the candidate list for a request.
+//
+// Called when the workflow leaves StateManual — the user picked, the
+// 14-day timeout fired, or the request was cancelled. The list would
+// be stale after any of those and a re-display would mislead the user.
+func (a *Activities) ClearCandidates(ctx context.Context, requestID int64) error {
+	return a.store.ClearCandidates(ctx, requestID)
+}
+
+// GetPickedCandidate returns the candidate the user picked, or
+// ErrNoSuchCandidate if no row has picked_at set.
+//
+// Polled by the workflow on every tick of the manual-mode loop. The
+// partial index on `picked_at IS NOT NULL` keeps the poll at
+// index-scan cost even when the candidate list has grown.
+func (a *Activities) GetPickedCandidate(ctx context.Context, requestID int64) (storage.Candidate, error) {
+	return a.store.GetPickedCandidate(ctx, requestID)
 }

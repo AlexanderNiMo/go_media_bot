@@ -15,6 +15,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -142,6 +143,7 @@ func newBot(cfg *config.Config, store *storage.Store, req requestStarter,
 		tgbot.WithMessageTextHandler("list", tgbot.MatchTypeCommand, b.handleList),
 		tgbot.WithMessageTextHandler("cancel", tgbot.MatchTypeCommand, b.handleCancel),
 		tgbot.WithMessageTextHandler("search", tgbot.MatchTypeCommand, b.handleSearch),
+		tgbot.WithMessageTextHandler("pick", tgbot.MatchTypeCommand, b.handlePick),
 		tgbot.WithCallbackQueryDataHandler(callbackPrefix, tgbot.MatchTypePrefix, b.handleSelect),
 		tgbot.WithErrorsHandler(b.handleError),
 	}
@@ -339,6 +341,70 @@ func (b *Bot) handleList(ctx context.Context, api *tgbot.Bot, update *models.Upd
 	out.WriteString("\n/cancel <номер> — отменить")
 
 	b.reply(ctx, update, out.String())
+}
+
+// handlePick marks a candidate as the user's choice.
+//
+// Called from a chat linked to the request's owner. The workflow
+// polls request_candidates.picked_at on its next tick and treats the
+// first row with a non-null timestamp as the choice.
+//
+// The shape mirrors handleCancel: the chat must be linked to the
+// request's owner, the request must exist, the rank must parse, and
+// the candidate at that rank must still be on the list. A wrong
+// rank returns ErrNoSuchCandidate; a deleted or never-existed list
+// is the same answer from the user's perspective.
+func (b *Bot) handlePick(ctx context.Context, api *tgbot.Bot, update *models.Update) {
+	user, err := b.user(ctx, update)
+	if err != nil {
+		b.reply(ctx, update, "Сначала привяжите чат: /link <код>.")
+		return
+	}
+
+	args := strings.Fields(commandArgs(update))
+	if len(args) < 2 {
+		b.reply(ctx, update, "Формат: /pick <номер> <rank>. Список кандидатов — в /list <номер>.")
+		return
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		b.reply(ctx, update, "Номер должен быть числом. Посмотреть можно в /list.")
+		return
+	}
+	rank, err := strconv.Atoi(args[1])
+	if err != nil || rank <= 0 {
+		b.reply(ctx, update, "Rank должен быть положительным числом.")
+		return
+	}
+
+	// Only somebody watching the request may pick from its candidate list.
+	// Same defensive check as handleCancel: the id is a small number,
+	// and without this any chat could /pick 12 rank 1 and start a
+	// download on a stranger's request.
+	watchers, err := b.store.ListWatchers(ctx, id)
+	if err != nil {
+		b.log.Error("could not list watchers", "request", id, "error", err)
+		b.reply(ctx, update, "Не получилось проверить права на этот запрос.")
+		return
+	}
+	if !watching(watchers, user.ID) {
+		b.reply(ctx, update, "Это не ваш запрос.")
+		return
+	}
+
+	if _, err := b.store.MarkPicked(ctx, id, rank); err != nil {
+		if errors.Is(err, storage.ErrNoSuchCandidate) {
+			b.reply(ctx, update, "Такого кандидата нет (rank="+strconv.Itoa(rank)+").")
+			return
+		}
+		b.log.Warn("could not mark candidate picked", "request", id, "rank", rank, "error", err)
+		b.reply(ctx, update, "Не получилось: "+err.Error())
+		return
+	}
+
+	b.log.Info("user picked a candidate via telegram",
+		"user", user.Username, "request", id, "rank", rank)
+	b.reply(ctx, update, fmt.Sprintf("Выбран rank %d. Workflow подхватит на ближайшем тике.", rank))
 }
 
 // handleCancel stops a request.

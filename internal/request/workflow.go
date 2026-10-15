@@ -138,6 +138,8 @@ func runSearchCycle(ctx workflow.Context, in *Input, state *State) (*Result, err
 		return skippedResult(ctx, in, state)
 	case searchFound:
 		return downloadCycle(ctx, in, state)
+	case searchManual:
+		return manualPhase(ctx, in, state)
 	default:
 		// Unreachable, but a workflow that silently does nothing is worse than
 		// one that says so.
@@ -155,8 +157,13 @@ const (
 	// searchFound means a release was selected and is ready to be added.
 	searchFound
 	// searchSatisfied means the media turned up in Plex between the search and
-	// the download.
+	// the selection, so there is nothing to download.
 	searchSatisfied
+	// searchManual means the auto-selector found nothing acceptable but the
+	// indexer did return releases, and the user has been given a list to
+	// pick from. The caller is expected to enter StateManual and wait for
+	// a pick or the 14-day manual-mode timeout.
+	searchManual
 )
 
 // searchOnce runs one search and selection, updating the schedule.
@@ -212,6 +219,18 @@ func searchOnce(ctx workflow.Context, in *Input, state *State) (searchOutcome, e
 	state.ErrorStreak = 0
 
 	if !res.Found() {
+		// For media old enough that auto-search is unlikely to find
+		// anything (the indexer has dropped the release, the trackers
+		// have aged out, russian_audio: missing rules out otherwise-good
+		// candidates), the user gets a list to pick from. Newer media
+		// just goes back to sleep on the normal backoff — the auto-pick
+		// is more useful there because there is likely something
+		// acceptable coming in the next refresh.
+		if outcome, err := maybeEnterManualMode(ctx, in, state); err != nil {
+			return searchContinue, err
+		} else if outcome == searchManual {
+			return searchManual, nil
+		}
 		return searchContinue, scheduleNextSearch(ctx, in, state, res)
 	}
 
@@ -260,6 +279,254 @@ func scheduleNextSearch(ctx workflow.Context, in *Input, state *State, res Searc
 	state.NextRunAt = now.Add(backoffFor(in.Policy, state.Attempt))
 
 	return saveState(ctx, in, state, "search.no_acceptable", res.Summary)
+}
+
+// isOldMedia reports whether the spec's year is more than two years behind
+// now. The cutoff is intentionally generous: anything from 2023 or
+// earlier in 2026 counts as old. A request for a 2024 film does not
+// get a manual list yet — the indexer is more likely to surface a
+// good release on the next refresh, and the user would be pestered
+// with a list every backoff tick.
+//
+// Year=0 (unknown) returns false. The selector's russian_audio rule
+// already filters out most "old enough to need a manual pick" releases
+// on its own, so the unknown-year case is mostly a self-search
+// where no manual list is wanted either.
+func isOldMedia(spec domain.MediaSpec, now time.Time) bool {
+	if spec.Year <= 0 {
+		return false
+	}
+	return spec.Year <= now.Year()-2
+}
+
+// maybeEnterManualMode is the searchOnce fallback for media old enough
+// that the indexer usually returns nothing. It runs the indexer one
+// more time via FetchCandidates, persists the rejected list, and tells
+// the caller to enter StateManual if there is anything for the user
+// to look at.
+//
+// Three outcomes:
+//   - searchManual: a list was persisted, the workflow should now
+//     run manualPhase, the user has been notified.
+//   - searchContinue: the indexer returned nothing, or the media is
+//     not old enough to qualify. The caller falls through to the
+//     normal backoff.
+//   - error: an activity or storage write failed; the caller
+//     continues on the normal backoff rather than losing a search
+//     cycle to a transient failure.
+func maybeEnterManualMode(ctx workflow.Context, in *Input, state *State) (searchOutcome, error) {
+	now := workflow.Now(ctx)
+	if !isOldMedia(in.Spec, now) {
+		return searchContinue, nil
+	}
+
+	// Already in manual mode? Don't re-fetch and re-notify on every search
+	// tick — the user is given the list once and asked to pick or wait
+	// 14 days. The main loop is responsible for the timeout.
+	if state.Phase == storage.StateManual {
+		return searchManual, nil
+	}
+
+	actCtx := withOptions(ctx, indexerOptions())
+	var candidates []storage.Candidate
+	if err := workflow.ExecuteActivity(actCtx, (*Activities).FetchCandidates, SearchInput{
+		RequestID: in.RequestID,
+		Spec:      in.Spec,
+		Limit:     100,
+	}).Get(actCtx, &candidates); err != nil {
+		// A search error is not a manual-mode error: the indexer
+		// might be flaky, and the workflow's backoff already covers
+		// that. Surface the error so the caller falls through to
+		// scheduleNextSearch, which will reschedule.
+		workflow.GetLogger(ctx).Warn("could not fetch candidates for manual pick", "error", err)
+		return searchContinue, err
+	}
+	if len(candidates) == 0 {
+		// Indexer really did return nothing this time; the manual
+		// list would be empty and offering it is noise. Backoff.
+		return searchContinue, nil
+	}
+
+	if err := workflow.ExecuteActivity(actCtx, (*Activities).StoreCandidates, StoreCandidatesInput{
+		RequestID:  in.RequestID,
+		Candidates: candidates,
+	}).Get(actCtx, nil); err != nil {
+		return searchContinue, err
+	}
+
+	state.Phase = storage.StateManual
+	state.ManualSince = now
+	// First poll: one minute from now. Subsequent polls use the same
+	// cadence (manualPhase bumps it back to 1 minute before sleeping).
+	state.NextRunAt = now.Add(time.Minute)
+	if err := saveState(ctx, in, state, "search.manual_candidates",
+		fmt.Sprintf("offered %d candidates for manual pick", len(candidates))); err != nil {
+		return searchContinue, err
+	}
+
+	if err := notify(ctx, in, storage.NotificationManual,
+		fmt.Sprintf("Pick a release: %s", in.Spec.DisplayTitle()),
+		buildCandidateList(candidates)); err != nil {
+		// A notification failure must not lose the manual entry. The
+		// list is in the DB; the user will see it on the request page
+		// even if Telegram did not deliver.
+		workflow.GetLogger(ctx).Warn("manual-mode notification failed", "error", err)
+	}
+
+	workflow.GetLogger(ctx).Info("entered manual-pick mode",
+		"request", in.RequestID, "candidates", len(candidates))
+	return searchManual, nil
+}
+
+// buildCandidateList renders the candidate list for a manual-mode
+// notification body. Plain text — the bot splits on newlines.
+func buildCandidateList(candidates []storage.Candidate) string {
+	var b strings.Builder
+	for _, c := range candidates {
+		fmt.Fprintf(&b, "%d. [%s] %s\n   seeders: %d  size: %s  rejected: %s\n",
+			c.Rank, c.Indexer, c.Title, c.Seeders,
+			humanSize(c.SizeBytes), c.RejectionReason)
+	}
+	return b.String()
+}
+
+// humanSize formats a byte count for the notification body.
+func humanSize(n int64) string {
+	const k = 1024
+	if n < k {
+		return fmt.Sprintf("%d B", n)
+	}
+	if n < k*k {
+		return fmt.Sprintf("%.1f KB", float64(n)/k)
+	}
+	if n < k*k*k {
+		return fmt.Sprintf("%.1f MB", float64(n)/(k*k))
+	}
+	return fmt.Sprintf("%.2f GB", float64(n)/(k*k*k))
+}
+
+// manualPhase runs while the request is in StateManual: polls
+// GetPickedCandidate on every tick, exits with the picked release
+// as a result (downloadCycle takes over from there) or with nil
+// when the 14-day manual-mode timeout fires.
+//
+// It returns a non-nil *Result only when the user has picked; the
+// download cycle then takes over via the caller's switch. On timeout
+// it returns nil so the caller loops and re-enters the search cycle
+// (state has been reset to StatePending before this returns).
+func manualPhase(ctx workflow.Context, in *Input, state *State) (*Result, error) {
+	const manualTimeout = 14 * 24 * time.Hour
+	actCtx := withOptions(ctx, dbOptions())
+
+	for {
+		now := workflow.Now(ctx)
+		// Timeout: the user had 14 days. Clear the list, go back to
+		// the normal search cycle. Reset Attempt so a fresh search
+		// has a clean backoff ladder, and put NextRunAt in the
+		// immediate future so the next pass is not a sleep.
+		if !state.ManualSince.IsZero() && now.Sub(state.ManualSince) > manualTimeout {
+			if err := workflow.ExecuteActivity(actCtx, (*Activities).ClearCandidates, in.RequestID).
+				Get(actCtx, nil); err != nil {
+				return nil, err
+			}
+			state.Phase = storage.StatePending
+			state.Attempt = 0
+			state.NextRunAt = now
+			state.ManualSince = time.Time{}
+			if err := saveState(ctx, in, state, "search.manual_timeout",
+				"the user did not pick a release within 14 days"); err != nil {
+				return nil, err
+			}
+			if err := notify(ctx, in, storage.NotificationFailed,
+				"Manual pick timed out: "+in.Spec.DisplayTitle(),
+				"No release was picked from the candidate list within 14 days. "+
+					"The request is back to the normal search cycle."); err != nil {
+				workflow.GetLogger(ctx).Warn("manual-timeout notification failed", "error", err)
+			}
+			return nil, nil
+		}
+
+		// Cancellation: a user who cancels the request while it is
+		// sitting in manual mode wants the wait over, not a
+		// notification about a download that is not going to
+		// happen. Fall through to the same path the search cycle
+		// uses; cancelRequest will see the state and clean up.
+		if ctx.Err() != nil {
+			return cancelRequest(ctx, in, state)
+		}
+
+		// The user picked. Build a release from the candidate data
+		// and hand it to downloadCycle. The candidate list is
+		// already cleared by the pick (the storage activity
+		// MarkPicked only sets picked_at; ClearCandidates is called
+		// below after the pick is consumed to be safe across
+		// retries).
+		var picked storage.Candidate
+		err := workflow.ExecuteActivity(actCtx, (*Activities).GetPickedCandidate, in.RequestID).
+			Get(actCtx, &picked)
+		if err == nil {
+			// Got a pick. Clear the list, build the release, go to
+			// downloadCycle. If ClearCandidates fails, log and
+			// continue — the download is the user's intent and a
+			// stale candidate row is harmless.
+			if clearErr := workflow.ExecuteActivity(actCtx, (*Activities).ClearCandidates, in.RequestID).
+				Get(actCtx, nil); clearErr != nil {
+				workflow.GetLogger(ctx).Warn("clear candidates after pick failed", "error", clearErr)
+			}
+			state.Selected = releaseFromCandidate(picked, in.Spec)
+			state.Phase = storage.StateAdding
+			state.ManualSince = time.Time{}
+			if saveErr := saveState(ctx, in, state, "release.manual_picked",
+				fmt.Sprintf("user picked rank %d (%s)", picked.Rank, picked.Title)); saveErr != nil {
+				return nil, saveErr
+			}
+			workflow.GetLogger(ctx).Info("user picked a release",
+				"request", in.RequestID, "rank", picked.Rank, "title", picked.Title)
+			return downloadCycle(ctx, in, state)
+		}
+		// ErrNoSuchCandidate means "not yet picked". Anything else
+		// is a real error and we should not silently swallow it.
+		if !errors.Is(err, storage.ErrNoSuchCandidate) {
+			return nil, err
+		}
+
+		// Wait until the next poll. Same shape as runSearchCycle's
+		// waitUntil: cancellable, with a short cadence (one
+		// minute) because the user is sitting at a screen waiting
+		// to see their pick take effect.
+		cancelled, err := waitUntil(ctx, state.NextRunAt)
+		if err != nil {
+			return nil, err
+		}
+		if cancelled {
+			return cancelRequest(ctx, in, state)
+		}
+		state.NextRunAt = workflow.Now(ctx).Add(time.Minute)
+		_ = state.NextRunAt // keep gofmt from complaining; the tick continues
+	}
+}
+
+// releaseFromCandidate builds a domain.Release the rest of the
+// pipeline (downloadCycle, AddTorrent) can consume. The candidate
+// carries a magnet URI, so the existing manual-link path that the
+// workflow already has for PopManualLink works the same way: the
+// download cycle hands the link to qBittorrent.
+func releaseFromCandidate(c storage.Candidate, spec domain.MediaSpec) *domain.Release {
+	return &domain.Release{
+		Title:       c.Title,
+		InfoHash:    c.InfoHash,
+		Indexer:     c.Indexer,
+		MagnetURI:   c.MagnetLink,
+		DownloadURL: c.SourceURL,
+		// SizeBytes/Seeders/Leechers carry the candidate's data
+		// so the audit trail in the projection row reflects the
+		// release the user actually picked, not the indexer
+		// result the selector would have picked if anything
+		// had passed.
+		SizeBytes: c.SizeBytes,
+		Seeders:   c.Seeders,
+		Leechers:  c.Leechers,
+	}
 }
 
 // downloadCycle adds the selected release and waits for it to finish.
@@ -733,6 +1000,11 @@ func initialState(ctx workflow.Context, in Input) State {
 		QbitHash:         in.StartQbitHash,
 		DownloadDeadline: deadline,
 		SearchDeadline:   searchDeadline,
+		// Carried for the same reason as the deadlines above. The first
+		// start of the workflow has ManualSince zero; the workflow enters
+		// StateManual by writing the field, and a ContinueAsNew carries
+		// it across.
+		ManualSince:      in.StartManualSince,
 	}
 }
 
@@ -844,6 +1116,9 @@ func continueAsNewIfNeeded(ctx workflow.Context, in Input, state State) (bool, e
 	// itself a fresh two-year window and the request would never reach its
 	// deadline at all.
 	next.StartSearchDeadline = state.SearchDeadline
+	// Same reasoning for the manual-mode timeout: a ContinueAsNew during
+	// StateManual would otherwise reset the 14-day wait on every restart.
+	next.StartManualSince = state.ManualSince
 	// The iteration count has to survive too, or the log line above would
 	// report a number that resets at every restart.
 	next.StartIteration = state.Iteration

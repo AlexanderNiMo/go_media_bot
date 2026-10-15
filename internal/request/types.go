@@ -145,6 +145,11 @@ type Input struct {
 	// *terminates* the execution — no result, no notification, and a
 	// projection row that stays "searching" forever.
 	StartSearchDeadline time.Time
+	// StartManualSince carries the moment the workflow entered StateManual.
+	// A ContinueAsNew during manual mode would otherwise reset the 14-day
+	// manual-mode timeout on every history reset, and the same trap as
+	// StartSearchDeadline (the timeout never arrives) follows.
+	StartManualSince time.Time
 }
 
 // State is the workflow's own state, carried across ContinueAsNew.
@@ -176,6 +181,12 @@ type State struct {
 	// SearchDeadline is the absolute end of the search, computed once so that
 	// it survives every restart.
 	SearchDeadline time.Time
+
+	// ManualSince is set when the workflow enters StateManual (waiting for
+	// the user to pick a release) and cleared when it leaves. The 14-day
+	// manual-mode timeout is "now - ManualSince > 14d", and the field has
+	// to persist across ContinueAsNew the way the other deadlines do.
+	ManualSince time.Time
 }
 
 // Result is what the workflow returns.
@@ -247,6 +258,19 @@ type SearchInput struct {
 	// MaxAge marks how long the caller is willing to wait for a torrent
 	// client that is slow to list what it added.
 	Limit int
+}
+
+// StoreCandidatesInput hands a freshly-fetched candidate list to the
+// persistence layer.
+//
+// Fetched in FetchCandidates and persisted in a separate activity so
+// the activity boundary carries the slice, not the workflow: the
+// list is too large for the workflow's event history in some
+// realistic cases (hundreds of rejected releases, each with a
+// magnet URI), and the activity boundary is the right cut.
+type StoreCandidatesInput struct {
+	RequestID  int64
+	Candidates []storage.Candidate
 }
 
 // SearchResult is the outcome of one search.

@@ -158,7 +158,8 @@ type requestsView struct {
 
 type requestView struct {
 	page
-	Request requestDetail
+	Request    requestDetail
+	Candidates []storage.Candidate
 }
 
 type notificationRow struct {

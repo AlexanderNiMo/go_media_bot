@@ -47,6 +47,39 @@
   <button type="submit" class="small">Сохранить год</button>
 </form>
 
+<h3>Кандидаты для ручного выбора</h3>
+<p class="muted">
+  Авто-подбор не нашёл подходящего релиза, но индексатор вернул эти варианты.
+  Нажмите «Скачать это» на том, что подходит — workflow подхватит на ближайшем
+  тике. Список исчезнет через 14 дней, если не выбрать.
+</p>
+{{if $.Candidates}}
+<table>
+  <thead><tr><th>#</th><th>Релиз</th><th>Размер</th><th>Сидеры</th><th>Отклонён по</th><th></th></tr></thead>
+  <tbody>
+  {{range $.Candidates}}
+    <tr>
+      <td class="mono">{{.Rank}}</td>
+      <td>
+        <div class="mono">{{.Title}}</div>
+        <div class="muted small">[{{.Indexer}}] {{.InfoHash}}</div>
+      </td>
+      <td class="muted mono">{{.SizeBytes}} B</td>
+      <td class="muted mono">{{.Seeders}}</td>
+      <td class="muted small">{{.RejectionReason}}</td>
+      <td>
+        <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="rank" value="{{.Rank}}">
+          <button type="submit" class="small">Скачать это</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
 <h3>Ручной релиз</h3>
 <p class="muted">
   Индексатор не помог? Вставьте magnet-ссылку или URL .torrent — workflow

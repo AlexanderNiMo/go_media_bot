@@ -121,6 +121,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/requests/{id}/retry", s.handleRetry)
 		r.Post("/requests/{id}/manual", s.handleManualRelease)
 		r.Post("/requests/{id}/year", s.handleEditYear)
+		r.Post("/requests/{id}/pick", s.handlePickCandidate)
 
 		r.Get("/notifications", s.handleNotifications)
 		r.Post("/notifications/read", s.handleNotificationsRead)

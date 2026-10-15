@@ -33,6 +33,7 @@ const (
 	NotifyStarted   = 1
 	NotifyCompleted = 2
 	NotifyFailed    = 4
+	NotifyManual    = 8
 )
 
 // AddWatcher attaches a user to a request.
@@ -123,6 +124,14 @@ const (
 	NotificationFailed    NotificationKind = "failed"
 	NotificationSkipped   NotificationKind = "skipped"
 	NotificationCanceled  NotificationKind = "canceled"
+	// NotificationManual is sent when the workflow enters StateManual:
+	// the indexer returned results but the auto-selector refused all of
+	// them, and the user is given a list to pick from. Bit 8 of the
+	// watcher notify_mask; the default of 7 (started/completed/failed)
+	// leaves manual off, which is what a user who is not the request
+	// owner probably wants — they would see someone else's manual
+	// list and have nothing to pick.
+	NotificationManual NotificationKind = "manual"
 )
 
 // Mask returns the notify_mask bit this kind corresponds to, or 0 for a kind
@@ -135,6 +144,8 @@ func (k NotificationKind) Mask() int {
 		return NotifyCompleted
 	case NotificationFailed:
 		return NotifyFailed
+	case NotificationManual:
+		return NotifyManual
 	default:
 		return 0
 	}
