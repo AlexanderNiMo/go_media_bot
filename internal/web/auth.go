@@ -131,7 +131,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		// redirect that takes a host from a query parameter is a phishing
 		// primitive, and this is one line to avoid.
 		next := url.QueryEscape(r.URL.Path)
-		http.Redirect(w, r, "/login?next="+next, http.StatusSeeOther)
+		s.seeOther(w, r, "/login?next="+next)
 	})
 }
 
@@ -267,7 +267,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("login", "user", user.Username, "remote", r.RemoteAddr)
-	http.Redirect(w, r, safeNext(r.PostFormValue("next")), http.StatusSeeOther)
+	s.seeOther(w, r, safeNext(r.PostFormValue("next")))
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

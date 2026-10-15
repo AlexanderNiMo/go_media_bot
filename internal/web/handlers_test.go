@@ -1040,3 +1040,30 @@ func TestFaviconIsServed(t *testing.T) {
 			truncateForTest(rec.Body.String(), 80))
 	}
 }
+
+// TestRequireAuthRedirectAbsorbsBasePath — the requireAuth redirect hands
+// the user a relative path ("/login?next=..."), and the Location header
+// that ships to the browser has to carry the configured base path. A
+// Location without the prefix lands the user on a path the basePath
+// middleware 404s on the next request, and the only visible symptom is
+// the browser spinning on /login without ever rendering it.
+func TestRequireAuthRedirectAbsorbsBasePath(t *testing.T) {
+	s, _ := newTestServer(t)
+	signedIn(t, s) // give the instance at least one account so /login is the destination
+
+	s.cfg.Server.BasePath = "/mediad"
+
+	rec := httptest.NewRecorder()
+	h := s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("handler reached for %q", r.URL.Path)
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("code = %d, want 303", rec.Code)
+	}
+	want := "/mediad/login?next=%2Fdashboard"
+	if loc := rec.Header().Get("Location"); loc != want {
+		t.Errorf("Location = %q, want %q", loc, want)
+	}
+}
