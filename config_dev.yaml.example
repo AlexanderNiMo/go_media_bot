@@ -165,6 +165,17 @@ qbittorrent:
   # independent, not coupled.
   # save_path_movies: /downloads/movies
   # save_path_series: /downloads/tv
+  # qBittorrent's "Download in sequential order" add-option (URL
+  # param: seqdl). Pieces are fetched in order from the start, so the
+  # file becomes playable while the rest is still being grabbed.
+  # Both flags are off by default so a deployment that does not want
+  # either can leave the section empty. Default: false.
+  # sequential_download: false
+  # qBittorrent's "Download first and last pieces first" add-option
+  # (URL param: flacp). The first and last pieces land first, which
+  # lets a media player verify the file integrity (header + footer)
+  # before the bulk arrives. Default: false.
+  # first_last_piece_prio: false
 
 
 # ---------------------------------------------------------------------------

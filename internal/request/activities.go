@@ -329,6 +329,16 @@ func (a *Activities) AddTorrent(ctx context.Context, in AddTorrentInput) (AddTor
 		// between the decision to download and the download.
 		Paused:   false,
 		SavePath: savePath,
+		// qBittorrent's "Download in sequential order" — pieces arrive in
+		// order from the start, so the file becomes playable while still
+		// being fetched. Wired from config so a deployment that does not
+		// want it (older clients, performance-sensitive scenarios) can opt
+		// out without a code change.
+		SequentialDownload: a.cfg.QBittorrent.SequentialDownload,
+		// qBittorrent's "Download first and last pieces first" — header and
+		// footer land first so a media player can verify file integrity
+		// before the bulk arrives. Same config-driven opt-out.
+		FirstLastPiecePrio: a.cfg.QBittorrent.FirstLastPiecePrio,
 	})
 	if err != nil {
 		// A no-space failure is the one case where deleting the torrent

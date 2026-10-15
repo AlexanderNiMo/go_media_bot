@@ -227,6 +227,16 @@ type AddSpec struct {
 	// that case, so a deployment that does not need per-type routing is
 	// unaffected.
 	SavePath string
+	// SequentialDownload maps to the qBittorrent "Download in sequential
+	// order" add-option. Pieces are fetched in order from the start of
+	// the file, so the file becomes playable while the rest is still
+	// being grabbed.
+	SequentialDownload bool
+	// FirstLastPiecePrio maps to the qBittorrent "Download first and last
+	// pieces first" add-option. The first and last pieces land first,
+	// which lets a media player verify the file integrity (header +
+	// footer) before the bulk arrives.
+	FirstLastPiecePrio bool
 }
 
 // Add hands a torrent to the client and returns its hash.
@@ -284,6 +294,16 @@ func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPre
 		// is not an error — the client ignores unknown fields — so the torrent
 		// would silently start downloading.
 		options[c.pauseOptionName()] = "true"
+	}
+	if spec.SequentialDownload {
+		// "seqdl" has not been renamed across qBittorrent 4.x / 5.x the way
+		// "paused" was, so the same option name works on every supported
+		// version. Sending the field unconditionally is fine.
+		options["seqdl"] = "true"
+	}
+	if spec.FirstLastPiecePrio {
+		// Same — "flacp" is stable across versions.
+		options["flacp"] = "true"
 	}
 
 	resp, err := c.qb.AddTorrentFromUrlCtx(ctx, spec.Link, options)

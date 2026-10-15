@@ -128,6 +128,19 @@ type QBittorrent struct {
 	// for that media type — the two fields are independent, not coupled.
 	SavePathMovies string `koanf:"save_path_movies" yaml:"save_path_movies"`
 	SavePathSeries string `koanf:"save_path_series" yaml:"save_path_series"`
+
+	// SequentialDownload is the qBittorrent "Download in sequential order"
+	// add-option (URL param: seqdl). Pieces are fetched in order from the
+	// start of the file, so the file becomes playable while the rest is
+	// still being grabbed — useful for media that the user might want to
+	// start watching before the torrent finishes.
+	SequentialDownload bool `koanf:"sequential_download" yaml:"sequential_download"`
+
+	// FirstLastPiecePrio is the qBittorrent "Download first and last
+	// pieces first" add-option (URL param: flacp). The first and last
+	// pieces land first, which lets a media player verify the file
+	// integrity (header + footer) before the bulk arrives.
+	FirstLastPiecePrio bool `koanf:"first_last_piece_prio" yaml:"first_last_piece_prio"`
 }
 
 // Telegram is the chat front end.
@@ -335,9 +348,11 @@ func defaults() Config {
 			Enabled: true,
 		},
 		QBittorrent: QBittorrent{
-			URL:          "http://localhost:8080",
-			Category:     "mediad",
-			PollInterval: 30 * time.Second,
+			URL:                "http://localhost:8080",
+			Category:           "mediad",
+			PollInterval:       30 * time.Second,
+			SequentialDownload: true,
+			FirstLastPiecePrio: true,
 		},
 		Search: Search{
 			SearchDeadline: 17520 * time.Hour, // 2 years
