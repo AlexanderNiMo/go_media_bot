@@ -366,26 +366,29 @@ func TestAddConfirmsThroughTheTagNotTheResponse(t *testing.T) {
 // torrent simply starts downloading when it was meant to wait.
 func TestPauseOptionNameTracksClientVersion(t *testing.T) {
 	for _, tc := range []struct {
+		name    string
 		version string
 		want    string
 	}{
-		{"v4.6.4", "paused"},
-		{"4.6.4", "paused"},
-		{"v5.0.3", "stopped"},
-		{"5.2.4", "stopped"},
-		{"4.6", "paused"},
+		{"v4.6.4", "v4.6.4", "paused"},
+		{"4.6.4", "4.6.4", "paused"},
+		{"v5.0.3", "v5.0.3", "stopped"},
+		{"5.2.4", "5.2.4", "stopped"},
+		{"4.6", "4.6", "paused"},
 	} {
-		// A version that is not a version at all never reaches this point any
-		// more: Start refuses it, because a service answering with something
-		// unrecognisable is not qBittorrent. The fallback below still exists
-		// for a client constructed without Start.
-		fake := newFakeQBittorrent()
-		fake.version = tc.version
-		c := newTestClient(t, fake)
+		t.Run(tc.name, func(t *testing.T) {
+			// A version that is not a version at all never reaches this point any
+			// more: Start refuses it, because a service answering with something
+			// unrecognisable is not qBittorrent. The fallback below still exists
+			// for a client constructed without Start.
+			fake := newFakeQBittorrent()
+			fake.version = tc.version
+			c := newTestClient(t, fake)
 
-		if got := c.pauseOptionName(); got != tc.want {
-			t.Errorf("version %q: pauseOptionName = %q, want %q", tc.version, got, tc.want)
-		}
+			if got := c.pauseOptionName(); got != tc.want {
+				t.Errorf("version %q: pauseOptionName = %q, want %q", tc.version, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -553,54 +556,57 @@ func TestLoginFailureIsReported(t *testing.T) {
 // differ, and getting them wrong means a finished download is never noticed.
 func TestStatusNormalisation(t *testing.T) {
 	for _, tc := range []struct {
+		name    string
 		state   string
 		done    bool
 		failed  bool
 		stalled bool
 	}{
-		{"downloading", false, false, false},
-		{"stalledDL", false, false, true},
-		{"metaDL", false, false, true},
-		{"error", false, true, false},
-		{"missingFiles", false, true, false},
-		{"uploading", true, false, false},
-		{"stalledUP", true, false, false},
+		{"downloading", "downloading", false, false, false},
+		{"stalledDL", "stalledDL", false, false, true},
+		{"metaDL", "metaDL", false, false, true},
+		{"error", "error", false, true, false},
+		{"missingFiles", "missingFiles", false, true, false},
+		{"uploading", "uploading", true, false, false},
+		{"stalledUP", "stalledUP", true, false, false},
 		// 4.x naming
-		{"pausedUP", true, false, false},
+		{"pausedUP", "pausedUP", true, false, false},
 		// 5.x naming: the rename that breaks naive state switches
-		{"stoppedUP", true, false, false},
+		{"stoppedUP", "stoppedUP", true, false, false},
 		// A stopped *download* counts as stalled, not as still running. This
 		// project only ever adds torrents running, so a stopped one is a state
 		// nobody asked for, and waiting out the two-day deadline for something
 		// that is not moving would end in the same deletion, just later. See
 		// domain.TorrentStatus.Stalled.
-		{"stoppedDL", false, false, true},
-		{"pausedDL", false, false, true},
+		{"stoppedDL", "stoppedDL", false, false, true},
+		{"pausedDL", "pausedDL", false, false, true},
 	} {
-		fake := newFakeQBittorrent()
-		fake.torrents["h"] = torrent("h", "x", tc.state, 0.5, "")
-		c := newTestClient(t, fake)
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeQBittorrent()
+			fake.torrents["h"] = torrent("h", "x", tc.state, 0.5, "")
+			c := newTestClient(t, fake)
 
-		got, err := c.Info(context.Background(), []string{"h"})
-		if err != nil {
-			t.Fatalf("state %q: %v", tc.state, err)
-		}
-		s := got["h"]
+			got, err := c.Info(context.Background(), []string{"h"})
+			if err != nil {
+				t.Fatalf("state %q: %v", tc.state, err)
+			}
+			s := got["h"]
 
-		// The state is lower-cased by the client wrapper so callers do not
-		// have to know the original casing.
-		if s.State != strings.ToLower(tc.state) {
-			t.Errorf("state %q: normalised to %q", tc.state, s.State)
-		}
-		if s.Done() != tc.done {
-			t.Errorf("state %q: Done = %v, want %v", tc.state, s.Done(), tc.done)
-		}
-		if s.Failed() != tc.failed {
-			t.Errorf("state %q: Failed = %v, want %v", tc.state, s.Failed(), tc.failed)
-		}
-		if s.Stalled() != tc.stalled {
-			t.Errorf("state %q: Stalled = %v, want %v", tc.state, s.Stalled(), tc.stalled)
-		}
+			// The state is lower-cased by the client wrapper so callers do not
+			// have to know the original casing.
+			if s.State != strings.ToLower(tc.state) {
+				t.Errorf("state %q: normalised to %q", tc.state, s.State)
+			}
+			if s.Done() != tc.done {
+				t.Errorf("state %q: Done = %v, want %v", tc.state, s.Done(), tc.done)
+			}
+			if s.Failed() != tc.failed {
+				t.Errorf("state %q: Failed = %v, want %v", tc.state, s.Failed(), tc.failed)
+			}
+			if s.Stalled() != tc.stalled {
+				t.Errorf("state %q: Stalled = %v, want %v", tc.state, s.Stalled(), tc.stalled)
+			}
+		})
 	}
 }
 
