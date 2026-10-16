@@ -273,11 +273,13 @@ func TestMediaUniqueTreatsNullSeasonAsOneValue(t *testing.T) {
 
 	// Distinct seasons of one show are of course fine.
 	for _, season := range []int{1, 2} {
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO media (media_type, tmdb_id, season, title)
-			 VALUES ('tv', 1399, $1, 'Game of Thrones')`, season); err != nil {
-			t.Fatalf("season %d: %v", season, err)
-		}
+		t.Run(fmt.Sprintf("season %d", season), func(t *testing.T) {
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO media (media_type, tmdb_id, season, title)
+				 VALUES ('tv', 1399, $1, 'Game of Thrones')`, season); err != nil {
+				t.Fatalf("season %d: %v", season, err)
+			}
+		})
 	}
 }
 
@@ -300,9 +302,11 @@ func TestOnlyOneActiveRequestPerMedia(t *testing.T) {
 
 	// Every active state must be refused a second row.
 	for _, state := range []string{"pending", "searching", "adding", "downloading"} {
-		if err := insertRequest(state); err == nil {
-			t.Errorf("a second active request in state %q was accepted", state)
-		}
+		t.Run("state "+state, func(t *testing.T) {
+			if err := insertRequest(state); err == nil {
+				t.Errorf("a second active request in state %q was accepted", state)
+			}
+		})
 	}
 }
 
@@ -316,11 +320,13 @@ func TestRequestCanBeRecreatedAfterTerminalState(t *testing.T) {
 	mediaID := insertMedia(t, pool, "movie", 603, nil, "The Matrix")
 
 	for _, state := range []string{"failed", "canceled", "completed", "skipped"} {
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO requests (media_id, workflow_id, state, search_deadline)
-			 VALUES ($1, 'movie-603', $2, now() + interval '2 years')`, mediaID, state); err != nil {
-			t.Fatalf("insert terminal request in state %q: %v", state, err)
-		}
+		t.Run("state "+state, func(t *testing.T) {
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+				 VALUES ($1, 'movie-603', $2, now() + interval '2 years')`, mediaID, state); err != nil {
+				t.Fatalf("insert terminal request in state %q: %v", state, err)
+			}
+		})
 	}
 
 	// And now an active one is allowed again.
@@ -362,14 +368,16 @@ func TestCascadeDeletesRequestChildren(t *testing.T) {
 	}
 
 	for _, table := range []string{"request_watchers", "request_events"} {
-		var count int
-		if err := pool.QueryRow(ctx,
-			`SELECT count(*) FROM `+table+` WHERE request_id = $1`, requestID).Scan(&count); err != nil {
-			t.Fatalf("count %s: %v", table, err)
-		}
-		if count != 0 {
-			t.Errorf("%s still has %d rows after the request was deleted", table, count)
-		}
+		t.Run(table, func(t *testing.T) {
+			var count int
+			if err := pool.QueryRow(ctx,
+				`SELECT count(*) FROM `+table+` WHERE request_id = $1`, requestID).Scan(&count); err != nil {
+				t.Fatalf("count %s: %v", table, err)
+			}
+			if count != 0 {
+				t.Errorf("%s still has %d rows after the request was deleted", table, count)
+			}
+		})
 	}
 }
 
@@ -1088,14 +1096,17 @@ func TestUnlinkTelegramRemovesOnlyTheMatchingChat(t *testing.T) {
 	alex := insertUser(t, pool, "alex")
 	bob := insertUser(t, pool, "bob")
 	for _, u := range []struct {
+		name string
 		uid  int64
 		chat string
-	}{{alex, "alex-1"}, {bob, "bob-1"}} {
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO user_identities (user_id, provider, external_id)
-			VALUES ($1, 'telegram', $2)`, u.uid, u.chat); err != nil {
-			t.Fatalf("link: %v", err)
-		}
+	}{{"alex", alex, "alex-1"}, {"bob", bob, "bob-1"}} {
+		t.Run("link "+u.name, func(t *testing.T) {
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO user_identities (user_id, provider, external_id)
+				VALUES ($1, 'telegram', $2)`, u.uid, u.chat); err != nil {
+				t.Fatalf("link: %v", err)
+			}
+		})
 	}
 
 	removed, err := store.UnlinkTelegram(ctx, alex, "bob-1")
