@@ -55,15 +55,17 @@ func TestChooseRetriesOnNonsense(t *testing.T) {
 // message, so the caller can exit quietly instead of printing a failure.
 func TestChooseAborts(t *testing.T) {
 	for _, answer := range []string{"q\n", "quit\n"} {
-		p, _ := newTest(answer)
+		t.Run(answer, func(t *testing.T) {
+			p, _ := newTest(answer)
 
-		_, err := p.Choose("pick", []string{"a", "b"})
-		if err == nil {
-			t.Fatalf("%q: expected an abort", answer)
-		}
-		if !isAborted(err) {
-			t.Errorf("%q: want ErrAborted, got %v", answer, err)
-		}
+			_, err := p.Choose("pick", []string{"a", "b"})
+			if err == nil {
+				t.Fatalf("%q: expected an abort", answer)
+			}
+			if !isAborted(err) {
+				t.Errorf("%q: want ErrAborted, got %v", answer, err)
+			}
+		})
 	}
 }
 
