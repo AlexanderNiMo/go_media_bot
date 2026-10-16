@@ -488,30 +488,35 @@ func TestForMediaWithNoLocalisedTitle(t *testing.T) {
 func TestNewSelectsMode(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 
-	prowlarrCfg := &config.Config{}
-	prowlarrCfg.Indexer.Mode = "prowlarr"
-	idx, err := New(prowlarrCfg, log)
-	if err != nil {
-		t.Fatalf("New(prowlarr): %v", err)
+	cases := []struct {
+		name    string
+		mode    string
+		wantErr bool
+		wantTyp func(Indexer) bool
+	}{
+		{"prowlarr", "prowlarr", false, func(i Indexer) bool { _, ok := i.(*Prowlarr); return ok }},
+		{"torznab", "torznab", false, func(i Indexer) bool { _, ok := i.(*Torznab); return ok }},
+		{"unknown mode", "nonsense", true, nil},
 	}
-	if _, ok := idx.(*Prowlarr); !ok {
-		t.Errorf("got %T, want *Prowlarr", idx)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Indexer.Mode = tc.mode
 
-	torznabCfg := &config.Config{}
-	torznabCfg.Indexer.Mode = "torznab"
-	idx, err = New(torznabCfg, log)
-	if err != nil {
-		t.Fatalf("New(torznab): %v", err)
-	}
-	if _, ok := idx.(*Torznab); !ok {
-		t.Errorf("got %T, want *Torznab", idx)
-	}
-
-	badCfg := &config.Config{}
-	badCfg.Indexer.Mode = "nonsense"
-	if _, err := New(badCfg, log); err == nil {
-		t.Error("expected an error for an unknown mode")
+			idx, err := New(cfg, log)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected an error for mode %q", tc.mode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New(%s): %v", tc.mode, err)
+			}
+			if !tc.wantTyp(idx) {
+				t.Errorf("mode %q: got %T, want the right concrete type", tc.mode, idx)
+			}
+		})
 	}
 }
 
