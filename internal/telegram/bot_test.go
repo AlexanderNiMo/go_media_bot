@@ -735,12 +735,14 @@ func TestCancelNeedsANumber(t *testing.T) {
 	h.link(t)
 
 	for _, arg := range []string{"", "abc"} {
-		h.press(t, h.message("/cancel "+arg))
+		t.Run(fmt.Sprintf("/cancel %q", arg), func(t *testing.T) {
+			h.press(t, h.message("/cancel "+arg))
 
-		got := h.stub.last("sendMessage").Text
-		if !strings.Contains(got, "/list") {
-			t.Errorf("/cancel %q: got %q", arg, got)
-		}
+			got := h.stub.last("sendMessage").Text
+			if !strings.Contains(got, "/list") {
+				t.Errorf("/cancel %q: got %q", arg, got)
+			}
+		})
 	}
 	if len(h.req.canceled) != 0 {
 		t.Errorf("something was canceled: %v", h.req.canceled)
@@ -899,22 +901,25 @@ func TestPickBadArgs(t *testing.T) {
 	h.link(t)
 
 	cases := []struct {
+		name    string
 		command string
 		want    string
 	}{
-		{"/pick", "Формат"},
-		{"/pick 1", "Формат"},
-		{"/pick abc 1", "числом"},
-		{"/pick 1 abc", "положительным"},
-		{"/pick 1 0", "положительным"},
-		{"/pick 1 -3", "положительным"},
+		{"no args", "/pick", "Формат"},
+		{"one arg", "/pick 1", "Формат"},
+		{"non-numeric id", "/pick abc 1", "числом"},
+		{"non-numeric rank", "/pick 1 abc", "положительным"},
+		{"zero rank", "/pick 1 0", "положительным"},
+		{"negative rank", "/pick 1 -3", "положительным"},
 	}
 	for _, tc := range cases {
-		h.press(t, h.message(tc.command))
-		got := h.stub.last("sendMessage").Text
-		if !strings.Contains(got, tc.want) {
-			t.Errorf("%q: got %q, want substring %q", tc.command, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			h.press(t, h.message(tc.command))
+			got := h.stub.last("sendMessage").Text
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("%q: got %q, want substring %q", tc.command, got, tc.want)
+			}
+		})
 	}
 }
 
