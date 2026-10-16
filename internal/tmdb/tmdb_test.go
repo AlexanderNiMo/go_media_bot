@@ -322,10 +322,10 @@ func TestPosterURL(t *testing.T) {
 
 func TestErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		status     int
+		name        string
+		status      int
 		rateLimited bool
-		unauth     bool
+		unauth      bool
 	}{
 		{"rate limit", http.StatusTooManyRequests, true, false},
 		{"unauthorized", http.StatusUnauthorized, false, true},
