@@ -322,34 +322,37 @@ func TestPosterURL(t *testing.T) {
 
 func TestErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
-		status      int
+		name       string
+		status     int
 		rateLimited bool
-		unauth      bool
+		unauth     bool
 	}{
-		{http.StatusTooManyRequests, true, false},
-		{http.StatusUnauthorized, false, true},
-		{http.StatusNotFound, false, false},
+		{"rate limit", http.StatusTooManyRequests, true, false},
+		{"unauthorized", http.StatusUnauthorized, false, true},
+		{"not found", http.StatusNotFound, false, false},
 	} {
-		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(tc.status)
-			_, _ = w.Write([]byte(`{"status_message":"nope"}`))
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"status_message":"nope"}`))
+			})
+
+			_, err := c.Movie(context.Background(), 1)
+			if err == nil {
+				t.Fatalf("status %d: expected an error", tc.status)
+			}
+
+			var apiErr *Error
+			if !asError(err, &apiErr) {
+				t.Fatalf("status %d: error is %T, want *Error", tc.status, err)
+			}
+			if apiErr.RateLimited() != tc.rateLimited {
+				t.Errorf("status %d: RateLimited = %v", tc.status, apiErr.RateLimited())
+			}
+			if apiErr.Unauthorized() != tc.unauth {
+				t.Errorf("status %d: Unauthorized = %v", tc.status, apiErr.Unauthorized())
+			}
 		})
-
-		_, err := c.Movie(context.Background(), 1)
-		if err == nil {
-			t.Fatalf("status %d: expected an error", tc.status)
-		}
-
-		var apiErr *Error
-		if !asError(err, &apiErr) {
-			t.Fatalf("status %d: error is %T, want *Error", tc.status, err)
-		}
-		if apiErr.RateLimited() != tc.rateLimited {
-			t.Errorf("status %d: RateLimited = %v", tc.status, apiErr.RateLimited())
-		}
-		if apiErr.Unauthorized() != tc.unauth {
-			t.Errorf("status %d: Unauthorized = %v", tc.status, apiErr.Unauthorized())
-		}
 	}
 }
 
