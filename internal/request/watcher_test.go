@@ -240,18 +240,20 @@ func TestCheckDownloadInterpretation(t *testing.T) {
 			want:     DownloadDone,
 		},
 	} {
-		got := interpret(tc.progress, now)
+		t.Run(tc.descr, func(t *testing.T) {
+			got := interpret(tc.progress, now)
 
-		s := ""
-		if got.Blacklist {
-			s = " (blacklisted)"
-		}
-		if got.State != tc.want {
-			t.Errorf("%s: state = %v, want %v%s", tc.descr, got.State, tc.want, s)
-		}
-		if got.Blacklist != tc.blacklist {
-			t.Errorf("%s: Blacklist = %v, want %v", tc.descr, got.Blacklist, tc.blacklist)
-		}
+			s := ""
+			if got.Blacklist {
+				s = " (blacklisted)"
+			}
+			if got.State != tc.want {
+				t.Errorf("%s: state = %v, want %v%s", tc.descr, got.State, tc.want, s)
+			}
+			if got.Blacklist != tc.blacklist {
+				t.Errorf("%s: Blacklist = %v, want %v", tc.descr, got.Blacklist, tc.blacklist)
+			}
+		})
 	}
 }
 
