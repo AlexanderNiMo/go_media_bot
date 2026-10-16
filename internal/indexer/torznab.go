@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,11 @@ type Torznab struct {
 	name    string
 	log     *slog.Logger
 
+	// threadPatterns is the per-tracker regex set for the forum thread
+	// id. Compile once, apply to every release's description.
+	threadPatterns  []config.ThreadPattern
+	fallbackPattern *regexp.Regexp
+
 	// limiter is a second line of defence.
 	//
 	// The primary rate limit lives on the Temporal task queue, which is
@@ -66,12 +72,14 @@ func NewTorznab(cfg *config.Config, log *slog.Logger) *Torznab {
 		http: &http.Client{
 			Timeout: 90 * time.Second,
 		},
-		baseURL: strings.TrimRight(cfg.Indexer.BaseURL, "/"),
-		apiKey:  cfg.Indexer.APIKey,
-		name:    "torznab",
-		log:     log.With("component", "indexer", "mode", "torznab"),
-		limiter: rate.NewLimiter(rate.Limit(cfg.Indexer.RatePerSecond), 1),
-		capsTTL: cfg.Indexer.CapsTTL,
+		baseURL:         strings.TrimRight(cfg.Indexer.BaseURL, "/"),
+		apiKey:          cfg.Indexer.APIKey,
+		name:            "torznab",
+		log:             log.With("component", "indexer", "mode", "torznab"),
+		limiter:         rate.NewLimiter(rate.Limit(cfg.Indexer.RatePerSecond), 1),
+		capsTTL:         cfg.Indexer.CapsTTL,
+		threadPatterns:  cfg.Indexer.ThreadPatterns,
+		fallbackPattern: defaultThreadFallback(),
 	}
 }
 
@@ -128,9 +136,13 @@ func (t *Torznab) Search(ctx context.Context, req SearchRequest) ([]domain.Relea
 		return nil, err
 	}
 
+	threadPatterns := compileThreadPatterns(t.threadPatterns)
+
 	releases := make([]domain.Release, 0, len(feed.Channel.Items))
 	for _, item := range feed.Channel.Items {
-		releases = append(releases, item.toRelease(t.name))
+		rel := item.toRelease(t.name)
+		rel.Comment, rel.ThreadID = extractThreadID(item.Description, threadPatterns, t.fallbackPattern)
+		releases = append(releases, rel)
 	}
 	return releases, nil
 }

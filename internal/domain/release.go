@@ -38,6 +38,21 @@ type Release struct {
 	// attributes an indexer emits varies and grows, and the audio detector
 	// benefits from seeing whatever was actually reported.
 	Attrs map[string]string
+
+	// Comment is the free-text description of the torrent as the indexer
+	// reports it. Many trackers put a link to the forum thread that
+	// uploaded the release here, and the workflow uses that link to keep
+	// successive episodes on the same thread (so the torrent file gets
+	// updated in place rather than replaced). ThreadID is the captured
+	// identifier, "" when nothing matched.
+	//
+	// A separate field rather than Attrs["comment"] because:
+	//   - the convention is indexer-wide, not per-attribute, and
+	//   - downstream code (selector, workflow) wants the parsed
+	//     ThreadID, not the raw comment, and the parser lives in the
+	//     indexer package.
+	Comment  string
+	ThreadID string
 }
 
 // Attr returns a Torznab attribute, or the empty string.

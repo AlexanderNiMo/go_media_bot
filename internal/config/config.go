@@ -103,6 +103,22 @@ type Indexer struct {
 	IndexerIDs    []int         `koanf:"indexer_ids"     yaml:"indexer_ids"` // prowlarr only; empty means all
 	RatePerSecond float64       `koanf:"rate_per_second" yaml:"rate_per_second"`
 	CapsTTL       time.Duration `koanf:"caps_ttl"        yaml:"caps_ttl"`
+
+	// ThreadPatterns is the per-tracker regex set for the forum thread id
+	// in a torrent's description. One entry per tracker that uses a
+	// non-default URL shape; the built-in fallback covers the rest.
+	//
+	// Compiled once at startup; see internal/indexer/thread.go.
+	ThreadPatterns []ThreadPattern `koanf:"thread_patterns" yaml:"thread_patterns"`
+}
+
+// ThreadPattern is one regex for the forum thread id in a torrent's
+// description. The Indexer is matched against the indexer name reported
+// by the front end (e.g. "RuTracker"); the Pattern must have exactly one
+// capture group, the thread id.
+type ThreadPattern struct {
+	Indexer string `koanf:"indexer" yaml:"indexer"`
+	Pattern string `koanf:"pattern" yaml:"pattern"`
 }
 
 // QBittorrent is the torrent client.
