@@ -44,11 +44,13 @@ func TestDetectAudioTiers(t *testing.T) {
 		// Nothing Russian.
 		{"The.Matrix.1999.1080p.BluRay.x264-RARBG", AudioNone, "english only"},
 	} {
-		got := DetectAudio(tc.name, "RuTracker", p)
-		if got.Tier != tc.tier {
-			t.Errorf("%s (%q): tier = %v, want %v (marker %q)",
-				tc.descr, tc.name, got.Tier, tc.tier, got.Marker)
-		}
+		t.Run(tc.descr, func(t *testing.T) {
+			got := DetectAudio(tc.name, "RuTracker", p)
+			if got.Tier != tc.tier {
+				t.Errorf("%s (%q): tier = %v, want %v (marker %q)",
+					tc.descr, tc.name, got.Tier, tc.tier, got.Marker)
+			}
+		})
 	}
 }
 
@@ -64,9 +66,11 @@ func TestMultiVoiceWinsOverVoiceOver(t *testing.T) {
 		"Матрица (1999) 1080p | Профессиональный многоголосый закадровый",
 		"Матрица (1999) 1080p | Многоголосый любительский",
 	} {
-		if got := DetectAudio(name, "", p); got.Tier != AudioMulti {
-			t.Errorf("%q: tier = %v, want multi-voice", name, got.Tier)
-		}
+		t.Run(name, func(t *testing.T) {
+			if got := DetectAudio(name, "", p); got.Tier != AudioMulti {
+				t.Errorf("%q: tier = %v, want multi-voice", name, got.Tier)
+			}
+		})
 	}
 }
 
@@ -86,13 +90,15 @@ func TestSubtitlesAreNotAudio(t *testing.T) {
 		"The.Matrix.1999.1080p | Rus Sub",
 		"The.Matrix.1999.1080p | SRT",
 	} {
-		got := DetectAudio(name, "RuTracker", p)
-		if got.Tier != AudioSubsOnly {
-			t.Errorf("%q: tier = %v, want subtitles-only", name, got.Tier)
-		}
-		if got.Usable(true, true) {
-			t.Errorf("%q: a subtitles-only release must not be usable when Russian audio is required", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			got := DetectAudio(name, "RuTracker", p)
+			if got.Tier != AudioSubsOnly {
+				t.Errorf("%q: tier = %v, want subtitles-only", name, got.Tier)
+			}
+			if got.Usable(true, true) {
+				t.Errorf("%q: a subtitles-only release must not be usable when Russian audio is required", name)
+			}
+		})
 	}
 }
 
@@ -169,15 +175,32 @@ func TestRequireRussianAudioOff(t *testing.T) {
 func TestIsRussianTracker(t *testing.T) {
 	p := DefaultProfile()
 
-	for _, name := range []string{"RuTracker", "rutracker.org", "Kinozal", "NNMClub", "rutor.info", "Tapochek"} {
-		if !p.IsRussianTracker(name) {
-			t.Errorf("%q should be recognised as a Russian tracker", name)
-		}
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		// Russian trackers.
+		{"RuTracker", "RuTracker", true},
+		{"rutracker.org", "rutracker.org", true},
+		{"Kinozal", "Kinozal", true},
+		{"NNMClub", "NNMClub", true},
+		{"rutor.info", "rutor.info", true},
+		{"Tapochek", "Tapochek", true},
+
+		// International trackers.
+		{"1337x", "1337x", false},
+		{"ThePirateBay", "ThePirateBay", false},
+		{"YTS", "YTS", false},
+		{"RARBG", "RARBG", false},
+		{"empty", "", false},
 	}
-	for _, name := range []string{"1337x", "ThePirateBay", "YTS", "RARBG", ""} {
-		if p.IsRussianTracker(name) {
-			t.Errorf("%q should not be recognised as a Russian tracker", name)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.IsRussianTracker(tc.input); got != tc.want {
+				t.Errorf("IsRussianTracker(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
 	}
 }
 

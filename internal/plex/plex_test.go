@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -374,17 +375,12 @@ func TestGUIDListAcceptsBothShapes(t *testing.T) {
         }`))
 	})
 
-	for _, tc := range []struct {
-		id   int64
-		want string
-	}{{603, "1"}} {
-		match, err := c.FindMovie(context.Background(), domain.MovieRef(tc.id), "x")
-		if err != nil {
-			t.Fatalf("tmdb %d: %v", tc.id, err)
-		}
-		if match == nil || match.RatingKey != tc.want {
-			t.Errorf("tmdb %d: match = %+v, want ratingKey %s", tc.id, match, tc.want)
-		}
+	match, err := c.FindMovie(context.Background(), domain.MovieRef(603), "x")
+	if err != nil {
+		t.Fatalf("FindMovie: %v", err)
+	}
+	if match == nil || match.RatingKey != "1" {
+		t.Errorf("match = %+v, want ratingKey 1", match)
 	}
 }
 
@@ -618,14 +614,16 @@ func TestFindSeasonByTitlePicksTheRequestedNumber(t *testing.T) {
 		{2, "s2"},
 		{3, "s3"},
 	} {
-		match, err := c.FindSeasonByTitle(context.Background(),
-			[]string{"Игра престолов"}, 2011, tc.season)
-		if err != nil {
-			t.Fatalf("season %d: %v", tc.season, err)
-		}
-		if match == nil || match.RatingKey != tc.want {
-			t.Errorf("season %d: match = %+v, want ratingKey %s", tc.season, match, tc.want)
-		}
+		t.Run(strconv.Itoa(tc.season), func(t *testing.T) {
+			match, err := c.FindSeasonByTitle(context.Background(),
+				[]string{"Игра престолов"}, 2011, tc.season)
+			if err != nil {
+				t.Fatalf("season %d: %v", tc.season, err)
+			}
+			if match == nil || match.RatingKey != tc.want {
+				t.Errorf("season %d: match = %+v, want ratingKey %s", tc.season, match, tc.want)
+			}
+		})
 	}
 }
 

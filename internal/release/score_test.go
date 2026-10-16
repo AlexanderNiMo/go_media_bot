@@ -109,19 +109,21 @@ func TestSelectRejectsEachHardFilter(t *testing.T) {
 			ReasonNoRussianAudio,
 		},
 	} {
-		verdict := s.Select(spec, []domain.Release{tc.release}, nil)
+		t.Run(tc.descr, func(t *testing.T) {
+			verdict := s.Select(spec, []domain.Release{tc.release}, nil)
 
-		if verdict.Acceptable {
-			t.Errorf("%s: was accepted, want rejection", tc.descr)
-			continue
-		}
-		if len(verdict.Rejected) != 1 {
-			t.Fatalf("%s: %d rejections", tc.descr, len(verdict.Rejected))
-		}
-		if got := verdict.Rejected[0].Reason; got != tc.reason {
-			t.Errorf("%s: reason = %q, want %q (detail: %s)",
-				tc.descr, got, tc.reason, verdict.Rejected[0].Detail)
-		}
+			if verdict.Acceptable {
+				t.Errorf("%s: was accepted, want rejection", tc.descr)
+				return
+			}
+			if len(verdict.Rejected) != 1 {
+				t.Fatalf("%s: %d rejections", tc.descr, len(verdict.Rejected))
+			}
+			if got := verdict.Rejected[0].Reason; got != tc.reason {
+				t.Errorf("%s: reason = %q, want %q (detail: %s)",
+					tc.descr, got, tc.reason, verdict.Rejected[0].Detail)
+			}
+		})
 	}
 }
 
@@ -244,25 +246,30 @@ func TestBlacklistIsRespected(t *testing.T) {
 	s := selectorFor(t)
 	release := rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100)
 
-	verdict := s.Select(movieSpec(), []domain.Release{release},
-		map[string]bool{release.InfoHash: true})
+	t.Run("blacklisted by infohash", func(t *testing.T) {
+		verdict := s.Select(movieSpec(), []domain.Release{release},
+			map[string]bool{release.InfoHash: true})
 
-	if verdict.Acceptable {
-		t.Fatal("a blacklisted release was chosen")
-	}
-	if verdict.Rejected[0].Reason != ReasonBlacklisted {
-		t.Errorf("reason = %q", verdict.Rejected[0].Reason)
-	}
+		if verdict.Acceptable {
+			t.Fatal("a blacklisted release was chosen")
+		}
+		if verdict.Rejected[0].Reason != ReasonBlacklisted {
+			t.Errorf("reason = %q", verdict.Rejected[0].Reason)
+		}
+	})
 
 	// The blacklist is also keyed on the guid when there is no infohash, which
 	// is the case for magnet-only indexers.
-	noHash := rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100)
-	noHash.InfoHash = ""
-	verdict = s.Select(movieSpec(), []domain.Release{noHash},
-		map[string]bool{noHash.GUID: true})
-	if verdict.Acceptable {
-		t.Error("a release blacklisted by guid was chosen")
-	}
+	t.Run("blacklisted by guid (no infohash)", func(t *testing.T) {
+		noHash := rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100)
+		noHash.InfoHash = ""
+
+		verdict := s.Select(movieSpec(), []domain.Release{noHash},
+			map[string]bool{noHash.GUID: true})
+		if verdict.Acceptable {
+			t.Error("a release blacklisted by guid was chosen")
+		}
+	})
 }
 
 func TestSelectRejectsReleaseWithNoLink(t *testing.T) {
@@ -376,11 +383,13 @@ func TestYearTolerance(t *testing.T) {
 	s := selectorFor(t)
 
 	for _, year := range []int{1998, 1999, 2000} {
-		title := "Матрица (" + strconv.Itoa(year) + ") 1080p BDRemux | Дубляж"
-		verdict := s.Select(movieSpec(), []domain.Release{rel(title, 20, 100)}, nil)
-		if !verdict.Acceptable {
-			t.Errorf("year %d was rejected: %s", year, verdict.Summary())
-		}
+		t.Run(strconv.Itoa(year), func(t *testing.T) {
+			title := "Матрица (" + strconv.Itoa(year) + ") 1080p BDRemux | Дубляж"
+			verdict := s.Select(movieSpec(), []domain.Release{rel(title, 20, 100)}, nil)
+			if !verdict.Acceptable {
+				t.Errorf("year %d was rejected: %s", year, verdict.Summary())
+			}
+		})
 	}
 }
 
@@ -481,16 +490,22 @@ func TestExcludedSourcesFromConfig(t *testing.T) {
 
 	p := ProfileFromConfig(cfg)
 
-	if !p.Excludes(SourceHDTV) {
-		t.Error("HDTV should be excluded when the configuration says so")
-	}
-	if !p.Excludes(SourceWebRip) {
-		t.Error("WEBRip should be excluded")
-	}
+	t.Run("HDTV excluded by config", func(t *testing.T) {
+		if !p.Excludes(SourceHDTV) {
+			t.Error("HDTV should be excluded when the configuration says so")
+		}
+	})
+	t.Run("WEBRip excluded by config", func(t *testing.T) {
+		if !p.Excludes(SourceWebRip) {
+			t.Error("WEBRip should be excluded")
+		}
+	})
 	// CAM is not in the configured list, so the default no longer applies.
-	if p.Excludes(SourceCam) {
-		t.Error("CAM should not be excluded when the configuration replaces the list")
-	}
+	t.Run("CAM not in configured list", func(t *testing.T) {
+		if p.Excludes(SourceCam) {
+			t.Error("CAM should not be excluded when the configuration replaces the list")
+		}
+	})
 }
 
 // qualityConfig builds a configuration with the quality policy overridden.
