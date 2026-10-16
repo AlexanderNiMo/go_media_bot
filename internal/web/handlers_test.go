@@ -230,18 +230,20 @@ func TestFreshInstanceRedirectsToSetup(t *testing.T) {
 	c := newClient(t, s)
 
 	for _, path := range []string{"/", "/search", "/requests", "/settings"} {
-		resp := c.get(path)
-		resp.Body.Close()
+		t.Run(path, func(t *testing.T) {
+			resp := c.get(path)
+			resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET %s returned %d", path, resp.StatusCode)
-		}
-		// The final URL after redirects is what matters: a fresh instance must
-		// land on the wizard rather than on a login form for an account that
-		// cannot exist yet.
-		if got := resp.Request.URL.Path; got != "/setup" {
-			t.Errorf("GET %s landed on %s, want /setup", path, got)
-		}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("GET %s returned %d", path, resp.StatusCode)
+			}
+			// The final URL after redirects is what matters: a fresh instance must
+			// land on the wizard rather than on a login form for an account that
+			// cannot exist yet.
+			if got := resp.Request.URL.Path; got != "/setup" {
+				t.Errorf("GET %s landed on %s, want /setup", path, got)
+			}
+		})
 	}
 }
 
@@ -412,9 +414,11 @@ func TestSafeNextRefusesAnotherHost(t *testing.T) {
 		"//evil.example.com/",
 		"",
 	} {
-		if got := safeNext(raw); got != "/" {
-			t.Errorf("safeNext(%q) = %q, want /", raw, got)
-		}
+		t.Run(fmt.Sprintf("unsafe %q", raw), func(t *testing.T) {
+			if got := safeNext(raw); got != "/" {
+				t.Errorf("safeNext(%q) = %q, want /", raw, got)
+			}
+		})
 	}
 
 	if got := safeNext("/requests/7"); got != "/requests/7" {
@@ -927,15 +931,17 @@ func TestStaticAssetsAreServed(t *testing.T) {
 	c := newClient(t, s)
 
 	for _, path := range []string{"/static/style.css", "/static/htmx.min.js"} {
-		resp := c.get(path)
-		body := readBody(t, resp)
+		t.Run(path, func(t *testing.T) {
+			resp := c.get(path)
+			body := readBody(t, resp)
 
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET %s returned %d", path, resp.StatusCode)
-		}
-		if len(body) == 0 {
-			t.Errorf("GET %s returned nothing", path)
-		}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("GET %s returned %d", path, resp.StatusCode)
+			}
+			if len(body) == 0 {
+				t.Errorf("GET %s returned nothing", path)
+			}
+		})
 	}
 }
 
