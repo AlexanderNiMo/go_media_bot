@@ -251,7 +251,7 @@ func (a *Activities) SearchReleases(ctx context.Context, in SearchInput) (Search
 		blacklist = map[string]bool{}
 	}
 
-	verdict := release.NewSelector(a.profile).Select(in.Spec, releases, blacklist)
+	verdict := release.NewSelector(a.profile).Select(in.Spec, releases, blacklist, in.OngoingThread)
 
 	result := SearchResult{
 		Considered: verdict.Considered,
@@ -317,7 +317,7 @@ func (a *Activities) FetchCandidates(ctx context.Context, in SearchInput) ([]sto
 		blacklist = map[string]bool{}
 	}
 
-	verdict := release.NewSelector(a.profile).Select(in.Spec, releases, blacklist)
+	verdict := release.NewSelector(a.profile).Select(in.Spec, releases, blacklist, in.OngoingThread)
 	log.Info("fetched candidates for manual pick",
 		"considered", verdict.Considered, "rejected", len(verdict.Rejected))
 

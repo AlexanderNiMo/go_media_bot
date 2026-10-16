@@ -110,7 +110,7 @@ func TestSelectRejectsEachHardFilter(t *testing.T) {
 		},
 	} {
 		t.Run(tc.descr, func(t *testing.T) {
-			verdict := s.Select(spec, []domain.Release{tc.release}, nil)
+			verdict := s.Select(spec, []domain.Release{tc.release}, nil, "")
 
 			if verdict.Acceptable {
 				t.Errorf("%s: was accepted, want rejection", tc.descr)
@@ -131,7 +131,7 @@ func TestSelectAcceptsAGoodRelease(t *testing.T) {
 	s := selectorFor(t)
 
 	release := rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100)
-	verdict := s.Select(movieSpec(), []domain.Release{release}, nil)
+	verdict := s.Select(movieSpec(), []domain.Release{release}, nil, "")
 
 	if !verdict.Acceptable {
 		t.Fatalf("a good release was refused: %s", verdict.Summary())
@@ -161,7 +161,7 @@ func TestSelectPrefersDubOverOtherTiers(t *testing.T) {
 		rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100),
 	}
 
-	verdict := s.Select(spec, candidates, nil)
+	verdict := s.Select(spec, candidates, nil, "")
 
 	if !verdict.Acceptable {
 		t.Fatalf("nothing was acceptable: %s", verdict.Summary())
@@ -177,7 +177,7 @@ func TestSelectPrefersHigherResolution(t *testing.T) {
 	verdict := s.Select(movieSpec(), []domain.Release{
 		rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100),
 		rel("Матрица (1999) 2160p BDRemux | Дубляж", 45, 100),
-	}, nil)
+	}, nil, "")
 
 	if !strings.Contains(verdict.Chosen.Title, "2160p") {
 		t.Errorf("chose %q, want the 2160p release", verdict.Chosen.Title)
@@ -193,7 +193,7 @@ func TestAudioOutweighsResolution(t *testing.T) {
 	verdict := s.Select(movieSpec(), []domain.Release{
 		rel("Матрица (1999) 2160p BDRemux | Закадровый", 45, 100),
 		rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100),
-	}, nil)
+	}, nil, "")
 
 	if !strings.Contains(verdict.Chosen.Title, "Дубляж") {
 		t.Errorf("chose %q; intelligible audio should outweigh resolution", verdict.Chosen.Title)
@@ -207,7 +207,7 @@ func TestSelectPrefersBetterSource(t *testing.T) {
 		rel("Матрица (1999) 1080p HDTV | Дубляж", 20, 100),
 		rel("Матрица (1999) 1080p WEB-DL | Дубляж", 20, 100),
 		rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 100),
-	}, nil)
+	}, nil, "")
 
 	if !strings.Contains(verdict.Chosen.Title, "BDRemux") {
 		t.Errorf("chose %q, want the best source", verdict.Chosen.Title)
@@ -220,7 +220,7 @@ func TestSelectPrefersMoreSeeders(t *testing.T) {
 	verdict := s.Select(movieSpec(), []domain.Release{
 		rel("Матрица (1999) 1080p BDRemux | Дубляж A", 20, 4),
 		rel("Матрица (1999) 1080p BDRemux | Дубляж B", 20, 200),
-	}, nil)
+	}, nil, "")
 
 	if !strings.HasSuffix(verdict.Chosen.Title, "B") {
 		t.Errorf("chose %q, want the better-seeded release", verdict.Chosen.Title)
@@ -236,7 +236,7 @@ func TestUnknownSeedersAreNotTreatedAsZero(t *testing.T) {
 	release := rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 0)
 	release.Seeders = -1 // the indexer did not report them
 
-	verdict := s.Select(movieSpec(), []domain.Release{release}, nil)
+	verdict := s.Select(movieSpec(), []domain.Release{release}, nil, "")
 	if !verdict.Acceptable {
 		t.Errorf("a release with unknown seeders was refused: %s", verdict.Summary())
 	}
@@ -248,7 +248,7 @@ func TestBlacklistIsRespected(t *testing.T) {
 
 	t.Run("blacklisted by infohash", func(t *testing.T) {
 		verdict := s.Select(movieSpec(), []domain.Release{release},
-			map[string]bool{release.InfoHash: true})
+			map[string]bool{release.InfoHash: true}, "")
 
 		if verdict.Acceptable {
 			t.Fatal("a blacklisted release was chosen")
@@ -265,7 +265,7 @@ func TestBlacklistIsRespected(t *testing.T) {
 		noHash.InfoHash = ""
 
 		verdict := s.Select(movieSpec(), []domain.Release{noHash},
-			map[string]bool{noHash.GUID: true})
+			map[string]bool{noHash.GUID: true}, "")
 		if verdict.Acceptable {
 			t.Error("a release blacklisted by guid was chosen")
 		}
@@ -279,7 +279,7 @@ func TestSelectRejectsReleaseWithNoLink(t *testing.T) {
 	release.DownloadURL = ""
 	release.MagnetURI = ""
 
-	verdict := s.Select(movieSpec(), []domain.Release{release}, nil)
+	verdict := s.Select(movieSpec(), []domain.Release{release}, nil, "")
 	if verdict.Acceptable {
 		t.Fatal("a release with nothing to download was chosen")
 	}
@@ -299,7 +299,7 @@ func TestSingleEpisodeIsNotASeason(t *testing.T) {
 
 	verdict := s.Select(seasonSpec(), []domain.Release{
 		rel("Игра престолов S02E05 1080p WEB-DL | LostFilm", 3, 100),
-	}, nil)
+	}, nil, "")
 
 	if verdict.Acceptable {
 		t.Fatal("a single episode was accepted for a whole-season request")
@@ -314,7 +314,7 @@ func TestSeasonPackIsAccepted(t *testing.T) {
 
 	verdict := s.Select(seasonSpec(), []domain.Release{
 		rel("Игра престолов - Сезон 2 (2012) 1080p BDRip | LostFilm", 25, 100),
-	}, nil)
+	}, nil, "")
 
 	if !verdict.Acceptable {
 		t.Fatalf("a season pack was refused: %s", verdict.Summary())
@@ -329,7 +329,7 @@ func TestWrongSeasonIsRejected(t *testing.T) {
 
 	verdict := s.Select(seasonSpec(), []domain.Release{
 		rel("Игра престолов - Сезон 3 (2013) 1080p BDRip | LostFilm", 25, 100),
-	}, nil)
+	}, nil, "")
 
 	if verdict.Acceptable {
 		t.Fatal("season 3 was accepted for a season 2 request")
@@ -347,7 +347,7 @@ func TestSeasonlessReleaseIsAllowed(t *testing.T) {
 
 	verdict := s.Select(seasonSpec(), []domain.Release{
 		rel("Игра престолов (2011) 1080p BDRip | LostFilm | Все сезоны", 25, 100),
-	}, nil)
+	}, nil, "")
 
 	if !verdict.Acceptable {
 		t.Errorf("a release with no season in its name was refused: %s", verdict.Summary())
@@ -365,7 +365,7 @@ func TestRemakeIsRejected(t *testing.T) {
 
 	verdict := s.Select(movieSpec(), []domain.Release{
 		rel("Матрица (2024) 1080p WEB-DL | Дубляж", 10, 100),
-	}, nil)
+	}, nil, "")
 
 	if verdict.Acceptable {
 		t.Fatal("a 2024 release was accepted for a 1999 request")
@@ -385,7 +385,7 @@ func TestYearTolerance(t *testing.T) {
 	for _, year := range []int{1998, 1999, 2000} {
 		t.Run(strconv.Itoa(year), func(t *testing.T) {
 			title := "Матрица (" + strconv.Itoa(year) + ") 1080p BDRemux | Дубляж"
-			verdict := s.Select(movieSpec(), []domain.Release{rel(title, 20, 100)}, nil)
+			verdict := s.Select(movieSpec(), []domain.Release{rel(title, 20, 100)}, nil, "")
 			if !verdict.Acceptable {
 				t.Errorf("year %d was rejected: %s", year, verdict.Summary())
 			}
@@ -406,7 +406,7 @@ func TestVerdictSummaryCountsReasons(t *testing.T) {
 		rel("Матрица (1999) 1080p CAM | Дубляж", 2, 100),
 		rel("Матрица (1999) 1080p TS | Дубляж", 2, 100),
 		rel("The Matrix 1999 1080p | ENG + Rus subs", 10, 100),
-	}, nil)
+	}, nil, "")
 
 	summary := verdict.Summary()
 
@@ -421,7 +421,7 @@ func TestVerdictSummaryCountsReasons(t *testing.T) {
 func TestVerdictSummaryWhenNoResults(t *testing.T) {
 	s := selectorFor(t)
 
-	verdict := s.Select(movieSpec(), nil, nil)
+	verdict := s.Select(movieSpec(), nil, nil, "")
 	if got := verdict.Summary(); !strings.Contains(got, "indexer") {
 		t.Errorf("summary = %q, want it to say the indexer returned nothing", got)
 	}
@@ -437,7 +437,7 @@ func TestSelectPicksTheBestAmongMany(t *testing.T) {
 		rel("The Matrix 1999 1080p BluRay | ENG + Rus subs", 10, 99), // subtitles only
 		rel("Матрица (1999) 2160p BDRemux | Дубляж", 45, 80),         // the winner
 		rel("Матрица (1999) 720p WEB-DL | Дубляж", 2, 100),           // below the floor
-	}, nil)
+	}, nil, "")
 
 	if !verdict.Acceptable {
 		t.Fatalf("nothing acceptable: %s", verdict.Summary())
@@ -518,4 +518,44 @@ func qualityConfig(minH, prefH, minSeeders int, minGB, maxGB float64) *config.Co
 	cfg.Quality.MaxSizeGB = maxGB
 	cfg.Quality.RequireRussianAudio = true
 	return cfg
+}
+
+// TestSelectPrefersSameThread — when a request is in StateOngoing
+// and the search tick finds a release from the same forum thread,
+// the selector picks it over a fresh release from a different
+// thread. The bonus is small (0.06) so it does not override hard
+// rejections, but it does tip the scales between two releases
+// that the rest of the score would have split between.
+func TestSelectPrefersSameThread(t *testing.T) {
+	s := selectorFor(t)
+
+	// Two releases, otherwise tied: same resolution, same audio
+	// tier, same size, same seeders. The same-thread bonus is
+	// the only thing that can break the tie.
+	fromThread := rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 50)
+	fromThread.ThreadID = "RuTracker:42"
+
+	fromOther := rel("Матрица (1999) 1080p BDRemux | Дубляж", 20, 50)
+	fromOther.ThreadID = "Other:99"
+
+	// Without an ongoing thread, the result is unspecified:
+	// map iteration is unordered, and the score is identical. The
+	// important property is that both releases are accepted.
+	v := s.Select(movieSpec(), []domain.Release{fromOther, fromThread}, nil, "")
+	if !v.Acceptable {
+		t.Errorf("without an ongoing thread, nothing was accepted: %s", v.Summary())
+	}
+
+	// With the same thread, the one from the thread wins.
+	v = s.Select(movieSpec(), []domain.Release{fromOther, fromThread}, nil, "RuTracker:42")
+	if v.Chosen.ThreadID != "RuTracker:42" {
+		t.Errorf("with an ongoing thread, chose %q, want the one from the same thread", v.Chosen.Title)
+	}
+
+	// An empty thread id is a no-op even if the release has one:
+	// the bonus never kicks in.
+	v = s.Select(movieSpec(), []domain.Release{fromOther, fromThread}, nil, "")
+	if !v.Acceptable {
+		t.Errorf("empty thread id should not affect the score, chose %q", v.Chosen.Title)
+	}
 }

@@ -258,6 +258,11 @@ type SearchInput struct {
 	// MaxAge marks how long the caller is willing to wait for a torrent
 	// client that is slow to list what it added.
 	Limit int
+	// OngoingThread is the forum thread id of the previously-selected
+	// release, when the request is in StateOngoing. Empty on a fresh
+	// request; the selector uses it to prefer a release from the same
+	// thread over a fresh infohash from a different one.
+	OngoingThread string
 }
 
 // StoreCandidatesInput hands a freshly-fetched candidate list to the
