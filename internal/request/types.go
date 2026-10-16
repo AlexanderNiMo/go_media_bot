@@ -132,6 +132,14 @@ type Input struct {
 	// clean up a torrent it had already added.
 	StartSelected *domain.Release
 	StartQbitHash string
+	// StartSelectedThreadID, StartSelectedVideoCount and
+	// StartSelectedEpisodeCount carry the three ongoing-season fields
+	// across a restart. Dropping them would have the next run forget
+	// which thread the previous pick came from, and the same
+	// replacement-the-inflight-torrent trap follows.
+	StartSelectedThreadID     string
+	StartSelectedVideoCount   int
+	StartSelectedEpisodeCount int
 	// StartDownloadDeadline carries the current attempt's deadline, so a
 	// restart does not hand the download a fresh two days.
 	StartDownloadDeadline time.Time
@@ -175,6 +183,20 @@ type State struct {
 	Selected *domain.Release
 	// QbitHash is the authoritative hash, as reported by the client.
 	QbitHash string
+	// SelectedThreadID is the forum thread id of the selected release,
+	// captured by the indexer. Set whenever a release with a non-empty
+	// ThreadID is chosen, regardless of whether the season turned out
+	// complete or partial. The next search tick reads it to prefer a
+	// release from the same thread over a fresh infohash from a
+	// different one.
+	SelectedThreadID string
+	// SelectedVideoCount is the count of video files the qBittorrent
+	// client reported when the torrent was added. Compared against
+	// SelectedEpisodeCount to drive the full-or-ongoing decision.
+	SelectedVideoCount int
+	// SelectedEpisodeCount is the season's full episode count from
+	// TMDB, captured at selection time.
+	SelectedEpisodeCount int
 	// DownloadDeadline is when the current torrent attempt is abandoned.
 	DownloadDeadline time.Time
 
@@ -418,4 +440,34 @@ type SaveStateInput struct {
 	Actor string
 	// Detail is stored as JSON on the event.
 	Detail any
+}
+
+// VideoFileCountInput asks the torrent client how many video files
+// the just-added torrent contains. Used by the ongoing-season
+// branch to decide whether the picked release is the full season
+// or a partial one.
+type VideoFileCountInput struct {
+	// Hash is the qBittorrent infohash returned by AddTorrent.
+	Hash string
+}
+
+// VideoFileCountResult is the count of video files in the torrent.
+// Subtitles, samples and other non-video files are not counted;
+// see qbit.isVideoFile for the exact list.
+type VideoFileCountResult struct {
+	Count int
+}
+
+// SeasonEpisodeCountInput asks TMDB how many episodes a season
+// has. Empty EpisodeCount (zero) means the season is not yet
+// known — TMDB returns that for a still-airing season, and the
+// workflow then skips the ongoing branch.
+type SeasonEpisodeCountInput struct {
+	TMDBID int64
+	Season int
+}
+
+// SeasonEpisodeCountResult is the count TMDB reports.
+type SeasonEpisodeCountResult struct {
+	Count int
 }

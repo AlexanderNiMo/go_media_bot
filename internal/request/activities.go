@@ -17,6 +17,7 @@ import (
 	"github.com/alex/mediad/internal/qbit"
 	"github.com/alex/mediad/internal/release"
 	"github.com/alex/mediad/internal/storage"
+	"github.com/alex/mediad/internal/tmdb"
 )
 
 // Activities holds the dependencies every activity needs.
@@ -29,6 +30,7 @@ type Activities struct {
 	plex    *plex.Client
 	indexer indexer.Indexer
 	qbit    *qbit.Client
+	tmdb    *tmdb.Client
 	profile release.Profile
 	cfg     *config.Config
 	log     *slog.Logger
@@ -40,6 +42,7 @@ func NewActivities(
 	plexClient *plex.Client,
 	idx indexer.Indexer,
 	torrents *qbit.Client,
+	tmdbClient *tmdb.Client,
 	profile release.Profile,
 	cfg *config.Config,
 	log *slog.Logger,
@@ -49,6 +52,7 @@ func NewActivities(
 		plex:    plexClient,
 		indexer: idx,
 		qbit:    torrents,
+		tmdb:    tmdbClient,
 		profile: profile,
 		cfg:     cfg,
 		log:     log.With("component", "activities"),
@@ -484,6 +488,59 @@ func (a *Activities) DeleteTorrent(ctx context.Context, in DeleteTorrentInput) e
 	a.log.Info("torrent deleted", "request", in.RequestID, "hash", in.Hash,
 		"files", in.DeleteFiles)
 	return nil
+}
+
+// VideoFileCount returns the number of video files in the just-added
+// torrent. Subtitle/sample/other non-video files are excluded; see
+// qbit.isVideoFile for the exact list of recognised extensions.
+//
+// The activity is the bridge between a successful AddTorrent and
+// the workflow's ongoing-season decision: the count is what gets
+// compared to the season's TMDB episode count, and the comparison
+// is what tips a request into StateOngoing instead of going
+// straight to StateCompleted.
+//
+// A failure is a soft skip, not a workflow error: an empty file
+// list is unusual (the torrent was just added) but not fatal,
+// and the workflow falls back to "complete" rather than
+// "ongoing". The half-season case still works on the next
+// search tick when qBittorrent has caught up.
+func (a *Activities) VideoFileCount(ctx context.Context, in VideoFileCountInput) (VideoFileCountResult, error) {
+	if in.Hash == "" {
+		return VideoFileCountResult{}, nil
+	}
+	n, err := a.qbit.VideoFileCount(ctx, in.Hash)
+	if err != nil {
+		a.logOrDefault().Warn("could not count video files",
+			"hash", in.Hash, "error", err)
+		return VideoFileCountResult{}, nil
+	}
+	return VideoFileCountResult{Count: n}, nil
+}
+
+// SeasonEpisodeCount returns the episode count TMDB reports for
+// a season. Zero is the "still airing" answer and is the
+// "skip the ongoing branch" signal for the workflow; the
+// request goes to StateCompleted because we have no way to
+// know when the season ends.
+//
+// A failure is a soft skip too: the request goes to
+// StateCompleted and any user who notices the half-season
+// can react through the existing manual path.
+func (a *Activities) SeasonEpisodeCount(ctx context.Context, in SeasonEpisodeCountInput) (SeasonEpisodeCountResult, error) {
+	if in.TMDBID == 0 || in.Season < 0 {
+		return SeasonEpisodeCountResult{}, nil
+	}
+	s, err := a.tmdb.Season(ctx, in.TMDBID, in.Season)
+	if err != nil {
+		a.logOrDefault().Warn("could not fetch season episode count",
+			"tmdb", in.TMDBID, "season", in.Season, "error", err)
+		return SeasonEpisodeCountResult{}, nil
+	}
+	if s == nil {
+		return SeasonEpisodeCountResult{}, nil
+	}
+	return SeasonEpisodeCountResult{Count: s.EpisodeCount}, nil
 }
 
 // ---------------------------------------------------------------------------
