@@ -1,21 +1,27 @@
 package domain
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestWorkflowID(t *testing.T) {
 	for _, tc := range []struct {
+		name string
 		ref  MediaRef
 		want string
 	}{
-		{MovieRef(603), "movie-603"},
-		{SeasonRef(1399, 2), "tv-1399-s2"},
+		{"movie 603", MovieRef(603), "movie-603"},
+		{"tv 1399 s2", SeasonRef(1399, 2), "tv-1399-s2"},
 		// Specials are season 0, which is why the season is a pointer: with a
 		// sentinel this would be indistinguishable from "no season".
-		{SeasonRef(1399, 0), "tv-1399-s0"},
+		{"tv 1399 s0", SeasonRef(1399, 0), "tv-1399-s0"},
 	} {
-		if got := tc.ref.WorkflowID(); got != tc.want {
-			t.Errorf("WorkflowID() = %q, want %q", got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.ref.WorkflowID(); got != tc.want {
+				t.Errorf("WorkflowID() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -48,9 +54,11 @@ func TestValidRejectsNonsense(t *testing.T) {
 		"film with a season": {Type: MediaTypeMovie, TMDBID: 1, Season: &season},
 		"negative season":    {Type: MediaTypeTV, TMDBID: 1, Season: ptr(-1)},
 	} {
-		if err := ref.Valid(); err == nil {
-			t.Errorf("%s: expected an error", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			if err := ref.Valid(); err == nil {
+				t.Errorf("expected an error")
+			}
+		})
 	}
 }
 
@@ -154,36 +162,39 @@ func ptr[T any](v T) *T { return &v }
 // moving, instead of abandoning it and looking for another release.
 func TestStoppedDownloadsAreStalled(t *testing.T) {
 	for _, tc := range []struct {
+		name    string
 		state   string
 		stalled bool
 		done    bool
 		failed  bool
 	}{
 		// The 5.x spelling, and the 4.x one for the same state.
-		{"stoppeddl", true, false, false},
-		{"pauseddl", true, false, false},
+		{"stoppeddl", "stoppeddl", true, false, false},
+		{"pauseddl", "pauseddl", true, false, false},
 		// Already covered, listed so the whole family is in one table.
-		{"stalleddl", true, false, false},
-		{"metadl", true, false, false},
-		{"forcedmetadl", true, false, false},
+		{"stalleddl", "stalleddl", true, false, false},
+		{"metadl", "metadl", true, false, false},
+		{"forcedmetadl", "forcedmetadl", true, false, false},
 		// A stopped *upload* is a finished download, not a stalled one: the
 		// payload is complete and present.
-		{"stoppedup", false, true, false},
-		{"pausedup", false, true, false},
+		{"stoppedup", "stoppedup", false, true, false},
+		{"pausedup", "pausedup", false, true, false},
 		// Ordinary progress.
-		{"downloading", false, false, false},
+		{"downloading", "downloading", false, false, false},
 	} {
-		s := TorrentStatus{State: tc.state, Progress: 0.5}
+		t.Run(tc.name, func(t *testing.T) {
+			s := TorrentStatus{State: tc.state, Progress: 0.5}
 
-		if got := s.Stalled(); got != tc.stalled {
-			t.Errorf("state %q: Stalled = %v, want %v", tc.state, got, tc.stalled)
-		}
-		if got := s.Done(); got != tc.done {
-			t.Errorf("state %q: Done = %v, want %v", tc.state, got, tc.done)
-		}
-		if got := s.Failed(); got != tc.failed {
-			t.Errorf("state %q: Failed = %v, want %v", tc.state, got, tc.failed)
-		}
+			if got := s.Stalled(); got != tc.stalled {
+				t.Errorf("state %q: Stalled = %v, want %v", tc.state, got, tc.stalled)
+			}
+			if got := s.Done(); got != tc.done {
+				t.Errorf("state %q: Done = %v, want %v", tc.state, got, tc.done)
+			}
+			if got := s.Failed(); got != tc.failed {
+				t.Errorf("state %q: Failed = %v, want %v", tc.state, got, tc.failed)
+			}
+		})
 	}
 }
 
@@ -191,12 +202,14 @@ func TestStoppedDownloadsAreStalled(t *testing.T) {
 // at 98.6%, so progress is not what decides this.
 func TestStoppedIsStalledRegardlessOfProgress(t *testing.T) {
 	for _, progress := range []float64{0, 0.5, 0.986, 0.999} {
-		s := TorrentStatus{State: "stoppeddl", Progress: progress}
-		if !s.Stalled() {
-			t.Errorf("progress %.3f: a stopped download should count as stalled", progress)
-		}
-		if s.Done() {
-			t.Errorf("progress %.3f: a stopped download is not done", progress)
-		}
+		t.Run(strconv.FormatFloat(progress, 'f', 3, 64), func(t *testing.T) {
+			s := TorrentStatus{State: "stoppeddl", Progress: progress}
+			if !s.Stalled() {
+				t.Errorf("progress %.3f: a stopped download should count as stalled", progress)
+			}
+			if s.Done() {
+				t.Errorf("progress %.3f: a stopped download is not done", progress)
+			}
+		})
 	}
 }
