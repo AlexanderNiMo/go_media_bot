@@ -36,12 +36,18 @@ const (
 	// waiting for a manual pick. Active: the request has not given up
 	// yet, it is just paused on human input.
 	StateManual State = "manual"
+	// StateOngoing is the half-season case: a torrent was added but the
+	// file count is below the season's episode count, so the workflow is
+	// watching for a release from the same forum thread that bundles the
+	// remaining episodes. Active: same reason as StateManual — work
+	// continues on the next search tick.
+	StateOngoing State = "ongoing"
 )
 
 // Active reports whether a state means the request is still being worked on.
 func (s State) Active() bool {
 	switch s {
-	case StatePending, StateSearching, StateAdding, StateDownloading, StateManual:
+	case StatePending, StateSearching, StateAdding, StateDownloading, StateManual, StateOngoing:
 		return true
 	default:
 		return false
@@ -76,6 +82,22 @@ type Request struct {
 	SelectedSize    int64
 	SelectedSeeders int
 	SelectedScore   float64
+	// SelectedThreadID is the forum thread id captured by the indexer.
+	// Used by the ongoing-season branch: when the same thread
+	// reappears with a bigger file count, the workflow can identify
+	// it as an update rather than a new release, and replace the
+	// torrent in place instead of starting over. Empty when the
+	// indexer did not extract a thread id.
+	SelectedThreadID string
+	// SelectedVideoCount is the count of video files the qBittorrent
+	// reported after the torrent was added. Compared against
+	// SelectedEpisodeCount to decide whether the season is complete
+	// (StateCompleted) or partial (StateOngoing).
+	SelectedVideoCount int
+	// SelectedEpisodeCount is the season's full episode count from
+	// TMDB, captured at selection time so an ongoing-mode poll does
+	// not have to re-query TMDB.
+	SelectedEpisodeCount int
 
 	// SelectedLink is a torrent URL or magnet submitted manually through
 	// the web UI. Empty when the release came from the indexer.
@@ -407,7 +429,8 @@ func ActiveStates() []State {
 func AllStates() []State {
 	return []State{
 		StatePending, StateSearching, StateAdding, StateDownloading,
-		StateCompleted, StateFailed, StateCanceled, StateSkipped, StateManual,
+		StateCompleted, StateFailed, StateCanceled, StateSkipped,
+		StateManual, StateOngoing,
 	}
 }
 
@@ -514,6 +537,19 @@ type RequestState struct {
 	SelectedSize     int64
 	SelectedSeeders  int
 	SelectedScore    float64
+	// SelectedThreadID is the forum thread id the indexer captured from
+	// the release description. Empty when the indexer did not extract
+	// one. The ongoing-season branch reads it to detect an update of
+	// the same thread rather than a fresh release.
+	SelectedThreadID string
+	// SelectedVideoCount is the count of video files the qBittorrent
+	// client reported when the torrent was added. Compared against
+	// SelectedEpisodeCount to drive the full-or-ongoing decision.
+	SelectedVideoCount int
+	// SelectedEpisodeCount is the season's full episode count from
+	// TMDB, captured at selection time. Zero when the search was for a
+	// film or when TMDB did not return a count (unknown season, e.g.).
+	SelectedEpisodeCount int
 
 	QbitHash    string
 	ContentPath string
@@ -552,6 +588,14 @@ func updateStateTx(ctx context.Context, q querier, st RequestState) error {
 			selected_score    = $15,
 			selected_at       = CASE WHEN $11 <> '' THEN now() ELSE selected_at END,
 			qbit_hash         = $16,
+			-- The three ongoing-season fields. selected_thread_id is set
+			-- whenever a release has a non-empty thread id, regardless of
+			-- whether the season is full or partial. The two counts are
+			-- set in lockstep with the torrent being added; the workflow
+			-- reads them on the next poll to decide the request state.
+			selected_thread_id     = $17,
+			selected_video_count    = $18,
+			selected_episode_count  = $19,
 			-- progress, dl_speed, eta_seconds, zero_since, missing_since,
 			-- qbit_state and content_path are deliberately absent: the download
 			-- watcher owns them, and this statement runs on every state change
@@ -562,7 +606,7 @@ func updateStateTx(ctx context.Context, q querier, st RequestState) error {
 			                         THEN COALESCE(completed_at, now())
 			                         ELSE completed_at END,
 			updated_at        = now()
-		WHERE id = $1`
+	WHERE id = $1`
 
 	_, err := q.Exec(ctx, sql,
 		st.ID, st.State, st.Attempt, st.ErrorStreak, st.StallCount,
@@ -571,6 +615,8 @@ func updateStateTx(ctx context.Context, q querier, st RequestState) error {
 		nullString(st.SelectedGUID), nullString(st.SelectedInfoHash),
 		nullInt64(st.SelectedSize), nullInt(st.SelectedSeeders), st.SelectedScore,
 		nullString(st.QbitHash),
+		nullString(st.SelectedThreadID),
+		st.SelectedVideoCount, st.SelectedEpisodeCount,
 	)
 	if err != nil {
 		return fmt.Errorf("update request %d: %w", st.ID, err)
@@ -734,19 +780,27 @@ type querier interface {
 // ---------------------------------------------------------------------------
 
 const requestViewColumns = `
-	id, media_id, workflow_id, COALESCE(first_run_id, ''), COALESCE(run_id, ''),
-	state, attempt_count, error_streak, stall_count, COALESCE(last_error, ''),
-	next_run_at, search_deadline, download_deadline,
-	COALESCE(selected_title, ''), COALESCE(selected_indexer, ''),
-	COALESCE(selected_size, 0), COALESCE(selected_seeders, 0), COALESCE(selected_score, 0),
-	COALESCE(selected_link, ''), COALESCE(selected_infohash, ''),
-	COALESCE(qbit_hash, ''), COALESCE(content_path, ''),
-	progress, dl_speed, COALESCE(eta_seconds, 0),
-	created_at, updated_at, completed_at,
-	media_type, tmdb_id, season, title, COALESCE(title_ru, ''),
-	COALESCE(original_title, ''), COALESCE(year, 0), COALESCE(poster_path, ''),
-	COALESCE(overview, ''), COALESCE(runtime_min, 0),
-	in_plex, COALESCE(plex_title, ''), COALESCE(plex_year, 0)`
+id, media_id, workflow_id, COALESCE(first_run_id, ''), COALESCE(run_id, ''),
+state, attempt_count, error_streak, stall_count, COALESCE(last_error, ''),
+next_run_at, search_deadline, download_deadline,
+COALESCE(selected_title, ''), COALESCE(selected_indexer, ''),
+COALESCE(selected_size, 0), COALESCE(selected_seeders, 0), COALESCE(selected_score, 0),
+COALESCE(selected_link, ''), COALESCE(selected_infohash, ''),
+COALESCE(qbit_hash, ''), COALESCE(content_path, ''),
+progress, dl_speed, COALESCE(eta_seconds, 0),
+created_at, updated_at, completed_at,
+-- The three ongoing-season columns, in the same order as
+-- 00010_ongoing_season.sql. COALESCE is unnecessary because
+-- the ALTER TABLE set NOT NULL with a DEFAULT, but matching
+-- the COALESCE pattern of the surrounding fields keeps the
+-- scan symmetric.
+COALESCE(selected_thread_id, ''),
+COALESCE(selected_video_count, 0),
+COALESCE(selected_episode_count, 0),
+media_type, tmdb_id, season, title, COALESCE(title_ru, ''),
+COALESCE(original_title, ''), COALESCE(year, 0), COALESCE(poster_path, ''),
+COALESCE(overview, ''), COALESCE(runtime_min, 0),
+in_plex, COALESCE(plex_title, ''), COALESCE(plex_year, 0)`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -769,6 +823,7 @@ func scanRequest(row rowScanner) (*Request, error) {
 		&r.QbitHash, &r.ContentPath,
 		&r.Progress, &r.DlSpeed, &r.ETASeconds,
 		&r.CreatedAt, &r.UpdatedAt, &r.CompletedAt,
+		&r.SelectedThreadID, &r.SelectedVideoCount, &r.SelectedEpisodeCount,
 		&m.Ref.Type, &m.Ref.TMDBID, &season, &m.Title, &m.TitleRU,
 		&m.OriginalTitle, &m.Year, &r.PosterPath,
 		&r.Overview, &m.RuntimeMin,

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -31,12 +32,14 @@ const maxProwlarrBytes = 32 << 20
 // already fans every one of them out internally. The JSON API does the fan-out
 // server-side and returns JSON, which needs no XML parsing.
 type Prowlarr struct {
-	http       *http.Client
-	baseURL    string
-	apiKey     string
-	indexerIDs []int
-	log        *slog.Logger
-	limiter    *rate.Limiter
+	http            *http.Client
+	baseURL         string
+	apiKey          string
+	indexerIDs      []int
+	threadPatterns  []config.ThreadPattern
+	fallbackPattern *regexp.Regexp
+	log             *slog.Logger
+	limiter         *rate.Limiter
 }
 
 // NewProwlarr builds a Prowlarr client.
@@ -45,11 +48,13 @@ func NewProwlarr(cfg *config.Config, log *slog.Logger) *Prowlarr {
 		http: &http.Client{
 			Timeout: 120 * time.Second,
 		},
-		baseURL:    strings.TrimRight(cfg.Indexer.BaseURL, "/"),
-		apiKey:     cfg.Indexer.APIKey,
-		indexerIDs: cfg.Indexer.IndexerIDs,
-		log:        log.With("component", "indexer", "mode", "prowlarr"),
-		limiter:    rate.NewLimiter(rate.Limit(cfg.Indexer.RatePerSecond), 1),
+		baseURL:         strings.TrimRight(cfg.Indexer.BaseURL, "/"),
+		apiKey:          cfg.Indexer.APIKey,
+		indexerIDs:      cfg.Indexer.IndexerIDs,
+		threadPatterns:  cfg.Indexer.ThreadPatterns,
+		fallbackPattern: defaultThreadFallback(),
+		log:             log.With("component", "indexer", "mode", "prowlarr"),
+		limiter:         rate.NewLimiter(rate.Limit(cfg.Indexer.RatePerSecond), 1),
 	}
 }
 
@@ -143,9 +148,12 @@ func (p *Prowlarr) Search(ctx context.Context, req SearchRequest) ([]domain.Rele
 
 	// Prowlarr does not guarantee an ordering, and the selector's tie-breaking
 	// should not depend on the order a service happened to return results in.
+	threadPatterns := compileThreadPatterns(p.threadPatterns)
 	releases := make([]domain.Release, 0, len(raw))
 	for _, r := range raw {
-		releases = append(releases, r.toRelease())
+		rel := r.toRelease()
+		rel.Comment, rel.ThreadID = extractThreadID(r.Description, threadPatterns, p.fallbackPattern)
+		releases = append(releases, rel)
 	}
 	return releases, nil
 }
@@ -179,6 +187,7 @@ type prowlarrRelease struct {
 	Seeders     *int               `json:"seeders"`
 	Leechers    *int               `json:"leechers"`
 	DownloadURL string             `json:"downloadUrl"`
+	Description string             `json:"description"`
 	MagnetURL   string             `json:"magnetUrl"`
 	InfoHash    string             `json:"infoHash"`
 	Indexer     string             `json:"indexer"`

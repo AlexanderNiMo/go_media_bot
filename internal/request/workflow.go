@@ -195,9 +195,10 @@ func searchOnce(ctx workflow.Context, in *Input, state *State) (searchOutcome, e
 
 	var res SearchResult
 	err := workflow.ExecuteActivity(actCtx, (*Activities).SearchReleases, SearchInput{
-		RequestID: in.RequestID,
-		Spec:      in.Spec,
-		Limit:     100,
+		RequestID:     in.RequestID,
+		Spec:          in.Spec,
+		Limit:         100,
+		OngoingThread: state.SelectedThreadID,
 	}).Get(actCtx, &res)
 	if err != nil {
 		// An indexer failure is our problem, not the media's, so the attempt
@@ -331,9 +332,10 @@ func maybeEnterManualMode(ctx workflow.Context, in *Input, state *State) (search
 	actCtx := withOptions(ctx, indexerOptions())
 	var candidates []storage.Candidate
 	if err := workflow.ExecuteActivity(actCtx, (*Activities).FetchCandidates, SearchInput{
-		RequestID: in.RequestID,
-		Spec:      in.Spec,
-		Limit:     100,
+		RequestID:     in.RequestID,
+		Spec:          in.Spec,
+		Limit:         100,
+		OngoingThread: state.SelectedThreadID,
 	}).Get(actCtx, &candidates); err != nil {
 		// A search error is not a manual-mode error: the indexer
 		// might be flaky, and the workflow's backoff already covers
@@ -589,11 +591,29 @@ func downloadCycle(ctx workflow.Context, in *Input, state *State) (*Result, erro
 	}
 
 	state.QbitHash = added.Hash
+	state.SelectedThreadID = state.Selected.ThreadID
 	state.Phase = storage.StateDownloading
 	state.DownloadDeadline = workflow.Now(ctx).Add(in.Policy.DownloadDeadline)
 
 	if err := saveState(ctx, in, state, "torrent.added", added.Hash); err != nil {
 		return nil, err
+	}
+
+	// Ongoing-season check. A release from the same forum thread is
+	// usually a full reupload of the season, not a half-season
+	// release. The check asks qBittorrent how many video files the
+	// torrent contains and TMDB how many episodes the season has,
+	// and tips the request into StateOngoing when the torrent is
+	// short. The next search tick reads state.SelectedThreadID
+	// (set above) and prefers a release from the same thread.
+	if in.Spec.Ref.Type == domain.MediaTypeTV {
+		ongoing, saveErr := runOngoingCheck(ctx, in, state, added.Hash)
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		if ongoing {
+			return pollDownload(ctx, in, state)
+		}
 	}
 
 	if err := notify(ctx, in, storage.NotificationStarted,
@@ -603,6 +623,78 @@ func downloadCycle(ctx workflow.Context, in *Input, state *State) (*Result, erro
 	}
 
 	return pollDownload(ctx, in, state)
+}
+
+// runOngoingCheck decides whether the just-added torrent is the
+// full season or a half-season one. The result is either:
+//
+//   - a transition into StateOngoing with the thread id and the
+//     two counts saved on the row, when the file count is below
+//     the season's episode count, OR
+//
+//   - no transition, when the request is for a film, when TMDB
+//     returned 0 (still-airing season), or when the file count
+//     is at or above the season's episode count.
+//
+// A failure in either activity (qBittorrent unreachable, TMDB
+// rate-limit) is a soft skip: the request goes to StateDownloading
+// anyway, the user can re-evaluate through the manual path if
+// the half-season slips past.
+func runOngoingCheck(ctx workflow.Context, in *Input, state *State, hash string) (ongoing bool, err error) {
+	if state.Selected == nil {
+		return false, nil
+	}
+	season := in.Spec.Ref.SeasonNumber()
+	if season <= 0 {
+		// Either the spec is a film, or it is a series-wide search
+		// without a season number. The ongoing branch only makes
+		// sense for one season at a time.
+		return false, nil
+	}
+
+	dbCtx := withOptions(ctx, dbOptions())
+	var expected SeasonEpisodeCountResult
+	if err := workflow.ExecuteActivity(dbCtx, (*Activities).SeasonEpisodeCount, SeasonEpisodeCountInput{
+		TMDBID: in.Spec.Ref.TMDBID,
+		Season: season,
+	}).Get(dbCtx, &expected); err != nil {
+		return false, err
+	}
+	if expected.Count <= 0 {
+		// Still-airing season, or TMDB does not know the count.
+		// The ongoing branch has no idea when the season ends; fall
+		// through to the regular download path.
+		return false, nil
+	}
+
+	var videos VideoFileCountResult
+	if err := workflow.ExecuteActivity(dbCtx, (*Activities).VideoFileCount, VideoFileCountInput{
+		Hash: hash,
+	}).Get(dbCtx, &videos); err != nil {
+		return false, err
+	}
+
+	state.SelectedEpisodeCount = expected.Count
+	state.SelectedVideoCount = videos.Count
+
+	if videos.Count >= expected.Count {
+		// Full season, regular path. The thread id is still saved
+		// (a future update from the same thread would be picked up
+		// before another thread even if the request is not ongoing).
+		if err := saveState(ctx, in, state, "torrent.added.full", fmt.Sprintf(
+			"%d/%d episodes", videos.Count, expected.Count)); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	state.Phase = storage.StateOngoing
+	if err := saveState(ctx, in, state, "torrent.added.partial", fmt.Sprintf(
+		"%d/%d episodes, watching the same thread for the rest",
+		videos.Count, expected.Count)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // pollDownload waits for the current torrent, one poll interval at a time.
@@ -1011,16 +1103,19 @@ func initialState(ctx workflow.Context, in Input) State {
 	}
 
 	return State{
-		Phase:            phase,
-		Attempt:          in.StartAttempt,
-		ErrorStreak:      in.StartErrorStreak,
-		StallCount:       in.StartStallCount,
-		Iteration:        in.StartIteration,
-		NextRunAt:        nextRunAt,
-		Selected:         in.StartSelected,
-		QbitHash:         in.StartQbitHash,
-		DownloadDeadline: deadline,
-		SearchDeadline:   searchDeadline,
+		Phase:                phase,
+		Attempt:              in.StartAttempt,
+		ErrorStreak:          in.StartErrorStreak,
+		StallCount:           in.StartStallCount,
+		Iteration:            in.StartIteration,
+		NextRunAt:            nextRunAt,
+		Selected:             in.StartSelected,
+		QbitHash:             in.StartQbitHash,
+		SelectedThreadID:     in.StartSelectedThreadID,
+		SelectedVideoCount:   in.StartSelectedVideoCount,
+		SelectedEpisodeCount: in.StartSelectedEpisodeCount,
+		DownloadDeadline:     deadline,
+		SearchDeadline:       searchDeadline,
 		// Carried for the same reason as the deadlines above. The first
 		// start of the workflow has ManualSince zero; the workflow enters
 		// StateManual by writing the field, and a ContinueAsNew carries
@@ -1132,6 +1227,9 @@ func continueAsNewIfNeeded(ctx workflow.Context, in Input, state State) (bool, e
 	next.StartNextRunAt = state.NextRunAt
 	next.StartSelected = state.Selected
 	next.StartQbitHash = state.QbitHash
+	next.StartSelectedThreadID = state.SelectedThreadID
+	next.StartSelectedVideoCount = state.SelectedVideoCount
+	next.StartSelectedEpisodeCount = state.SelectedEpisodeCount
 	next.StartDownloadDeadline = state.DownloadDeadline
 	// Carried, not recomputed. Without this the restarted workflow would give
 	// itself a fresh two-year window and the request would never reach its

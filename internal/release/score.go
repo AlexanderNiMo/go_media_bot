@@ -111,7 +111,7 @@ func (v Verdict) topReasons(n int) string {
 
 // Selector picks the release to download.
 type Selector interface {
-	Select(spec domain.MediaSpec, releases []domain.Release, blacklist map[string]bool) Verdict
+	Select(spec domain.MediaSpec, releases []domain.Release, blacklist map[string]bool, ongoingThread string) Verdict
 }
 
 // NewSelector returns the default selector.
@@ -127,7 +127,14 @@ type selector struct {
 // search — it is what most hourly runs will produce for the first months of a
 // two-year request — and modelling it as an error would push callers into
 // treating a normal state as a failure.
-func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, blacklist map[string]bool) Verdict {
+//
+// ongoingThread, when non-empty, is the forum thread id the
+// previous search tick selected. A release with a matching
+// ThreadID is preferred, so the torrent file gets updated in
+// place rather than replaced with a new infohash. Used by the
+// ongoing-season branch; empty on a fresh request or a search
+// tick that does not yet have a selected thread.
+func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, blacklist map[string]bool, ongoingThread string) Verdict {
 	verdict := Verdict{Considered: len(releases)}
 
 	for _, rel := range releases {
@@ -143,6 +150,21 @@ func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, black
 		}
 
 		score := s.score(rel, parsed, audio)
+		if ongoingThread != "" && rel.ThreadID == ongoingThread {
+			// Same-thread bonus. Picking the release from the
+			// previously-selected thread means qBittorrent
+			// sees the new torrent as an update of the old
+			// one (same path, same folder structure) rather
+			// than a fresh add, and re-checks the files in
+			// place. The bonus is small (half the seeders
+			// weight) so it never overrides a hard rejection:
+			// a blacklisted or wrong-source release still
+			// loses. The 0.06 figure sits between weightSize
+			// (0.08) and weightSeeders (0.12), so it can tip
+			// the scales between two acceptable releases but
+			// not flatten them.
+			score += 0.06
+		}
 		if !verdict.Acceptable || score > verdict.Score {
 			verdict.Acceptable = true
 			verdict.Chosen = rel

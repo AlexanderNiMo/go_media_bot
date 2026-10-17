@@ -423,6 +423,57 @@ func (c *Client) AllActive(ctx context.Context) ([]domain.TorrentStatus, error) 
 	return toStatuses(torrents), nil
 }
 
+// VideoFileCount returns the number of video files the torrent
+// contains, as reported by qBittorrent. Used by the ongoing-season
+// branch: a half-season release has fewer video files than the
+// season's full episode count, which is what tips the request into
+// StateOngoing instead of StateCompleted.
+//
+// "Video" is identified by file extension. The exact set is the
+// minimum that covers what the trackers this project actually
+// target return: .mkv, .mp4, .avi, .ts, .m2ts, .mpg/.mpeg. Anything
+// that is not a container qBittorrent would actually play is
+// skipped — .srt, .nfo, .txt, sample.* — so a season pack
+// counts as 10 videos and not 47 with samples and subtitles.
+func (c *Client) VideoFileCount(ctx context.Context, hash string) (int, error) {
+	if hash == "" {
+		return 0, fmt.Errorf("VideoFileCount: empty hash")
+	}
+	files, err := c.qb.GetFilesInformationCtx(ctx, hash)
+	if err != nil {
+		return 0, fmt.Errorf("get files for %s: %w", hash, err)
+	}
+	if files == nil {
+		return 0, nil
+	}
+	var n int
+	for _, f := range *files {
+		if isVideoFile(f.Name) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// isVideoFile reports whether a name looks like a video container.
+// Lowercased comparison: case-insensitive on Windows shares and
+// case-sensitive on Unix, but qBittorrent returns the same casing
+// the torrent was added with, and trackers name files consistently.
+func isVideoFile(name string) bool {
+	// Last dot, case-folded. Files without a dot (rare) are not
+	// video. A trailing dot (a dotfile) is also not video.
+	idx := strings.LastIndex(name, ".")
+	if idx < 0 || idx == len(name)-1 {
+		return false
+	}
+	ext := strings.ToLower(name[idx+1:])
+	switch ext {
+	case "mkv", "mp4", "avi", "ts", "m2ts", "mpg", "mpeg":
+		return true
+	}
+	return false
+}
+
 // Delete removes a torrent, optionally with its files.
 //
 // deleteFiles must be chosen deliberately. It is safe when the client's save
