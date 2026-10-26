@@ -1,19 +1,31 @@
 {{define "content"}}
 {{/*
-  One GET form so every control — text search, sort, type, since, and the
-  state pills in the Active block — round-trips through the same query
-  string. The htmx fragment below reads the same query string via the URL
-  built from .Filter.ActiveFragmentQS; a reload after the user changes the
-  form follows the new filter because the URL changes too.
+  Two GET forms, not one.
+
+  A form cannot be nested in HTML: the parser drops the inner <form>
+  element, and its controls — including a submit button — become part of
+  the outer form. The active table sits between the two filter rows, so a
+  single form around both rows swallowed the table's own cancel form: the
+  button submitted the filter form instead, and the request was never
+  cancelled.
+
+  So each filter row gets its own form, and each one mirrors the other
+  form's controls as hidden inputs. A submission still carries the whole
+  query string — a pill click keeps the search text, a change of period
+  keeps the state selection — which is what the single form used to give.
+
+  The htmx fragment below reads the same query string via the URL built
+  from .Filter.ActiveFragmentQS; a reload after the user changes a filter
+  follows the new filter because the URL changes too.
 */}}
-<form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
 
-  <details open class="block" id="block-active">
-    <summary>
-      <span class="title">Что качается</span>
-      <span class="muted count">{{len .Active}}</span>
-    </summary>
+<details open class="block" id="block-active">
+  <summary>
+    <span class="title">Что качается</span>
+    <span class="muted count">{{len .Active}}</span>
+  </summary>
 
+  <form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
     <div class="filter-row state-pills">
       <span class="muted">состояния:</span>
       {{range .ActiveAll}}
@@ -27,23 +39,38 @@
     </div>
 
     {{/*
-      The fragment polls every three seconds. The URL embeds the current
-      filter, so a reload after the user changes the form follows the new
-      filter; htmx replaces only the table body.
+      The shared filters are in the other form. Mirrored here so a pill
+      click carries them along instead of dropping them.
     */}}
-    <div hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
-         hx-trigger="every 3s"
-         hx-swap="innerHTML">
-      {{template "active_table" .}}
-    </div>
-  </details>
+    {{with .Filter.Q}}<input type="hidden" name="q" value="{{.}}">{{end}}
+    {{with .Filter.Type}}<input type="hidden" name="type" value="{{.}}">{{end}}
+    {{with .Filter.Sort}}<input type="hidden" name="sort" value="{{.}}">{{end}}
+    {{with .Filter.Since}}<input type="hidden" name="since" value="{{.}}">{{end}}
+  </form>
 
-  <details open class="block" id="block-recent">
-    <summary>
-      <span class="title">Недавно</span>
-      <span class="muted count">{{len .Recent}}</span>
-    </summary>
+  {{/*
+    The fragment polls every three seconds. The URL embeds the current
+    filter, so a reload after the user changes the form follows the new
+    filter; htmx replaces only the table body.
 
+    It is deliberately outside the filter form: the table carries the
+    cancel form, and a form inside a form does not survive the HTML
+    parser.
+  */}}
+  <div hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
+       hx-trigger="every 3s"
+       hx-swap="innerHTML">
+    {{template "active_table" .}}
+  </div>
+</details>
+
+<details open class="block" id="block-recent">
+  <summary>
+    <span class="title">Недавно</span>
+    <span class="muted count">{{len .Recent}}</span>
+  </summary>
+
+  <form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
     <div class="filter-row shared-filters">
       <input type="text" name="q" value="{{.Filter.Q}}" placeholder="поиск" autocomplete="off" class="js-auto pill-input">
       <label class="muted">тип
@@ -69,27 +96,33 @@
       </label>
     </div>
 
-    {{if .Recent}}
-      <table>
-        <thead><tr><th colspan="2">Что</th><th>Состояние</th><th>Итог</th></tr></thead>
-        <tbody>
-        {{range .Recent}}
-          <tr>
-            <td class="thumb">
-              {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
-            </td>
-            <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
-            <td><span class="state {{.State}}">{{.State}}</span></td>
-            <td class="muted">{{.Detail}}</td>
-          </tr>
-        {{end}}
-        </tbody>
-      </table>
-    {{else}}
-      <p class="muted">Пусто.</p>
-    {{end}}
-  </details>
-</form>
+    {{/*
+      The state pills are in the other form. Mirrored here so changing the
+      period carries the selection along instead of dropping it.
+    */}}
+    {{range .Filter.MirrorStates}}<input type="hidden" name="state" value="{{.}}">{{end}}
+  </form>
+
+  {{if .Recent}}
+    <table>
+      <thead><tr><th colspan="2">Что</th><th>Состояние</th><th>Итог</th></tr></thead>
+      <tbody>
+      {{range .Recent}}
+        <tr>
+          <td class="thumb">
+            {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
+          </td>
+          <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
+          <td><span class="state {{.State}}">{{.State}}</span></td>
+          <td class="muted">{{.Detail}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{else}}
+    <p class="muted">Пусто.</p>
+  {{end}}
+</details>
 
 <script>
   // Persist the open/closed state of each block in localStorage, mirroring
@@ -114,8 +147,8 @@
 
     // Auto-submit the filter form on text input, debounced so each keystroke
     // does not round-trip to the server. The submit fires 300 ms after the
-    // last keystroke. Form is the closest <form> ancestor — fine here because
-    // the dashboard's form is the only one with these inputs.
+    // last keystroke. Form is the closest <form> ancestor — the search box
+    // lives in the shared-filters form, and that is the one it submits.
     try {
       var auto = document.querySelectorAll(".js-auto");
       auto.forEach(function (input) {

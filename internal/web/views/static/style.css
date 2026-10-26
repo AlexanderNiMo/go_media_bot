@@ -309,11 +309,14 @@ table td > input.notif-check {
 
 /* --- dashboard filters & collapsible blocks ---------------------------- */
 
-/* The dashboard's form wraps both blocks; controls are split into a
-   per-block row inside each <details>. The class is dashboard-form rather
-   than the shared .filters used on requests.html, because there
-   .filters is display:flex (inline controls) and here the form has to
-   stack full-width blocks. */
+/* The dashboard's filters live in two forms, one per block: a form cannot
+   wrap the whole page, because the active table's cancel form would be
+   swallowed by it — HTML has no nested forms. Each form holds one filter
+   row inside its <details>, and mirrors the other form's controls as
+   hidden inputs so a submission still carries the whole query string.
+   The class is dashboard-form rather than the shared .filters used on
+   requests.html, because there .filters is display:flex (inline
+   controls) and here each row is a block of its own. */
 
 .filter-row {
   display: flex;

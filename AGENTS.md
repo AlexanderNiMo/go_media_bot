@@ -126,6 +126,31 @@ Inside `range`/`with`, the inner scope hides the page, so use `$.ID`
 on the row. `TestRequestPagesRenderPopulated` catches most of this,
 but new `{{path … "…{{…}}…"}}` patterns still need manual review.
 
+### A form inside a form does not exist
+
+HTML has no nested forms. The parser drops the inner `<form>` element,
+and its controls — a submit button above all — become part of the outer
+form. The button then submits the **outer** form: a cancel button
+inside a GET filter form reloads the page and cancels nothing, and the
+button's own `action` is nowhere in the DOM.
+
+The dashboard had one filter form around the whole page, and the active
+table's cancel form sat inside it. The source looked right, the rendered
+HTML looked right, and only the parsed DOM showed the difference: two
+forms where the template had three.
+
+**How to avoid:** a form is a top-level element. When a page needs a
+filter form *and* an action form, they are siblings — the dashboard now
+has one GET form per filter row, each mirroring the other row's
+controls as hidden inputs so the query string still round-trips.
+
+`internal/web/render_test.go` checks this on every page:
+`TestNoPageNestsAForm` reads the rendered source with the tokenizer
+(the parser is what hides the problem), `TestCancelButtonsPostToTheCancelRoute`
+checks that the cancel button is owned by a POST form pointing at
+`/cancel`, and `TestDashboardFilterFormsCarryEveryControl` checks that
+both filter forms still carry every filter control.
+
 ### Replay tests fail with TMPRL1100 after a workflow change
 
 `internal/request/replay_test.go` replays every history under
