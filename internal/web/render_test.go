@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/html"
+
 	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/storage"
 )
@@ -111,8 +113,17 @@ func fixtures(t *testing.T) map[string]any {
 
 	return map[string]any{
 		"dashboard": dashboardView{
-			page:      testPage(),
-			Filter:    dashboardFilter{},
+			page: testPage(),
+			// A filter with something in every field: the dashboard's two
+			// forms mirror each other's controls, and a mirror only shows
+			// up when the value is not empty.
+			Filter: dashboardFilter{
+				Q:          "матрица",
+				Type:       "movie",
+				Sort:       "date",
+				Since:      "7d",
+				ActiveSubs: []string{"downloading", "adding"},
+			},
 			Active:    []requestRow{row},
 			Recent:    []requestRow{row},
 			ActiveAll: storage.ActiveStates(),
@@ -325,6 +336,175 @@ func TestEveryPostFormHasAToken(t *testing.T) {
 	}
 }
 
+// TestNoPageNestsAForm reads the rendered pages and fails on a form inside a
+// form.
+//
+// HTML has no nested forms. The parser drops the inner <form> element, and
+// its controls — a submit button above all — become part of the outer form.
+// The dashboard had one filter form around the whole page, and the active
+// table's cancel form was swallowed by it: the button submitted the filter
+// form, the page reloaded, and the request was never cancelled.
+//
+// The rendered HTML looks right, so the check is on the source: the parser
+// is what hides the problem.
+func TestNoPageNestsAForm(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	for name, data := range fixtures(t) {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), name, data)
+
+			depth := 0
+			z := html.NewTokenizer(strings.NewReader(rec.Body.String()))
+			for {
+				switch z.Next() {
+				case html.ErrorToken:
+					if depth != 0 {
+						t.Errorf("%d form(s) were never closed", depth)
+					}
+					return
+				case html.StartTagToken:
+					if tag, _ := z.TagName(); string(tag) == "form" {
+						depth++
+						if depth > 1 {
+							t.Errorf("a form inside another form: the parser drops the inner one, " +
+								"and its button submits the outer one instead")
+						}
+					}
+				case html.EndTagToken:
+					if tag, _ := z.TagName(); string(tag) == "form" {
+						depth--
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestCancelButtonsPostToTheCancelRoute checks the button that cancels a
+// request, on both pages that show one.
+//
+// The button's owner is the form the browser submits, and it is not always
+// the form the template looks like it is in — a form nested in another one
+// does not survive the parser. A cancel button owned by a GET filter form
+// reloads the page and cancels nothing, which is exactly the bug this file
+// exists to catch.
+func TestCancelButtonsPostToTheCancelRoute(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	for _, name := range []string{"dashboard", "request"} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), name, fixtures(t)[name])
+
+			doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+			if err != nil {
+				t.Fatalf("parse the rendered page: %v", err)
+			}
+
+			found := 0
+			var walk func(*html.Node)
+			walk = func(n *html.Node) {
+				if n.Type == html.ElementNode && n.Data == "button" && isCancelButton(n) {
+					found++
+
+					owner := owningForm(n)
+					if owner == nil {
+						t.Error("the cancel button is not inside a form at all")
+						return
+					}
+					method, action := attrForTest(owner, "method"), attrForTest(owner, "action")
+					if !strings.EqualFold(method, "post") {
+						t.Errorf("the cancel button submits a %q form; it has to be POST", method)
+					}
+					if !strings.HasSuffix(action, "/cancel") {
+						t.Errorf("the cancel button posts to %q; it has to be the cancel route", action)
+					}
+				}
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					walk(c)
+				}
+			}
+			walk(doc)
+
+			if found == 0 {
+				t.Error("the page has no cancel button")
+			}
+		})
+	}
+}
+
+// TestDashboardFilterFormsCarryEveryControl checks that both of the
+// dashboard's filter forms carry every filter control.
+//
+// The dashboard has two GET forms — the state pills in one, the shared
+// filters in the other — because a single form around both would swallow the
+// table's cancel form. Each form mirrors the other's controls as hidden
+// inputs, so whichever one the user submits, the whole query string travels.
+//
+// Without the mirrors a pill click would drop the search text, and a change
+// of period would drop the state selection.
+func TestDashboardFilterFormsCarryEveryControl(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard", fixtures(t)["dashboard"])
+
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	want := map[string]bool{"q": true, "type": true, "sort": true, "since": true, "state": true}
+
+	forms := 0
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "form" &&
+			strings.EqualFold(attrForTest(n, "method"), "get") {
+			forms++
+
+			got := map[string]bool{}
+			var controls func(*html.Node)
+			controls = func(n *html.Node) {
+				if n.Type == html.ElementNode {
+					switch n.Data {
+					case "input", "select", "textarea":
+						if name := attrForTest(n, "name"); name != "" {
+							got[name] = true
+						}
+					}
+				}
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					controls(c)
+				}
+			}
+			controls(n)
+
+			for name := range want {
+				if !got[name] {
+					t.Errorf("a filter form does not carry %q; a submission through it "+
+						"would drop that part of the query string", name)
+				}
+			}
+			for name := range got {
+				if !want[name] {
+					t.Errorf("a filter form carries an unknown control %q", name)
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if forms != 2 {
+		t.Errorf("the dashboard has %d GET forms; it is meant to have two, one per filter row", forms)
+	}
+}
+
 // TestTemplateSetsDoNotShareContent — each page is parsed into its own set,
 // because every one of them defines "content" and a single set would render
 // the last-parsed page for all of them.
@@ -379,6 +559,55 @@ func truncateForTest(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// attrForTest reads an attribute of a parsed node.
+func attrForTest(n *html.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+// isCancelButton reports whether a button is the one that cancels a request.
+//
+// The text is matched loosely on purpose: the dashboard says "отменить" and
+// the request page says "Отменить", and both are the same button.
+func isCancelButton(n *html.Node) bool {
+	return strings.Contains(strings.ToLower(textOf(n)), "отмен")
+}
+
+// textOf collects the text of a node.
+//
+// It walks rather than reads the first child, because a button with an icon
+// and no text has no first child at all — and a nil dereference on this
+// machine hangs the test instead of failing it.
+func textOf(n *html.Node) string {
+	var sb strings.Builder
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			sb.WriteString(n.Data)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return sb.String()
+}
+
+// owningForm returns the form a control belongs to: the nearest ancestor
+// form, which is the one the browser submits it with.
+func owningForm(n *html.Node) *html.Node {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == html.ElementNode && p.Data == "form" {
+			return p
+		}
+	}
+	return nil
 }
 
 // discardLogger is a logger that writes nowhere, for tests that only care
