@@ -57,6 +57,10 @@ func (f *fakeWorkflowClient) ExecuteWorkflow(
 
 func (f *fakeWorkflowClient) CancelWorkflow(context.Context, string, string) error { return nil }
 
+func (f *fakeWorkflowClient) SignalWorkflow(context.Context, string, string, string, any) error {
+	return nil
+}
+
 func (f *fakeWorkflowClient) QueryWorkflow(
 	context.Context, string, string, string, ...any,
 ) (converter.EncodedValue, error) {

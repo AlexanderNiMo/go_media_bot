@@ -195,6 +195,7 @@ type stubRequests struct {
 	started  []domain.MediaSpec
 	input    []request.StartInput
 	canceled []int64
+	signaled []int64
 
 	reused bool
 	err    error
@@ -223,6 +224,17 @@ func (s *stubRequests) Cancel(_ context.Context, id int64) error {
 		return s.err
 	}
 	s.canceled = append(s.canceled, id)
+	return nil
+}
+
+func (s *stubRequests) SignalPick(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.err != nil {
+		return s.err
+	}
+	s.signaled = append(s.signaled, id)
 	return nil
 }
 

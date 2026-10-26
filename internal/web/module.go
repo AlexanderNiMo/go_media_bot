@@ -29,13 +29,25 @@ type Server struct {
 	cfg   *config.Config
 	store *storage.Store
 	tmdb  *tmdb.Client
-	req   *request.Service
+	req   requestService
 	tmpl  *templates
 	log   *slog.Logger
 
 	// version is shown in the footer, so that "which build is this" has an
 	// answer without shelling into the host.
 	version string
+}
+
+// requestService is the part of the workflow service this package uses.
+//
+// Narrowed to the four things the interface actually asks of it, so that a
+// test can drive the forms without a Temporal server. The concrete type
+// implements it as it stands.
+type requestService interface {
+	StartRequest(ctx context.Context, in request.StartInput) (*request.StartResult, error)
+	Cancel(ctx context.Context, requestID int64) error
+	Retry(ctx context.Context, in request.RetryInput) (*storage.Request, error)
+	SignalPick(ctx context.Context, requestID int64) error
 }
 
 // New builds the server.

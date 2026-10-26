@@ -128,32 +128,29 @@ func (s *WorkflowSuite) expectNoise() {
 		Return(func(_ context.Context, _ int64) (string, error) {
 			return "", nil
 		}).Maybe()
-	// FetchCandidates, StoreCandidates, ClearCandidates and
-	// GetPickedCandidate belong to the manual-pick branch. They are
-	// registered here as `.Maybe()` stubs that return the empty
-	// path, so any test that does NOT drive the manual branch and
-	// happens to reach the call site does not panic.
+	// ListCandidates, ClearCandidates and GetPickedCandidate belong to
+	// the manual-pick branch. They are registered here as `.Maybe()`
+	// stubs that return the empty path, so any test that does NOT
+	// drive the manual branch and happens to reach the call site does
+	// not panic.
 	//
-	// Why `.Maybe()` and not "no stub": the workflow reaches
-	// maybeEnterManualMode on a fruitless search for any media
-	// more than two years old, and the project's movieInput() and
-	// several other fixtures use year=1999 — so a default of "no
-	// stub" would panic tests that have no business with manual
-	// mode (TestSearchDeadlineFails, TestBackoffLadderIsFollowed,
-	// etc.). The `.Maybe()` lets those tests pass without making
-	// the manual-pick path opt-in.
+	// Why `.Maybe()` and not "no stub": the workflow reads the picked
+	// candidate on every search tick, and the project's movieInput()
+	// and several other fixtures use year=1999 — so a default of "no
+	// stub" would panic tests that have no business with manual mode
+	// (TestSearchDeadlineFails, TestBackoffLadderIsFollowed, etc.).
+	// The `.Maybe()` lets those tests pass without making the
+	// manual-pick path opt-in.
 	//
 	// The `.Maybe()` does not make the matching weaker — testify
 	// still matches in registration order, and a test that
-	// registers a non-Maybe stub of FetchCandidates BEFORE this
+	// registers a non-Maybe stub of GetPickedCandidate BEFORE this
 	// function runs gets the test stub. Tests that do drive the
 	// manual branch (TestManualMode*) register their stubs first
 	// via s.env.OnActivity(...).Return(...) and the noise stub
 	// stays out of the way.
-	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
+	s.env.OnActivity("ListCandidates", mock.Anything, mock.Anything).
 		Return([]storage.Candidate{}, nil).Maybe()
-	s.env.OnActivity("StoreCandidates", mock.Anything, mock.Anything).
-		Return(nil).Maybe()
 	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
 		Return(storage.Candidate{}, noSuchCandidateErr()).Maybe()
 	s.env.OnActivity("ClearCandidates", mock.Anything, mock.Anything).
@@ -942,39 +939,31 @@ func (s *WorkflowSuite) TestContinueAsNewHandsOverSearchDeadline() {
 // ---------------------------------------------------------------------------
 // Manual pick
 //
-// The four cases below pin the four ways the manual-mode branch can
+// The cases below pin the four ways the manual-mode branch can
 // terminate: the user picks, the 14-day timeout fires, the workflow
 // is cancelled mid-wait, and a ContinueAsNew that resumes the wait.
-// "isOldMedia" is gated on Year <= now-2, so a 2020 spec in 2026 enters
-// manual mode but a 2025 spec does not.
+// "isOldMedia" is gated on the release date being more than two years
+// back, so a 2020 spec in 2026 enters manual mode but a 2025 spec does
+// not.
 // ---------------------------------------------------------------------------
 
 // TestManualModeEntersForOldMedia — when the auto-selector finds nothing
 // and the spec is more than two years old, the workflow offers a list
-// of candidates to the user. The two side effects the test pins are
-// StoreCandidates (so the request page has something to render) and
-// NotifyWatchers with NotificationManual (so the bot actually tells
-// the user about it).
+// of candidates to the user. The two side effects the test pins are the
+// announcement of the list (NotifyWatchers with NotificationManual, so
+// the bot actually tells the user about it) and the transition into
+// StateManual (so the request waits for the pick).
 func (s *WorkflowSuite) TestManualModeEntersForOldMedia() {
 	candidates := []storage.Candidate{
 		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 10, RejectionReason: "russian_audio"},
 		{Rank: 2, Title: "old film 720p", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2 << 30, Seeders: 5, RejectionReason: "size_under"},
 	}
-	// Registered BEFORE expectNoise: testify matches the first registered
-	// expectation, and expectNoise's FetchCandidates default would
-	// otherwise win. Same pattern is used in
-	// TestContinueAsNewBoundsHistory for SaveState.
-	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
+	// The list the user picks from is read back for the notification
+	// body. Registered BEFORE expectNoise: testify matches the first
+	// registered expectation, and expectNoise's ListCandidates default
+	// would otherwise win.
+	s.env.OnActivity("ListCandidates", mock.Anything, mock.Anything).
 		Return(candidates, nil)
-	// StoreCandidates counter: same registration-order rule applies.
-	// Registered before expectNoise so the noise stub does not
-	// shadow it.
-	var storedCount int
-	s.env.OnActivity("StoreCandidates", mock.Anything, mock.Anything).
-		Return(func(_ context.Context, _ StoreCandidatesInput) error {
-			storedCount++
-			return nil
-		})
 	// NotifyWatchers capture: same reason — registered first so the
 	// noise stub does not capture the manual notification kind.
 	var notificationKinds []storage.NotificationKind
@@ -988,8 +977,16 @@ func (s *WorkflowSuite) TestManualModeEntersForOldMedia() {
 
 	in := oldMediaInput()
 
+	// The search activity stores the candidate list itself and reports
+	// how many there are; CandidatesNew says this search is the one that
+	// put the list there, which is what the workflow announces.
 	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
-		Return(SearchResult{Considered: 4, Summary: "nothing acceptable"}, nil)
+		Return(SearchResult{
+			Considered:    4,
+			Summary:       "nothing acceptable",
+			Candidates:    len(candidates),
+			CandidatesNew: true,
+		}, nil)
 
 	// GetPickedCandidate is the poll during manual mode. The test cancels
 	// before the 14-day timeout, so this never returns a candidate.
@@ -1019,7 +1016,6 @@ func (s *WorkflowSuite) TestManualModeEntersForOldMedia() {
 		"a cancelled request returns a result, not an error")
 	s.Equal(storage.StateCanceled, result.Outcome)
 
-	s.Equal(1, storedCount, "manual mode should have been entered exactly once")
 	s.Contains(notificationKinds, storage.NotificationManual,
 		"the user was not told that a manual pick is available")
 }
@@ -1042,7 +1038,7 @@ func (s *WorkflowSuite) TestManualModeResolvesOnPick() {
 		RejectionReason: "russian_audio",
 	}
 	// Registered before expectNoise so this stub wins the FIFO match.
-	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
+	s.env.OnActivity("ListCandidates", mock.Anything, mock.Anything).
 		Return([]storage.Candidate{picked}, nil)
 	// First poll: nothing yet. Second poll: user picked. The first
 	// 1-minute wait is the one that makes the timing matter; the
@@ -1067,10 +1063,13 @@ func (s *WorkflowSuite) TestManualModeResolvesOnPick() {
 	in := oldMediaInput()
 
 	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
-		Return(SearchResult{Considered: 4, Summary: "nothing acceptable"}, nil)
+		Return(SearchResult{
+			Considered:    4,
+			Summary:       "nothing acceptable",
+			Candidates:    1,
+			CandidatesNew: true,
+		}, nil)
 
-	s.env.OnActivity("StoreCandidates", mock.Anything, mock.Anything).
-		Return(nil)
 	s.env.OnActivity("ClearCandidates", mock.Anything, mock.Anything).
 		Return(nil).Maybe()
 
@@ -1092,13 +1091,152 @@ func (s *WorkflowSuite) TestManualModeResolvesOnPick() {
 	s.GreaterOrEqual(picks, 2, "the manual poll never ran")
 }
 
-// TestManualModeNotEnteredForRecentMedia — the manual-mode gate is
-// "spec.Year <= now.Year() - 2". A 2025 spec in 2026 is recent (2025
-// > 2024), so the workflow falls through to the normal backoff and
-// the FetchCandidates activity is never called.
+// TestPickIsHonouredOutsideManualMode — the pick works in the ordinary
+// search cycle, not only in the manual wait.
 //
-// "Never called" is the whole point. The stub for FetchCandidates
-// is deliberately omitted — an unexpected call fails the test.
+// The manual wait exists for old media, where the request stops searching
+// and waits for the user. For everything else the request keeps searching
+// on its backoff ladder, and a user who opens the request page and picks
+// a release from the list must not have to wait out that ladder for the
+// choice to count.
+//
+// The pick is read at the top of every search cycle, before the deadline
+// check and before the search, so a pick made in the last hour of a
+// request's two-year window is still honoured.
+func (s *WorkflowSuite) TestPickIsHonouredOutsideManualMode() {
+	picked := storage.Candidate{
+		Rank:            1,
+		Title:           "recent film 1080p",
+		Indexer:         "rutor",
+		InfoHash:        "pickedoutside1",
+		MagnetLink:      "magnet:?xt=urn:btih:pickedoutside1",
+		SizeBytes:       4 << 30,
+		Seeders:         10,
+		RejectionReason: "russian_audio",
+	}
+	// The first check happens before the first search and finds nothing;
+	// the second happens at the next tick and finds the pick.
+	var picks int
+	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ int64) (storage.Candidate, error) {
+			picks++
+			if picks < 2 {
+				return storage.Candidate{}, noSuchCandidateErr()
+			}
+			return picked, nil
+		})
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	in := movieInput()
+	in.Spec.Year = s.env.Now().Year() - 1 // recent: the request does not enter manual mode
+
+	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
+		Return(SearchResult{
+			Considered:    3,
+			Summary:       "nothing acceptable",
+			Candidates:    1,
+			CandidatesNew: true,
+		}, nil)
+
+	s.env.OnActivity("AddTorrent", mock.Anything, mock.Anything).
+		Return(AddTorrentResult{Hash: "pickedoutside1"}, nil)
+	s.env.OnActivity("CheckDownload", mock.Anything, mock.Anything).
+		Return(CheckDownloadResult{State: DownloadDone, Hash: "pickedoutside1"}, nil)
+
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var result Result
+	s.NoError(s.env.GetWorkflowResult(&result))
+	s.Equal(storage.StateCompleted, result.Outcome)
+	s.Require().NotNil(result.Selected)
+	s.Equal("recent film 1080p", result.Selected.Title)
+	s.Equal("pickedoutside1", result.Selected.InfoHash)
+}
+
+// TestPickSignalWakesTheRequest — the pick takes effect in seconds, not
+// at the next scheduled tick.
+//
+// The request is asleep in its backoff, an hour away from the next
+// search. The signal is what brings it forward; without it the choice
+// would sit unnoticed until the timer fired. The test measures the
+// virtual time at which the download starts: it has to be before the
+// backoff would have expired.
+func (s *WorkflowSuite) TestPickSignalWakesTheRequest() {
+	picked := storage.Candidate{
+		Rank:            1,
+		Title:           "recent film 1080p",
+		Indexer:         "rutor",
+		InfoHash:        "signalled1",
+		MagnetLink:      "magnet:?xt=urn:btih:signalled1",
+		SizeBytes:       4 << 30,
+		Seeders:         10,
+		RejectionReason: "russian_audio",
+	}
+	// The pick is already in the database when the signal arrives: the
+	// user marked it before the interface woke the request up. The first
+	// check — before the first search — finds nothing, because the user
+	// has not picked yet at that point.
+	var picks int
+	var pickedAt time.Time
+	s.env.OnActivity("GetPickedCandidate", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ int64) (storage.Candidate, error) {
+			picks++
+			if picks < 2 {
+				return storage.Candidate{}, noSuchCandidateErr()
+			}
+			pickedAt = s.env.Now()
+			return picked, nil
+		})
+	s.expectNoise()
+	s.expectPlexAbsent()
+
+	in := movieInput()
+	in.Spec.Year = s.env.Now().Year() - 1
+
+	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
+		Return(SearchResult{
+			Considered:    3,
+			Summary:       "nothing acceptable",
+			Candidates:    1,
+			CandidatesNew: true,
+		}, nil)
+
+	s.env.OnActivity("AddTorrent", mock.Anything, mock.Anything).
+		Return(AddTorrentResult{Hash: "signalled1"}, nil)
+	s.env.OnActivity("CheckDownload", mock.Anything, mock.Anything).
+		Return(CheckDownloadResult{State: DownloadDone, Hash: "signalled1"}, nil)
+
+	// The request is asleep in a one-hour backoff. Half an hour in, the
+	// user picks a release and the interface signals the workflow.
+	s.env.RegisterDelayedCallback(func() {
+		s.env.SignalWorkflow(SignalPick, nil)
+	}, 30*time.Minute)
+
+	start := s.env.Now()
+	s.env.ExecuteWorkflow(Workflow, in)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var result Result
+	s.NoError(s.env.GetWorkflowResult(&result))
+	s.Equal(storage.StateCompleted, result.Outcome)
+	s.Require().False(pickedAt.IsZero(), "the pick was never taken")
+	s.True(pickedAt.Sub(start) < time.Hour,
+		"the request waited out its backoff instead of reacting to the pick: picked at %s", pickedAt.Sub(start))
+}
+
+// TestManualModeNotEnteredForRecentMedia — the manual-mode gate is
+// "released more than two years ago". A 2025 spec in 2026 is recent
+// (2025 > 2024), so the workflow falls through to the normal backoff
+// and never enters the manual state.
+//
+// The list of candidates is still there for the user to pick from — that
+// is the point of the feature — but the request does not sit waiting for
+// the pick, because for recent media the auto-selector is the more useful
+// of the two.
 func (s *WorkflowSuite) TestManualModeNotEnteredForRecentMedia() {
 	s.expectNoise()
 	s.expectPlexAbsent()
@@ -1110,7 +1248,12 @@ func (s *WorkflowSuite) TestManualModeNotEnteredForRecentMedia() {
 	s.env.OnActivity("SearchReleases", mock.Anything, mock.Anything).
 		Return(func(_ context.Context, _ SearchInput) (SearchResult, error) {
 			searches++
-			return SearchResult{Considered: 3, Summary: "nothing acceptable"}, nil
+			return SearchResult{
+				Considered:    3,
+				Summary:       "nothing acceptable",
+				Candidates:    2,
+				CandidatesNew: searches == 1,
+			}, nil
 		})
 
 	s.env.ExecuteWorkflow(Workflow, in)
@@ -1135,13 +1278,9 @@ func (s *WorkflowSuite) TestManualModeNotEnteredForRecentMedia() {
 // The test sets StartManualSince to 15 days ago and StartPhase to
 // StateManual, so the workflow is already inside the wait at
 // t=0. The first poll in manualPhase sees now - ManualSince > 14d
-// and runs the timeout path. A second FetchCandidates returning
-// zero lets the loop exit through the deadline rather than entering
-// manual mode again.
+// and runs the timeout path.
 func (s *WorkflowSuite) TestManualModeTimeoutResetsToPending() {
 	// Registered first so the noise stub does not shadow it.
-	s.env.OnActivity("FetchCandidates", mock.Anything, mock.Anything).
-		Return([]storage.Candidate{}, nil).Maybe()
 	s.env.OnActivity("ClearCandidates", mock.Anything, mock.Anything).
 		Return(func(_ context.Context, _ int64) error { return nil }).Maybe()
 	s.expectNoise()

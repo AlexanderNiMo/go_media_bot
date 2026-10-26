@@ -34,6 +34,17 @@ const (
 	// QueryState reports the workflow's own view of a request. It is answered
 	// from workflow state and cannot change it.
 	QueryState = "state"
+
+	// SignalPick wakes a sleeping request because the user chose a release
+	// from the candidate list.
+	//
+	// The signal carries no payload: the choice itself lives in the
+	// database, written by the web UI or the bot before the signal is
+	// sent. The signal is only the knock on the door — without it a
+	// request that found nothing would sit out the rest of its backoff
+	// ladder, an hour and then a day and then a day again, before it
+	// noticed a pick made minutes after the search that produced the list.
+	SignalPick = "pick"
 )
 
 // Policy is the retry and timing policy a workflow runs under.
@@ -287,19 +298,6 @@ type SearchInput struct {
 	OngoingThread string
 }
 
-// StoreCandidatesInput hands a freshly-fetched candidate list to the
-// persistence layer.
-//
-// Fetched in FetchCandidates and persisted in a separate activity so
-// the activity boundary carries the slice, not the workflow: the
-// list is too large for the workflow's event history in some
-// realistic cases (hundreds of rejected releases, each with a
-// magnet URI), and the activity boundary is the right cut.
-type StoreCandidatesInput struct {
-	RequestID  int64
-	Candidates []storage.Candidate
-}
-
 // SearchResult is the outcome of one search.
 type SearchResult struct {
 	// Chosen is the release to download. Nil means nothing acceptable was
@@ -312,6 +310,19 @@ type SearchResult struct {
 	Considered int
 	Summary    string
 	Rejections []Rejection
+
+	// Candidates is how many releases the user can pick from: the ones the
+	// selector refused, with the reason. The list itself is persisted by
+	// the search activity and never travels through the workflow's event
+	// history — a hundred releases with a magnet URI each would bloat
+	// every fruitless search of every request.
+	Candidates int
+
+	// CandidatesNew reports that this search is the one that put the list
+	// there. The workflow announces the list once, when it first appears:
+	// the list is refreshed on every fruitless search, and an announcement
+	// per search would be a notification per hour for two years.
+	CandidatesNew bool
 }
 
 // Found reports whether a release was selected.

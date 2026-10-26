@@ -33,7 +33,6 @@ set -euo pipefail
 
 readonly namespace="${TEMPORAL_NAMESPACE:-mediad}"
 readonly outdir="internal/request/testdata/histories"
-readonly compose_service="${COMPOSE_SERVICE:-temporal-namespace-setup}"
 
 if [ $# -eq 0 ]; then
     echo "usage: $0 <workflow-id> [<workflow-id> ...]" >&2
@@ -50,13 +49,17 @@ fi
 
 mkdir -p "$outdir"
 
-# The Temporal CLI lives in the admin-tools image, which is the same one the
-# namespace setup uses. Reusing it avoids requiring a local install.
+# The Temporal CLI lives in the admin-tools image. The compose service that
+# creates the namespace is a different, hand-built image with a single static
+# binary in it, so the CLI has to come from admin-tools — and it has to join
+# the compose network the Temporal server is on, which is the one named in
+# the compose file rather than the default one compose creates.
 run_temporal() {
-    docker compose run --rm --no-deps \
+    docker run --rm \
+        --network "${TEMPORAL_NETWORK:-mediad}" \
         --entrypoint temporal \
-        -e TEMPORAL_ADDRESS=temporal:7233 \
-        "$compose_service" "$@"
+        "${TEMPORAL_CLI_IMAGE:-temporalio/admin-tools:1.31.0}" \
+        --address temporal:7233 "$@"
 }
 
 for id in "$@"; do
