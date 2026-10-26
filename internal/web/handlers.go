@@ -69,6 +69,25 @@ func (f dashboardFilter) activeStatesForTemplate() []storage.State {
 	return applyActiveSubset(all, f.ActiveSubs)
 }
 
+// MirrorStates reports the state pills that are checked.
+//
+// The dashboard's two filter forms each mirror the other's controls, and
+// the pills live in the Active block's form. This is what the shared
+// filters' form has to carry to keep the selection across a submission.
+//
+// An empty subset means "no filter" — every state is visible and every
+// pill is checked — so the mirror is every active state.
+func (f dashboardFilter) MirrorStates() []storage.State {
+	if len(f.ActiveSubs) == 0 {
+		return storage.ActiveStates()
+	}
+	out := make([]storage.State, 0, len(f.ActiveSubs))
+	for _, s := range f.ActiveSubs {
+		out = append(out, storage.State(s))
+	}
+	return out
+}
+
 // ActiveFragmentQS is the "?q=...&state=...&type=...&sort=..." query the
 // dashboard builds into the htmx poll URL so the fragment follows the same
 // filter as the page it sits inside. Since is intentionally dropped here:
