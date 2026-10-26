@@ -82,16 +82,20 @@
 
 <h3>Ручной релиз</h3>
 <p class="muted">
-  Индексатор не помог? Вставьте magnet-ссылку или URL .torrent — workflow
-  скачает её вместо того, что искал. Оставьте поле пустым, чтобы вернуться
-  к обычному поиску.
+  Индексатор не помог? Прикрепите релиз вручную: вставьте magnet-ссылку или
+  загрузите файл .torrent — из него получится magnet с трекерами, и workflow
+  скачает его вместо того, что искал. Оставьте оба поля пустыми, чтобы
+  вернуться к обычному поиску.
 </p>
-<form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/manual" class="stack">
+<form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/manual" enctype="multipart/form-data" class="stack">
   <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-  <label>Ссылка
-    <input type="text" name="link" value="{{.SelectedLink}}" placeholder="magnet:?xt=… или https://…/file.torrent">
+  <label>Magnet-ссылка
+    <input type="text" name="link" value="{{.SelectedLink}}" placeholder="magnet:?xt=urn:btih:…">
   </label>
-  <button type="submit" class="small">{{if .SelectedLink}}Обновить ссылку{{else}}Отправить ссылку{{end}}</button>
+  <label>Файл .torrent
+    <input type="file" name="torrent" accept=".torrent">
+  </label>
+  <button type="submit" class="small">{{if .SelectedLink}}Обновить релиз{{else}}Прикрепить релиз{{end}}</button>
 </form>
 {{if .SelectedLink}}
   <p class="muted">Текущая ссылка: <span class="mono">{{.SelectedLink}}</span></p>

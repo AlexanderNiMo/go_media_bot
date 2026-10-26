@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -319,12 +320,12 @@ func (s *Store) SetMediaYear(ctx context.Context, mediaID int64, year int) error
 // SetSelectedLink records a user-submitted torrent link on a request.
 //
 // Empty link clears the field. Used by the manual-release path on the
-// request page: an admin or the request's owner pastes a magnet or
-// .torrent URL, the workflow picks it up, and the field stays empty on
-// the next ContinueAsNew.
+// request page: an admin or the request's owner attaches a magnet or a
+// .torrent file, the web UI turns either into a link, the workflow picks it
+// up, and the field stays empty on the next ContinueAsNew.
 func (s *Store) SetSelectedLink(ctx context.Context, requestID int64, link string) error {
 	if link != "" && !isValidManualLink(link) {
-		return fmt.Errorf("not a magnet or http(s) .torrent URL")
+		return fmt.Errorf("not a magnet or an http(s) link to a torrent")
 	}
 	var linkArg any
 	if link == "" {
@@ -340,16 +341,36 @@ func (s *Store) SetSelectedLink(ctx context.Context, requestID int64, link strin
 	return nil
 }
 
-// isValidManualLink accepts the same two forms the torrent client accepts:
-// a magnet URI or an http(s) URL pointing at a .torrent file.
+// isValidManualLink accepts the link forms the torrent client can act on:
+// a magnet URI, or an http(s) URL pointing at a .torrent file.
+//
+// A tracker link is not one of them: rutracker's
+// https://rutracker.org/forum/dl.php?t=5961950 cannot be fetched without the
+// tracker's session, so the client would download a login page instead of a
+// torrent. The way to give the bot a tracker release is the .torrent file
+// itself, which the web UI turns into a magnet.
 func isValidManualLink(s string) bool {
-	if strings.HasPrefix(s, "magnet:?") {
-		return true
+	trimmed := strings.TrimSpace(s)
+	if strings.HasPrefix(strings.ToLower(trimmed), "magnet:") {
+		// The query is where the info hash lives, so a magnet without one
+		// is a paste mistake rather than a link.
+		return strings.Contains(trimmed, "?")
 	}
-	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+
+	u, err := url.Parse(trimmed)
+	if err != nil {
 		return false
 	}
-	return strings.HasSuffix(s, ".torrent") || strings.Contains(s, ".torrent?")
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return false
+	}
+	if u.Host == "" {
+		return false
+	}
+
+	return strings.HasSuffix(strings.ToLower(u.Path), ".torrent")
 }
 
 // PopSelectedLink atomically reads and clears the manual-release link on

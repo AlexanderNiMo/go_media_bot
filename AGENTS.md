@@ -58,6 +58,7 @@ internal/
   plex/                TMDB-and-Plex matchers
   tmdb/                client
   qbit/                qBittorrent client
+  torrentfile/         .torrent parser: info hash + trackers → magnet URI
   storage/             pgx pool, migrations, projection view
   request/             Temporal workflow + activities + replay corpus
   temporalx/           fx options for Temporal connectivity
