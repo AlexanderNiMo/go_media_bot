@@ -3,6 +3,8 @@ package web
 import (
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +17,7 @@ import (
 	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
 	"github.com/alex/mediad/internal/tmdb"
+	"github.com/alex/mediad/internal/torrentfile"
 )
 
 // ---------------------------------------------------------------------------
@@ -1025,15 +1028,27 @@ func pathID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 }
 
-// handleManualRelease accepts a user-submitted torrent link.
+// maxTorrentUpload bounds an uploaded .torrent file.
 //
-// The link is stored on the request row in selected_link; the workflow
-// picks it up on its next poll and calls AddTorrent with it. The
-// workflow is the only place that can actually start the download —
-// running qBittorrent's AddTorrent here would race with the workflow's
-// own add and leave two rows tagged with the same request id.
+// A torrent file is metadata: a few kilobytes for a film, a megabyte or two
+// for a release with thousands of files. Anything larger is not a torrent
+// file, and reading it into memory would be the wrong way to find that out.
+const maxTorrentUpload = 4 << 20
+
+// handleManualRelease accepts a user-submitted release.
+//
+// The release arrives either as a magnet link or as an uploaded .torrent
+// file. The file is turned into a magnet here, so that everything downstream
+// — the workflow, the audit trail, the download client — only ever deals
+// with links.
+//
+// The link is stored on the request row in selected_link; the workflow picks
+// it up on its next poll and calls AddTorrent with it. The workflow is the
+// only place that can actually start the download — running qBittorrent's
+// AddTorrent here would race with the workflow's own add and leave two rows
+// tagged with the same request id.
 func (s *Server) handleManualRelease(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
+	if err := parseForm(r); err != nil {
 		http.Error(w, "не разобрать форму", http.StatusBadRequest)
 		return
 	}
@@ -1045,17 +1060,87 @@ func (s *Server) handleManualRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	link := strings.TrimSpace(r.PostFormValue("link"))
+	uploaded := false
+
+	// A file wins over the text field: a browser sends the text field
+	// prefilled with the link that is already attached, so the field is
+	// rarely empty and never says what the user just picked.
+	if file := uploadedTorrent(r); file != nil {
+		magnet, err := magnetFromTorrent(file)
+		if err != nil {
+			s.flash(w, r, "Файл не похож на торент: "+err.Error(), "bad")
+			s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+			return
+		}
+		link = magnet
+		uploaded = true
+	}
+
 	if err := s.store.SetSelectedLink(r.Context(), id, link); err != nil {
 		s.flash(w, r, "Ссылка не подходит: "+err.Error(), "bad")
 		s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 		return
 	}
-	if link == "" {
+
+	switch {
+	case link == "":
 		s.flash(w, r, "Ручной релиз снят.", "ok")
-	} else {
+	case uploaded:
+		s.flash(w, r, "Файл принят. Workflow подхватит его на ближайшем тике.", "ok")
+	default:
 		s.flash(w, r, "Ссылка сохранена. Workflow подхватит её на ближайшем тике.", "ok")
 	}
 	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+}
+
+// uploadedTorrent returns the .torrent file the request carries, if any.
+//
+// A file input with nothing chosen sends an empty part, which the multipart
+// parser treats as a value rather than a file — so an untouched input does
+// not show up here.
+func uploadedTorrent(r *http.Request) *multipart.FileHeader {
+	if r.MultipartForm == nil {
+		return nil
+	}
+	files := r.MultipartForm.File["torrent"]
+	if len(files) == 0 {
+		return nil
+	}
+	return files[0]
+}
+
+// magnetFromTorrent reads an uploaded .torrent file and returns the magnet
+// URI it describes.
+//
+// The magnet carries the announce URLs from the file, which is what makes it
+// work on a private tracker: without them the client has no way in but the
+// DHT, and a private tracker is not on the DHT.
+func magnetFromTorrent(fh *multipart.FileHeader) (string, error) {
+	if fh.Size > maxTorrentUpload {
+		return "", fmt.Errorf("the file is %d bytes, over the %d byte limit", fh.Size, maxTorrentUpload)
+	}
+
+	f, err := fh.Open()
+	if err != nil {
+		return "", fmt.Errorf("open the uploaded file: %w", err)
+	}
+	defer f.Close()
+
+	// Read one byte past the limit, so a file that lies about its size is
+	// caught here rather than truncated into a torrent that parses.
+	data, err := io.ReadAll(io.LimitReader(f, maxTorrentUpload+1))
+	if err != nil {
+		return "", fmt.Errorf("read the uploaded file: %w", err)
+	}
+	if len(data) > maxTorrentUpload {
+		return "", fmt.Errorf("the file is over the %d byte limit", maxTorrentUpload)
+	}
+
+	magnet, err := torrentfile.MagnetURI(data)
+	if err != nil {
+		return "", err
+	}
+	return magnet, nil
 }
 
 // handlePickCandidate marks a candidate as picked and wakes the request.

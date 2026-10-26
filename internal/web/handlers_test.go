@@ -1,11 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -209,6 +211,46 @@ func (c *client) post(path string, form url.Values) *http.Response {
 	form.Set(csrfField, c.csrfToken())
 
 	resp, err := c.http.PostForm(c.srv.URL+path, form)
+	if err != nil {
+		c.t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+// postMultipart submits a form carrying a file.
+//
+// The multipart case is not the urlencoded one: the csrf token travels in
+// the same body as the file, and a body read as a urlencoded form carries
+// neither the token nor the file.
+func (c *client) postMultipart(path, fileName string, file []byte) *http.Response {
+	c.t.Helper()
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+
+	if err := mw.WriteField(csrfField, c.csrfToken()); err != nil {
+		c.t.Fatalf("write the csrf field: %v", err)
+	}
+	if fileName != "" {
+		fw, err := mw.CreateFormFile("torrent", fileName)
+		if err != nil {
+			c.t.Fatalf("create the form file: %v", err)
+		}
+		if _, err := fw.Write(file); err != nil {
+			c.t.Fatalf("write the form file: %v", err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		c.t.Fatalf("close the multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.srv.URL+path, &body)
+	if err != nil {
+		c.t.Fatalf("build the request: %v", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := c.http.Do(req)
 	if err != nil {
 		c.t.Fatalf("POST %s: %v", path, err)
 	}
@@ -1343,5 +1385,94 @@ func TestSettingsTelegramTabLinksToBot(t *testing.T) {
 	if !strings.Contains(body, "@mediad_dev_bot") {
 		t.Errorf("the link-instruction does not show the @handle; rendered body:\n%s",
 			truncateForTest(body, 600))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manual release
+// ---------------------------------------------------------------------------
+
+// A minimal .torrent file: one announce, one 1024-byte file.
+//
+// The hash is the SHA-1 of the info dictionary as it is written here, and it
+// is what the magnet the handler builds has to carry.
+const (
+	torrentFileFixture = `d8:announce25:http://tracker/a/announce4:infod6:lengthi1024e4:name8:test.txt12:piece lengthi16384e6:pieces20:01234567890123456789eee`
+	torrentFileMagnet  = "magnet:?xt=urn:btih:4509e0512e22c9023ae6bd39dc46374461319617" +
+		"&dn=test.txt&tr=http%3A%2F%2Ftracker%2Fa%2Fannounce"
+)
+
+func TestManualReleaseAcceptsATorrentFile(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+	rid := seedRequest(t, store, storage.StatePending)
+
+	resp := c.postMultipart(fmt.Sprintf("/requests/%d/manual", rid),
+		"release.torrent", []byte(torrentFileFixture))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the upload returned %d", resp.StatusCode)
+	}
+
+	req, err := store.GetRequest(context.Background(), rid)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if req.SelectedLink != torrentFileMagnet {
+		t.Errorf("selected_link = %q, want %q", req.SelectedLink, torrentFileMagnet)
+	}
+}
+
+func TestManualReleaseRefusesAFileThatIsNotATorrent(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+	rid := seedRequest(t, store, storage.StatePending)
+
+	resp := c.postMultipart(fmt.Sprintf("/requests/%d/manual", rid),
+		"notes.txt", []byte("this is not a torrent"))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the upload returned %d", resp.StatusCode)
+	}
+
+	req, err := store.GetRequest(context.Background(), rid)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if req.SelectedLink != "" {
+		t.Errorf("selected_link = %q, want it empty", req.SelectedLink)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the body: %v", err)
+	}
+	if !strings.Contains(string(body), "не похож на торент") {
+		t.Errorf("the page does not say what was wrong with the file:\n%s",
+			truncateForTest(string(body), 600))
+	}
+}
+
+func TestManualReleaseAcceptsAMagnet(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+	rid := seedRequest(t, store, storage.StatePending)
+
+	magnet := "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+	resp := c.post(fmt.Sprintf("/requests/%d/manual", rid), url.Values{"link": {magnet}})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the post returned %d", resp.StatusCode)
+	}
+
+	req, err := store.GetRequest(context.Background(), rid)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if req.SelectedLink != magnet {
+		t.Errorf("selected_link = %q, want %q", req.SelectedLink, magnet)
 	}
 }

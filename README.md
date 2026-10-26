@@ -589,7 +589,7 @@ closed and accounts exist only by invite.
 | Dashboard | what is being downloaded right now, with a progress bar that updates every three seconds |
 | Search | TMDB search, then a season picker for a series, then a confirmation |
 | Requests | everything, filterable by state |
-| One request | the release, the torrent, the deadlines, and the audit trail |
+| One request | the release, the torrent, the deadlines, the audit trail, and a release you attach by hand |
 | Notifications | the same rows the Telegram bot delivers from |
 | Settings | password change; invites and users for an administrator |
 
@@ -627,9 +627,30 @@ stops being true. A test walks every rendered page and fails if a POST form has
 no token, because the failure mode is a form that is rejected at submit and
 looks like a broken button.
 
+The token is read from the body the form was sent as, and a form with a file
+in it is multipart — which `ParseForm` does not read at all. A check that
+looked for the token in a multipart body would find nothing and refuse every
+upload, so the form is parsed the way it arrived.
+
 **Binding to the network over plain HTTP logs a warning.** It is a warning and
 not a refusal because running behind a reverse proxy that terminates TLS is
 normal, and the point is that doing it by accident is visible.
+
+**A release attached by hand.** When the indexer finds nothing, the request
+page takes the release directly: a magnet link, or a `.torrent` file. The file
+is parsed in the interface — the info hash becomes the magnet, and the
+announce URLs inside the file travel with it, because a private tracker is
+not on the DHT and a magnet without them finds no peers.
+
+A tracker link is refused. `rutracker.org/forum/dl.php?t=…` sits behind the
+tracker's session, and the download client has none — handed that link it
+would fetch the login page and call it a torrent. The file is the thing that
+can be passed on.
+
+**The file is parsed into a magnet rather than handed to the client.** Only
+qBittorrent 5.0 and later accept a torrent file, and a magnet works on every
+version. The trackers from the file are the reason this is not a downgrade:
+without them the magnet would be a hash and nothing else.
 
 ### Two things the interface will not do
 

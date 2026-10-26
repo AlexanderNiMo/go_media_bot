@@ -33,6 +33,18 @@ const (
 	// keeps a message of many short runes from being cut mid-character.
 	flashMaxBytes = 2000
 	flashMaxRunes = 400
+
+	// maxRequestBody bounds the body of a state-changing request.
+	//
+	// Every form here is a handful of fields, apart from the one that
+	// carries a .torrent file. The limit is well above what a torrent file
+	// needs and well below what a body could be used to exhaust memory
+	// with.
+	maxRequestBody = 8 << 20
+
+	// maxFormMemory is how much of a multipart form is kept in memory; the
+	// rest spills to a temporary file.
+	maxFormMemory = 4 << 20
 )
 
 // truncateRunes shortens a message on a rune boundary.
@@ -80,11 +92,18 @@ func (s *Server) sessions(next http.Handler) http.Handler {
 		// Only state-changing methods are checked. A GET that changes
 		// something would be a worse bug than a missing token, and requiring
 		// one on every link would mean threading it through every href.
-		if isUnsafe(r.Method) && !s.csrfOK(r) {
-			s.log.Warn("rejected a form without a valid csrf token",
-				"path", r.URL.Path, "method", r.Method, "remote", r.RemoteAddr)
-			http.Error(w, "the form expired; go back and try again", http.StatusForbidden)
-			return
+		if isUnsafe(r.Method) {
+			// The body is bounded before anything reads it: the token check
+			// below parses the form, and an unbounded body would be read
+			// into memory before the handler ever sees it.
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+
+			if !s.csrfOK(r) {
+				s.log.Warn("rejected a form without a valid csrf token",
+					"path", r.URL.Path, "method", r.Method, "remote", r.RemoteAddr)
+				http.Error(w, "the form expired; go back and try again", http.StatusForbidden)
+				return
+			}
 		}
 
 		if cookie, err := r.Cookie(sessionCookie); err == nil && cookie.Value != "" {
@@ -191,7 +210,7 @@ func (s *Server) csrfOK(r *http.Request) bool {
 	}
 
 	var submitted string
-	if err := r.ParseForm(); err == nil {
+	if err := parseForm(r); err == nil {
 		submitted = r.PostFormValue(csrfField)
 	}
 	if submitted == "" {
@@ -199,6 +218,22 @@ func (s *Server) csrfOK(r *http.Request) bool {
 	}
 
 	return subtle.ConstantTimeCompare([]byte(submitted), []byte(cookie.Value)) == 1
+}
+
+// parseForm reads the form body, whichever way it was sent.
+//
+// A form carrying a .torrent file is multipart, and ParseForm does not look
+// at a multipart body at all: it leaves the file and the fields beside it
+// unread. The csrf token in such a form would come back empty and every
+// upload would be refused as a form without a token.
+//
+// ParseMultipartForm reads both the file and the fields, and it calls
+// ParseForm itself for a urlencoded body, so one helper covers both.
+func parseForm(r *http.Request) error {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		return r.ParseMultipartForm(maxFormMemory)
+	}
+	return r.ParseForm()
 }
 
 func isUnsafe(method string) bool {
