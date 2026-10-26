@@ -1039,13 +1039,18 @@ func (s *Server) handleManualRelease(w http.ResponseWriter, r *http.Request) {
 	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 }
 
-// handlePickCandidate marks a candidate as picked. The workflow polls
-// request_candidates.picked_at on its next tick and treats the first
-// row with a non-null picked_at as the user's choice.
+// handlePickCandidate marks a candidate as picked and wakes the request.
 //
-// MarkPicked only sets a timestamp; the row is deleted by the workflow
-// (via ClearCandidates) once the picked release is consumed. The
-// partial index on picked_at keeps the workflow's poll cheap.
+// The choice is written to the database first; the signal that follows only
+// tells the workflow that there is something to look at. The signal is what
+// makes the choice take effect in seconds rather than at the request's next
+// scheduled tick, which for a request deep in its backoff ladder is a day
+// away.
+//
+// A signal that does not arrive is not a lost choice: the pick is in the
+// database, and the workflow reads it on its next tick whatever happens. So
+// a failure here is logged and the user is told the request will pick it up
+// shortly — never that the choice was lost.
 func (s *Server) handlePickCandidate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "не разобрать форму", http.StatusBadRequest)
@@ -1073,7 +1078,15 @@ func (s *Server) handlePickCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.flash(w, r, "Выбрано. Workflow подхватит на ближайшем тике.", "ok")
+	if err := s.req.SignalPick(r.Context(), id); err != nil {
+		s.log.Warn("could not wake the workflow for a picked candidate",
+			"request", id, "rank", rank, "error", err)
+		s.flash(w, r, "Выбрано. Workflow подхватит на ближайшем тике.", "ok")
+		s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+		return
+	}
+
+	s.flash(w, r, "Выбрано. Загрузка начнётся через несколько секунд.", "ok")
 	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 }
 

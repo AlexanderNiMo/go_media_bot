@@ -68,6 +68,10 @@ func newTemplates() (*templates, error) {
 		// surfaces in the rendered page rather than silently rewriting URLs.
 		"path":      pathFunc,
 		"hasString": hasString,
+		// bytes renders a file size the way a person reads it. The raw
+		// byte count is what the database holds and what a script wants;
+		// the page is read by people.
+		"bytes": humanBytes,
 	}
 
 	t := &templates{set: make(map[string]*template.Template, len(pageNames))}

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/alex/mediad/internal/config"
+	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
 )
 
@@ -84,13 +86,43 @@ func newTestServer(t *testing.T) (*Server, *storage.Store) {
 			Server: config.Server{Listen: "127.0.0.1:0", BaseURL: "http://localhost"},
 		},
 		store:   store,
-		req:     nil, // only the routes that do not start workflows are exercised
+		req:     &stubRequests{},
 		tmdb:    nil,
 		tmpl:    mustTemplates(t),
 		log:     slog.New(slog.DiscardHandler),
 		version: "test",
 	}
 	return s, store
+}
+
+// stubRequests stands in for the workflow service.
+//
+// The pick route signals the workflow so the choice takes effect at once
+// rather than at the request's next scheduled tick. A nil service there
+// would be a nil dereference — and on this machine that hangs instead of
+// failing, so the test would sit there until the suite timed out rather
+// than saying what was wrong.
+type stubRequests struct {
+	signaled []int64
+	err      error
+}
+
+func (s *stubRequests) StartRequest(context.Context, request.StartInput) (*request.StartResult, error) {
+	return nil, errors.New("the web tests do not start workflows")
+}
+
+func (s *stubRequests) Cancel(context.Context, int64) error { return nil }
+
+func (s *stubRequests) Retry(context.Context, request.RetryInput) (*storage.Request, error) {
+	return nil, nil
+}
+
+func (s *stubRequests) SignalPick(_ context.Context, requestID int64) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.signaled = append(s.signaled, requestID)
+	return nil
 }
 
 func dropDatabase(adminDSN, name string) {
@@ -1004,6 +1036,59 @@ func TestRequestPickCandidate(t *testing.T) {
 		}
 		if picked[0].Rank != 2 {
 			t.Errorf("picked rank = %d, want 2", picked[0].Rank)
+		}
+	})
+
+	t.Run("wakes the request", func(t *testing.T) {
+		// The signal is what makes the choice take effect in seconds
+		// rather than at the request's next scheduled tick, which for a
+		// request deep in its backoff ladder is a day away.
+		stub, ok := s.req.(*stubRequests)
+		if !ok {
+			t.Fatal("the test server has no request stub")
+		}
+		before := len(stub.signaled)
+
+		resp := c.post("/requests/"+strconv.FormatInt(id, 10)+"/pick",
+			url.Values{"rank": {"1"}})
+		defer resp.Body.Close()
+
+		if len(stub.signaled) != before+1 {
+			t.Errorf("the request was woken %d times, want %d", len(stub.signaled)-before, before+1)
+		}
+		if last := stub.signaled[len(stub.signaled)-1]; last != id {
+			t.Errorf("woke request %d, want %d", last, id)
+		}
+	})
+
+	t.Run("a signal that fails keeps the choice", func(t *testing.T) {
+		// The pick is in the database before the signal is sent, so a
+		// signal that does not arrive costs time and not the choice. The
+		// user is told the request will pick it up on the next tick —
+		// never that the choice was lost.
+		stub := s.req.(*stubRequests)
+		stub.err = errors.New("temporal is unreachable")
+		defer func() { stub.err = nil }()
+
+		resp := c.post("/requests/"+strconv.FormatInt(id, 10)+"/pick",
+			url.Values{"rank": {"1"}})
+		defer resp.Body.Close()
+
+		if loc := resp.Request.URL.Path; loc != "/requests/"+strconv.FormatInt(id, 10) {
+			t.Errorf("landed on %s, want /requests/%d", loc, id)
+		}
+		list, err := store.ListCandidates(ctx, id)
+		if err != nil {
+			t.Fatalf("list candidates: %v", err)
+		}
+		var picked int
+		for _, c := range list {
+			if c.PickedAt != nil {
+				picked++
+			}
+		}
+		if picked != 2 {
+			t.Errorf("picked rows = %d, want 2 (the choice survives a signal that failed)", picked)
 		}
 	})
 

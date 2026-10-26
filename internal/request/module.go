@@ -272,6 +272,7 @@ type workflowClient interface {
 	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow any, args ...any) (client.WorkflowRun, error)
 	CancelWorkflow(ctx context.Context, workflowID, runID string) error
 	QueryWorkflow(ctx context.Context, workflowID, runID, queryType string, args ...any) (converter.EncodedValue, error)
+	SignalWorkflow(ctx context.Context, workflowID, runID, signalName string, arg any) error
 }
 
 // startRun starts one execution of the request workflow.
@@ -594,6 +595,31 @@ func (s *Service) Cancel(ctx context.Context, requestID int64) error {
 	// The projection is updated by the workflow itself as it unwinds, so the
 	// row will show "canceled" once the compensation has run. Writing it here
 	// as well would race with that.
+	return nil
+}
+
+// SignalPick wakes a request because the user chose a release from the
+// candidate list.
+//
+// The choice itself is already in the database when this is called; the
+// signal only tells the workflow that something happened, so that it stops
+// waiting out the rest of its backoff ladder and looks.
+//
+// A request that is no longer running is not an error: the pick stays in
+// the database, and a request that comes back — a retry, a restart — will
+// find it on its next tick. The signal is an optimisation, never the only
+// path to the choice.
+func (s *Service) SignalPick(ctx context.Context, requestID int64) error {
+	req, err := s.store.GetRequest(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	if !req.State.Active() {
+		return fmt.Errorf("request %d is already %s", requestID, req.State)
+	}
+	if err := s.temporal.SignalWorkflow(ctx, req.WorkflowID, "", SignalPick, nil); err != nil {
+		return fmt.Errorf("signal the workflow for request %d: %w", requestID, err)
+	}
 	return nil
 }
 

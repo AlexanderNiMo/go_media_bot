@@ -1313,6 +1313,97 @@ func TestMarkPickedOnEmptyList(t *testing.T) {
 	}
 }
 
+// TestStoreCandidatesKeepsAPick — a fresher list must not wipe the
+// choice the user already made.
+//
+// The list is replaced on every fruitless search, and the marked row is
+// one of the rows that replace would delete. The choice is the one thing
+// on this table the user did on purpose, so it outranks the list: the
+// store leaves the table alone while a pick is pending.
+//
+// The window this protects is narrow in the happy path — the workflow
+// takes the pick within seconds of the signal — and wide when the signal
+// did not arrive: the request then sleeps out its backoff ladder, and a
+// search in the meantime would otherwise delete the choice.
+func TestStoreCandidatesKeepsAPick(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+	uid := insertUser(t, pool, "alex")
+	rid := insertTestRequest(t, pool, ctx, store, uid, "tv-3-s1", 9999)
+
+	first := []Candidate{
+		{Rank: 1, Title: "Release A", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 1024, Seeders: 5, RejectionReason: "russian_audio"},
+		{Rank: 2, Title: "Release B", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2048, Seeders: 3, RejectionReason: "size_under"},
+	}
+	if err := store.StoreCandidates(ctx, rid, first); err != nil {
+		t.Fatalf("StoreCandidates: %v", err)
+	}
+	if _, err := store.MarkPicked(ctx, rid, 2); err != nil {
+		t.Fatalf("MarkPicked: %v", err)
+	}
+
+	// A later search brings a different list. The pick survives it.
+	second := []Candidate{
+		{Rank: 1, Title: "Other release", Indexer: "rutor", InfoHash: "h9", MagnetLink: "magnet:?xt=9", SizeBytes: 512, Seeders: 1, RejectionReason: "quality"},
+	}
+	if err := store.StoreCandidates(ctx, rid, second); err != nil {
+		t.Fatalf("StoreCandidates (refresh): %v", err)
+	}
+
+	picked, err := store.GetPickedCandidate(ctx, rid)
+	if err != nil {
+		t.Fatalf("the pick did not survive the refresh: %v", err)
+	}
+	if picked.Rank != 2 || picked.Title != "Release B" {
+		t.Errorf("the pick is now rank %d %q, want 2/\"Release B\"", picked.Rank, picked.Title)
+	}
+
+	// With the pick consumed, the next list replaces the old one as
+	// usual.
+	if err := store.ClearCandidates(ctx, rid); err != nil {
+		t.Fatalf("ClearCandidates: %v", err)
+	}
+	if err := store.StoreCandidates(ctx, rid, second); err != nil {
+		t.Fatalf("StoreCandidates (after clear): %v", err)
+	}
+	got, _ := store.ListCandidates(ctx, rid)
+	if len(got) != 1 || got[0].Title != "Other release" {
+		t.Errorf("after clear, list = %v, want the new list", got)
+	}
+}
+
+// TestCountCandidates — the count is what the workflow asks to find out
+// whether there is a list at all, and whether this search is the one that
+// put it there.
+func TestCountCandidates(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+	uid := insertUser(t, pool, "alex")
+	rid := insertTestRequest(t, pool, ctx, store, uid, "tv-4-s1", 9999)
+
+	n, err := store.CountCandidates(ctx, rid)
+	if err != nil {
+		t.Fatalf("CountCandidates on empty: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountCandidates on empty = %d, want 0", n)
+	}
+
+	if err := store.StoreCandidates(ctx, rid, []Candidate{
+		{Rank: 1, Title: "A", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 1, Seeders: 1, RejectionReason: "quality"},
+		{Rank: 2, Title: "B", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2, Seeders: 1, RejectionReason: "quality"},
+	}); err != nil {
+		t.Fatalf("StoreCandidates: %v", err)
+	}
+	n, err = store.CountCandidates(ctx, rid)
+	if err != nil {
+		t.Fatalf("CountCandidates: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("CountCandidates = %d, want 2", n)
+	}
+}
+
 // insertTestRequest creates a request the candidate tests can attach
 // candidates to. It exists in this file rather than the shared
 // helpers because the other tests build their requests through

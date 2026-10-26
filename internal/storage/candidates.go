@@ -40,21 +40,41 @@ type Candidate struct {
 
 // StoreCandidates replaces the candidate list for a request.
 //
-// The list is overwritten on every entry into the manual state: a fresh
-// search may have surfaced a different set, and presenting the most
-// recent one is what the user expects when they sit down to pick. The
-// previous list is gone, the events on the request tell the user which
-// search each list came from.
+// The list is overwritten on every fruitless search: a fresh search may
+// have surfaced a different set, and presenting the most recent one is
+// what the user expects when they sit down to pick. The previous list is
+// gone, the events on the request tell the user which search each list
+// came from.
 //
 // PickedAt is left NULL on every row — it is the user's mark, not the
-// loader's. A row that already has a non-null PickedAt from a prior
-// pick is fine, because StoreCandidates first DELETEs the old list.
+// loader's.
+//
+// A pick the user has already made outranks a fresher list. The marked
+// row is one of the rows the DELETE below removes, so without the guard
+// the choice would disappear with it — and the choice is the one thing on
+// this table that the user did on purpose. The workflow consumes a pick
+// long before the next search, so the guard only matters when the
+// wake-up signal did not arrive and the request is still asleep when the
+// next search runs.
 func (s *Store) StoreCandidates(ctx context.Context, requestID int64, candidates []Candidate) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var picked bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM request_candidates
+			WHERE request_id = $1 AND picked_at IS NOT NULL
+		)
+	`, requestID).Scan(&picked); err != nil {
+		return fmt.Errorf("check for a picked candidate: %w", err)
+	}
+	if picked {
+		return tx.Commit(ctx)
+	}
 
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM request_candidates WHERE request_id = $1`, requestID,
@@ -114,6 +134,23 @@ func (s *Store) ListCandidates(ctx context.Context, requestID int64) ([]Candidat
 		return nil, fmt.Errorf("iterate candidates: %w", err)
 	}
 	return out, nil
+}
+
+// CountCandidates returns how many candidates a request has on offer.
+//
+// The workflow asks this question once per search — "is there anything
+// for the user to pick from?" — and the answer decides whether the
+// request is worth offering a manual list at all. Counting is cheaper
+// than reading the rows, and the count is all the workflow needs to make
+// that decision.
+func (s *Store) CountCandidates(ctx context.Context, requestID int64) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM request_candidates WHERE request_id = $1`, requestID,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count candidates: %w", err)
+	}
+	return n, nil
 }
 
 // MarkPicked sets picked_at on the chosen candidate and returns the row.

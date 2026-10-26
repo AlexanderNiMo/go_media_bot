@@ -272,59 +272,94 @@ func (a *Activities) SearchReleases(ctx context.Context, in SearchInput) (Search
 	if !verdict.Acceptable {
 		log.Info("nothing acceptable in the results", "considered", verdict.Considered,
 			"summary", verdict.Summary())
+		before := a.countCandidates(ctx, in.RequestID)
+		if err := a.storeCandidates(ctx, in.RequestID, verdict); err != nil {
+			// The list is a convenience, not the point of the search. A
+			// storage failure here must not turn a fruitless search into
+			// a failed request — the request simply goes back to sleep
+			// and tries again.
+			log.Warn("could not store the candidate list", "error", err)
+		} else {
+			after := a.countCandidates(ctx, in.RequestID)
+			result.Candidates = after
+			// The list is announced once, when it first appears. The
+			// search that refreshes it afterwards is not news.
+			result.CandidatesNew = before == 0 && after > 0
+		}
 		return result, nil
 	}
 
 	log.Info("release selected", "title", verdict.Chosen.Title,
 		"score", verdict.Score, "audio", verdict.Audio.Describe())
 
+	// A release the selector accepted makes the candidate list stale: it
+	// is a list of what was refused, and the refusal that mattered has
+	// been resolved. Leaving it on the request page would show the user
+	// options for a download that is already under way.
+	//
+	// A pick the user made in the meantime is not stale, though, and it
+	// outranks the release that was found: the user chose that one on
+	// purpose. The list stays until the workflow has taken the pick.
+	if !a.hasPicked(ctx, in.RequestID) {
+		if err := a.store.ClearCandidates(ctx, in.RequestID); err != nil {
+			log.Warn("could not clear the candidate list", "error", err)
+		}
+	}
+
 	chosen := verdict.Chosen
 	result.Chosen = &chosen
 	return result, nil
 }
 
-// FetchCandidates runs the same indexer search and selector pass as
-// SearchReleases and returns every release the selector rejected, with
-// the reason. Used by the manual-pick flow when the search deadline is
-// still in the future but nothing the auto-selector would accept
-// turned up.
+// hasPicked reports whether the user has already marked one of the
+// candidates.
+func (a *Activities) hasPicked(ctx context.Context, requestID int64) bool {
+	_, err := a.store.GetPickedCandidate(ctx, requestID)
+	return err == nil
+}
+
+// storeCandidates persists the releases the selector refused, so the user
+// has something to pick from.
 //
-// The cost is two round-trips per manual entry: this activity runs
-// the indexer again, on top of the SearchReleases call that already
-// returned empty. Indexer caching keeps the second one cheap; the
-// alternative (a state field carrying the full list through workflow
-// events) bloats the event history for every request, not just the
-// ones that go manual, and the wasted cycles are negligible next to the
-// rest of a request's lifetime.
-func (a *Activities) FetchCandidates(ctx context.Context, in SearchInput) ([]storage.Candidate, error) {
-	log := a.logOrDefault().With("request", in.RequestID, "media", in.Spec.Ref.String())
+// It runs inside the search activity on purpose. The rejected list is big —
+// a hundred releases with a magnet URI each — and carrying it out through
+// the activity boundary would put all of it into the workflow's event
+// history, for every request, on every fruitless search. Storing it here
+// keeps it out of the history entirely: the workflow learns only how many
+// candidates there are.
+//
+// The store replaces whatever list was there. A pick the user has already
+// made is preserved by the store itself; see storage.StoreCandidates.
+func (a *Activities) storeCandidates(ctx context.Context, requestID int64, verdict release.Verdict) error {
+	candidates := candidatesFromVerdict(verdict)
+	if len(candidates) == 0 {
+		return nil
+	}
+	return a.store.StoreCandidates(ctx, requestID, candidates)
+}
 
-	req := indexer.ForMedia(in.Spec, categoriesFor(in.Spec), in.Limit)
-	releases, err := a.indexer.Search(ctx, req)
+// candidateCount reports how many candidates the request has on offer.
+//
+// A failure to count is not worth failing the search over: the count only
+// decides how the list is announced, and a list that is there without a
+// count is still a list the user can pick from.
+func (a *Activities) countCandidates(ctx context.Context, requestID int64) int {
+	n, err := a.store.CountCandidates(ctx, requestID)
 	if err != nil {
-		return nil, fmt.Errorf("search indexer: %w", err)
+		a.logOrDefault().Warn("could not count the candidates", "request", requestID, "error", err)
+		return 0
 	}
-	if len(releases) == 0 {
-		return nil, nil
-	}
+	return n
+}
 
-	identities := make([]string, 0, len(releases))
-	for _, r := range releases {
-		identities = append(identities, r.Identity())
-	}
-	blacklist, err := a.store.IsBlacklisted(ctx, identities)
-	if err != nil {
-		// A blacklist that cannot be read must not fail the search: the
-		// worst case is picking a release that was already found wanting,
-		// which the download loop will catch again.
-		log.Warn("could not read the release blacklist", "error", err)
-		blacklist = map[string]bool{}
-	}
-
-	verdict := release.NewSelector(a.profile).Select(in.Spec, releases, blacklist, in.OngoingThread)
-	log.Info("fetched candidates for manual pick",
-		"considered", verdict.Considered, "rejected", len(verdict.Rejected))
-
+// candidatesFromVerdict turns the selector's refusals into the rows the
+// user picks from.
+//
+// The reason code is spelled out with its detail ("russian_audio:
+// missing") so the user picks with context rather than blind, and the
+// magnet is carried along because the pick is handed straight to the
+// torrent client.
+func candidatesFromVerdict(verdict release.Verdict) []storage.Candidate {
 	out := make([]storage.Candidate, 0, len(verdict.Rejected))
 	for i, r := range verdict.Rejected {
 		reason := string(r.Reason)
@@ -344,7 +379,16 @@ func (a *Activities) FetchCandidates(ctx context.Context, in SearchInput) ([]sto
 			RejectionReason: reason,
 		})
 	}
-	return out, nil
+	return out
+}
+
+// ListCandidates returns the candidates a request is offering.
+//
+// The workflow reads the list only to put it in a notification body, and
+// only when the list has just appeared. Everything else it needs to know
+// about the list — is there one, how big is it — travels back as a count.
+func (a *Activities) ListCandidates(ctx context.Context, requestID int64) ([]storage.Candidate, error) {
+	return a.store.ListCandidates(ctx, requestID)
 }
 
 // logOrDefault returns a.log or a discard logger if a.log is nil.
@@ -728,28 +772,12 @@ func (a *Activities) PopManualLink(ctx context.Context, requestID int64) (string
 	return link, nil
 }
 
-// StoreCandidates replaces the candidate list for a request.
-//
-// Called when the workflow enters StateManual. The list is also written
-// by the indexer pass that the search just made; the persistence is in
-// the storage activity rather than the workflow itself because the
-// result is large and only the storage needs to carry it across the
-// activity boundary.
-//
-// StoreCandidatesInput rather than (int64, []Candidate) for the same
-// reason FetchCandidates takes SearchInput: the slice is large and
-// the struct is a single, named argument that survives the activity
-// boundary without a positional pairing. The activity body unpacks
-// the two fields it actually uses.
-func (a *Activities) StoreCandidates(ctx context.Context, in StoreCandidatesInput) error {
-	return a.store.StoreCandidates(ctx, in.RequestID, in.Candidates)
-}
-
 // ClearCandidates removes the candidate list for a request.
 //
-// Called when the workflow leaves StateManual — the user picked, the
-// 14-day timeout fired, or the request was cancelled. The list would
-// be stale after any of those and a re-display would mislead the user.
+// Called when the request leaves StateManual — the user picked, the
+// 14-day timeout fired, or the request was cancelled — and when a
+// release the selector accepted makes the list stale. The list would
+// mislead the user after any of those.
 func (a *Activities) ClearCandidates(ctx context.Context, requestID int64) error {
 	return a.store.ClearCandidates(ctx, requestID)
 }

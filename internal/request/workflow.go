@@ -69,6 +69,12 @@ func Workflow(ctx workflow.Context, in Input) (Result, error) {
 		return finishSkipped(ctx, in, &state, plex)
 	}
 
+	// The channel the user wakes the request up through. A pick made in the
+	// web UI or in Telegram is written to the database and then announced
+	// here, so the request does not sit out the rest of its backoff ladder
+	// before it notices.
+	pickCh := workflow.GetSignalChannel(ctx, SignalPick)
+
 	for {
 		// Restarting the history is checked on every iteration rather than on
 		// a counter, because the cost of an iteration is easy to underestimate
@@ -77,7 +83,7 @@ func Workflow(ctx workflow.Context, in Input) (Result, error) {
 			return Result{}, err
 		}
 
-		result, err := runSearchCycle(ctx, &in, &state)
+		result, err := runSearchCycle(ctx, &in, &state, pickCh)
 		if err != nil {
 			if cancellationIsDue(ctx, err) {
 				cancelled, cancelErr := cancelRequest(ctx, &in, &state)
@@ -102,17 +108,52 @@ func Workflow(ctx workflow.Context, in Input) (Result, error) {
 //
 // It returns a non-nil result when the request has reached a terminal state,
 // and nil to ask the caller to loop again.
-func runSearchCycle(ctx workflow.Context, in *Input, state *State) (*Result, error) {
-	state.Iteration++
-
+func runSearchCycle(ctx workflow.Context, in *Input, state *State, pickCh workflow.ReceiveChannel) (*Result, error) {
 	// Waiting for the next attempt is the common case: most passes of this
 	// loop, for most of a two-year request, find nothing and go back to sleep.
-	cancelled, err := waitUntil(ctx, state.NextRunAt)
+	//
+	// The wait is interruptible by a pick. A request that found nothing the
+	// selector would accept sleeps for an hour, a day, then a day again — and
+	// a user who opens the request page and picks a release from the list
+	// would otherwise wait out that whole ladder before anything happened.
+	// The signal is the wake-up; the pick itself is read from the database,
+	// which is the only place it is written.
+	for {
+		cancelled, interrupted, err := waitUntil(ctx, state.NextRunAt, pickCh)
+		if err != nil {
+			return nil, err
+		}
+		if cancelled {
+			return cancelRequest(ctx, in, state)
+		}
+		if !interrupted {
+			break
+		}
+
+		// Woken by a signal. If it carried a pick, the pick is what the
+		// request does next. If it did not — a signal for anything else, or
+		// one that arrived after the workflow had already taken the pick —
+		// the wait continues where it left off.
+		taken, err := takePickedRelease(ctx, in, state)
+		if err != nil {
+			return nil, err
+		}
+		if taken {
+			return downloadCycle(ctx, in, state)
+		}
+	}
+
+	state.Iteration++
+
+	// The pick is checked before the deadline: a user who chose a release
+	// on the last day of the search window meant it, and failing the
+	// request out from under them would be the wrong answer.
+	taken, err := takePickedRelease(ctx, in, state)
 	if err != nil {
 		return nil, err
 	}
-	if cancelled {
-		return cancelRequest(ctx, in, state)
+	if taken {
+		return downloadCycle(ctx, in, state)
 	}
 
 	if workflow.Now(ctx).After(state.SearchDeadline) {
@@ -140,7 +181,7 @@ func runSearchCycle(ctx workflow.Context, in *Input, state *State) (*Result, err
 	case searchFound:
 		return downloadCycle(ctx, in, state)
 	case searchManual:
-		return manualPhase(ctx, in, state)
+		return manualPhase(ctx, in, state, pickCh)
 	default:
 		// Unreachable, but a workflow that silently does nothing is worse than
 		// one that says so.
@@ -221,14 +262,27 @@ func searchOnce(ctx workflow.Context, in *Input, state *State) (searchOutcome, e
 	state.ErrorStreak = 0
 
 	if !res.Found() {
+		// The search activity has already stored the releases the selector
+		// refused, so the user has something to pick from whatever the
+		// media is. The list is announced once, when it first appears;
+		// after that it is simply there, refreshed on every search.
+		if res.CandidatesNew {
+			if err := announceCandidates(ctx, in); err != nil {
+				// A notification that does not go out must not lose the
+				// list: the list is in the database, and the user sees it
+				// on the request page whether Telegram delivered or not.
+				workflow.GetLogger(ctx).Warn("candidate-list notification failed", "error", err)
+			}
+		}
+
 		// For media old enough that auto-search is unlikely to find
 		// anything (the indexer has dropped the release, the trackers
 		// have aged out, russian_audio: missing rules out otherwise-good
-		// candidates), the user gets a list to pick from. Newer media
-		// just goes back to sleep on the normal backoff — the auto-pick
+		// candidates), the request waits for the user to pick. Newer
+		// media goes back to sleep on the normal backoff — the auto-pick
 		// is more useful there because there is likely something
 		// acceptable coming in the next refresh.
-		if outcome, err := maybeEnterManualMode(ctx, in, state); err != nil {
+		if outcome, err := maybeEnterManualMode(ctx, in, state, res.Candidates); err != nil {
 			return searchContinue, err
 		} else if outcome == searchManual {
 			return searchManual, nil
@@ -283,18 +337,29 @@ func scheduleNextSearch(ctx workflow.Context, in *Input, state *State, res Searc
 	return saveState(ctx, in, state, "search.no_acceptable", res.Summary)
 }
 
-// isOldMedia reports whether the spec's year is more than two years behind
-// now. The cutoff is intentionally generous: anything from 2023 or
-// earlier in 2026 counts as old. A request for a 2024 film does not
-// get a manual list yet — the indexer is more likely to surface a
-// good release on the next refresh, and the user would be pestered
-// with a list every backoff tick.
+// isOldMedia reports whether the media is old enough that the indexer is
+// unlikely to produce anything the auto-selector would accept.
 //
-// Year=0 (unknown) returns false. The selector's russian_audio rule
-// already filters out most "old enough to need a manual pick" releases
-// on its own, so the unknown-year case is mostly a self-search
-// where no manual list is wanted either.
+// The cutoff is intentionally generous: anything released more than two
+// years ago counts. A request for a film from last year does not wait for
+// the user — the indexer is more likely to surface a good release on the
+// next refresh.
+//
+// The season's own date decides this, not the year on the spec. For a
+// series the spec carries the year of the show's première, so a show
+// that started in 2014 would look ancient while the season the user
+// actually asked for came out last week. The release date is the date of
+// the thing being requested, and for a season that is the season's air
+// date.
+//
+// Year=0 and no release date (unknown) returns false. The selector's
+// russian_audio rule already filters out most "old enough to need a
+// manual pick" releases on its own, so the unknown case is mostly a
+// self-search where no manual list is wanted either.
 func isOldMedia(spec domain.MediaSpec, now time.Time) bool {
+	if spec.ReleasedAt != nil {
+		return !spec.ReleasedAt.After(now.AddDate(-2, 0, 0))
+	}
 	if spec.Year <= 0 {
 		return false
 	}
@@ -302,59 +367,35 @@ func isOldMedia(spec domain.MediaSpec, now time.Time) bool {
 }
 
 // maybeEnterManualMode is the searchOnce fallback for media old enough
-// that the indexer usually returns nothing. It runs the indexer one
-// more time via FetchCandidates, persists the rejected list, and tells
-// the caller to enter StateManual if there is anything for the user
-// to look at.
+// that the indexer usually returns nothing. The candidate list is already
+// stored — the search activity does that — so this only decides whether
+// the request stops searching and waits for the user to pick.
 //
 // Three outcomes:
-//   - searchManual: a list was persisted, the workflow should now
-//     run manualPhase, the user has been notified.
-//   - searchContinue: the indexer returned nothing, or the media is
-//     not old enough to qualify. The caller falls through to the
-//     normal backoff.
-//   - error: an activity or storage write failed; the caller
-//     continues on the normal backoff rather than losing a search
-//     cycle to a transient failure.
-func maybeEnterManualMode(ctx workflow.Context, in *Input, state *State) (searchOutcome, error) {
+//   - searchManual: there is a list and the request should now run
+//     manualPhase, waiting for a pick.
+//   - searchContinue: there is nothing to pick from, or the media is not
+//     old enough to qualify. The caller falls through to the normal
+//     backoff.
+//   - error: a state write failed; the caller continues on the normal
+//     backoff rather than losing a search cycle to a transient failure.
+func maybeEnterManualMode(ctx workflow.Context, in *Input, state *State, candidates int) (searchOutcome, error) {
 	now := workflow.Now(ctx)
 	if !isOldMedia(in.Spec, now) {
 		return searchContinue, nil
 	}
 
-	// Already in manual mode? Don't re-fetch and re-notify on every search
-	// tick — the user is given the list once and asked to pick or wait
-	// 14 days. The main loop is responsible for the timeout.
+	// Already in manual mode? Don't re-enter it on every search tick — the
+	// user is given the list once and asked to pick or wait 14 days. The
+	// main loop is responsible for the timeout.
 	if state.Phase == storage.StateManual {
 		return searchManual, nil
 	}
 
-	actCtx := withOptions(ctx, indexerOptions())
-	var candidates []storage.Candidate
-	if err := workflow.ExecuteActivity(actCtx, (*Activities).FetchCandidates, SearchInput{
-		RequestID:     in.RequestID,
-		Spec:          in.Spec,
-		Limit:         100,
-		OngoingThread: state.SelectedThreadID,
-	}).Get(actCtx, &candidates); err != nil {
-		// A search error is not a manual-mode error: the indexer
-		// might be flaky, and the workflow's backoff already covers
-		// that. Surface the error so the caller falls through to
-		// scheduleNextSearch, which will reschedule.
-		workflow.GetLogger(ctx).Warn("could not fetch candidates for manual pick", "error", err)
-		return searchContinue, err
-	}
-	if len(candidates) == 0 {
-		// Indexer really did return nothing this time; the manual
+	if candidates == 0 {
+		// The indexer really did return nothing this time; the manual
 		// list would be empty and offering it is noise. Backoff.
 		return searchContinue, nil
-	}
-
-	if err := workflow.ExecuteActivity(actCtx, (*Activities).StoreCandidates, StoreCandidatesInput{
-		RequestID:  in.RequestID,
-		Candidates: candidates,
-	}).Get(actCtx, nil); err != nil {
-		return searchContinue, err
 	}
 
 	state.Phase = storage.StateManual
@@ -363,22 +404,35 @@ func maybeEnterManualMode(ctx workflow.Context, in *Input, state *State) (search
 	// cadence (manualPhase bumps it back to 1 minute before sleeping).
 	state.NextRunAt = now.Add(time.Minute)
 	if err := saveState(ctx, in, state, "search.manual_candidates",
-		fmt.Sprintf("offered %d candidates for manual pick", len(candidates))); err != nil {
+		fmt.Sprintf("offered %d candidates for manual pick", candidates)); err != nil {
 		return searchContinue, err
 	}
 
-	if err := notify(ctx, in, storage.NotificationManual,
-		fmt.Sprintf("Pick a release: %s", in.Spec.DisplayTitle()),
-		buildCandidateList(candidates)); err != nil {
-		// A notification failure must not lose the manual entry. The
-		// list is in the DB; the user will see it on the request page
-		// even if Telegram did not deliver.
-		workflow.GetLogger(ctx).Warn("manual-mode notification failed", "error", err)
+	workflow.GetLogger(ctx).Info("entered manual-pick mode",
+		"request", in.RequestID, "candidates", candidates)
+	return searchManual, nil
+}
+
+// announceCandidates tells the watchers that there is a list to pick from.
+//
+// It is called once, when the list first appears: the search refreshes the
+// list on every fruitless attempt, and a notification per attempt would be
+// a notification per hour for two years.
+func announceCandidates(ctx workflow.Context, in *Input) error {
+	actCtx := withOptions(ctx, dbOptions())
+
+	var candidates []storage.Candidate
+	if err := workflow.ExecuteActivity(actCtx, (*Activities).ListCandidates, in.RequestID).
+		Get(actCtx, &candidates); err != nil {
+		return err
+	}
+	if len(candidates) == 0 {
+		return nil
 	}
 
-	workflow.GetLogger(ctx).Info("entered manual-pick mode",
-		"request", in.RequestID, "candidates", len(candidates))
-	return searchManual, nil
+	return notify(ctx, in, storage.NotificationManual,
+		fmt.Sprintf("Pick a release: %s", in.Spec.DisplayTitle()),
+		buildCandidateList(candidates))
 }
 
 // buildCandidateList renders the candidate list for a manual-mode
@@ -433,7 +487,7 @@ func humanSize(n int64) string {
 // download cycle then takes over via the caller's switch. On timeout
 // it returns nil so the caller loops and re-enters the search cycle
 // (state has been reset to StatePending before this returns).
-func manualPhase(ctx workflow.Context, in *Input, state *State) (*Result, error) {
+func manualPhase(ctx workflow.Context, in *Input, state *State, pickCh workflow.ReceiveChannel) (*Result, error) {
 	const manualTimeout = 14 * 24 * time.Hour
 	actCtx := withOptions(ctx, dbOptions())
 
@@ -474,59 +528,113 @@ func manualPhase(ctx workflow.Context, in *Input, state *State) (*Result, error)
 			return cancelRequest(ctx, in, state)
 		}
 
-		// The user picked. Build a release from the candidate data
-		// and hand it to downloadCycle. The candidate list is
-		// already cleared by the pick (the storage activity
-		// MarkPicked only sets picked_at; ClearCandidates is called
-		// below after the pick is consumed to be safe across
-		// retries).
-		var picked storage.Candidate
-		err := workflow.ExecuteActivity(actCtx, (*Activities).GetPickedCandidate, in.RequestID).
-			Get(actCtx, &picked)
-		if err == nil {
-			// Got a pick. Clear the list, build the release, go to
-			// downloadCycle. If ClearCandidates fails, log and
-			// continue — the download is the user's intent and a
-			// stale candidate row is harmless.
-			if clearErr := workflow.ExecuteActivity(actCtx, (*Activities).ClearCandidates, in.RequestID).
-				Get(actCtx, nil); clearErr != nil {
-				workflow.GetLogger(ctx).Warn("clear candidates after pick failed", "error", clearErr)
-			}
-			state.Selected = releaseFromCandidate(picked, in.Spec)
+		// The user pasted a link of their own. It is the same kind of
+		// intervention as a pick, and it has to be honoured here: the
+		// request is waiting for the user, and a link the user pasted
+		// twenty minutes ago must not sit unread until the 14-day
+		// timeout.
+		var link string
+		if err := workflow.ExecuteActivity(actCtx, (*Activities).PopManualLink, in.RequestID).
+			Get(actCtx, &link); err != nil {
+			return nil, err
+		}
+		if link != "" {
+			state.Selected = manualReleaseFromLink(link, in.Spec.DisplayTitle())
 			state.Phase = storage.StateAdding
 			state.ManualSince = time.Time{}
-			if saveErr := saveState(ctx, in, state, "release.manual_picked",
-				fmt.Sprintf("user picked rank %d (%s)", picked.Rank, picked.Title)); saveErr != nil {
-				return nil, saveErr
+			if err := saveState(ctx, in, state, "release.manual", "user-submitted link"); err != nil {
+				return nil, err
 			}
-			workflow.GetLogger(ctx).Info("user picked a release",
-				"request", in.RequestID, "rank", picked.Rank, "title", picked.Title)
+			if err := workflow.ExecuteActivity(actCtx, (*Activities).ClearCandidates, in.RequestID).
+				Get(actCtx, nil); err != nil {
+				workflow.GetLogger(ctx).Warn("clear candidates after a manual link failed", "error", err)
+			}
 			return downloadCycle(ctx, in, state)
 		}
-		// NoSuchCandidate is the activity's typed "not yet picked"
-		// signal. It travels as a Temporal ApplicationError with
-		// type "NoSuchCandidate"; the storage sentinel itself does
-		// not survive the activity boundary. Anything else is a
-		// real error and we should not silently swallow it.
-		var appErr *temporal.ApplicationError
-		if !(errors.As(err, &appErr) && appErr.Type() == "NoSuchCandidate") {
+
+		// The user picked. Build a release from the candidate data
+		// and hand it to downloadCycle.
+		taken, err := takePickedRelease(ctx, in, state)
+		if err != nil {
 			return nil, err
+		}
+		if taken {
+			return downloadCycle(ctx, in, state)
 		}
 
 		// Wait until the next poll. Same shape as runSearchCycle's
 		// waitUntil: cancellable, with a short cadence (one
 		// minute) because the user is sitting at a screen waiting
-		// to see their pick take effect.
-		cancelled, err := waitUntil(ctx, state.NextRunAt)
+		// to see their pick take effect. The pick signal cuts the
+		// wait short when it arrives.
+		cancelled, interrupted, err := waitUntil(ctx, state.NextRunAt, pickCh)
 		if err != nil {
 			return nil, err
 		}
 		if cancelled {
 			return cancelRequest(ctx, in, state)
 		}
+		// The next deadline is set before the interrupt is acted on, so a
+		// signal that carried no pick leaves the loop waiting a full
+		// minute rather than waking on a deadline that has already passed.
 		state.NextRunAt = workflow.Now(ctx).Add(time.Minute)
-		_ = state.NextRunAt // keep gofmt from complaining; the tick continues
+		if interrupted {
+			// Woken by a pick. The next turn of the loop takes it.
+			continue
+		}
 	}
+}
+
+// takePickedRelease consumes the candidate the user picked, if there is
+// one, and turns it into the release the request is going to download.
+//
+// It reports whether a pick was taken. "No pick" is not an error: the
+// activity's typed NoSuchCandidate signal is the ordinary answer for a
+// request nobody has picked from yet, and it arrives as an application
+// error rather than as an empty result.
+//
+// The pick is read from the database rather than from the signal that
+// woke the workflow up. The signal says "something happened"; the row
+// says what, and the row is the same thing the user saw in the list
+// when they clicked.
+func takePickedRelease(ctx workflow.Context, in *Input, state *State) (bool, error) {
+	actCtx := withOptions(ctx, dbOptions())
+
+	var picked storage.Candidate
+	err := workflow.ExecuteActivity(actCtx, (*Activities).GetPickedCandidate, in.RequestID).
+		Get(actCtx, &picked)
+	if err != nil {
+		// NoSuchCandidate is the activity's typed "not yet picked"
+		// signal. It travels as a Temporal ApplicationError with
+		// type "NoSuchCandidate"; the storage sentinel itself does
+		// not survive the activity boundary. Anything else is a
+		// real error and we should not silently swallow it.
+		var appErr *temporal.ApplicationError
+		if errors.As(err, &appErr) && appErr.Type() == "NoSuchCandidate" {
+			return false, nil
+		}
+		return false, err
+	}
+
+	// Got a pick. Clear the list, build the release, go to the download
+	// cycle. If ClearCandidates fails, log and continue — the download is
+	// the user's intent and a stale candidate row is harmless.
+	if clearErr := workflow.ExecuteActivity(actCtx, (*Activities).ClearCandidates, in.RequestID).
+		Get(actCtx, nil); clearErr != nil {
+		workflow.GetLogger(ctx).Warn("clear candidates after pick failed", "error", clearErr)
+	}
+
+	state.Selected = releaseFromCandidate(picked, in.Spec)
+	state.Phase = storage.StateAdding
+	state.ManualSince = time.Time{}
+	if err := saveState(ctx, in, state, "release.manual_picked",
+		fmt.Sprintf("user picked rank %d (%s)", picked.Rank, picked.Title)); err != nil {
+		return false, err
+	}
+
+	workflow.GetLogger(ctx).Info("user picked a release",
+		"request", in.RequestID, "rank", picked.Rank, "title", picked.Title)
+	return true, nil
 }
 
 // releaseFromCandidate builds a domain.Release the rest of the
@@ -704,7 +812,9 @@ func runOngoingCheck(ctx workflow.Context, in *Input, state *State, hash string)
 // looking for a different release.
 func pollDownload(ctx workflow.Context, in *Input, state *State) (*Result, error) {
 	for {
-		cancelled, err := waitUntil(ctx, workflow.Now(ctx).Add(in.Policy.PollInterval))
+		// The download wait is not interruptible by a pick: the release
+		// is already on its way, and there is nothing left to choose.
+		cancelled, _, err := waitUntil(ctx, workflow.Now(ctx).Add(in.Policy.PollInterval), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -1141,18 +1251,23 @@ func cancellationIsDue(ctx workflow.Context, err error) bool {
 }
 
 // waitUntil sleeps until an instant, and reports whether it was cancelled
-// instead.
+// or interrupted instead.
 //
 // workflow.Sleep would be shorter but cannot be interrupted, so a request
 // sitting in a daily backoff would take a day to notice a cancellation.
-func waitUntil(ctx workflow.Context, t time.Time) (cancelled bool, err error) {
+//
+// A non-nil signal channel adds a third ending: the wait is cut short
+// when the signal arrives, and the caller is expected to look at what the
+// signal was about. A nil channel means the wait cannot be interrupted by
+// anything but a cancellation.
+func waitUntil(ctx workflow.Context, t time.Time, signal workflow.ReceiveChannel) (cancelled bool, interrupted bool, err error) {
 	if ctx.Err() != nil {
-		return true, nil
+		return true, false, nil
 	}
 
 	delay := t.Sub(workflow.Now(ctx))
 	if delay <= 0 {
-		return false, nil
+		return false, false, nil
 	}
 
 	timerCtx, cancelTimer := workflow.WithCancel(ctx)
@@ -1161,7 +1276,7 @@ func waitUntil(ctx workflow.Context, t time.Time) (cancelled bool, err error) {
 	timer := workflow.NewTimer(timerCtx, delay)
 
 	var cancelledByChannel bool
-	workflow.NewSelector(ctx).
+	selector := workflow.NewSelector(ctx).
 		AddFuture(timer, func(f workflow.Future) {
 			// An error here means the timer was cancelled, which is the other
 			// side of the race and carries no further information.
@@ -1169,16 +1284,21 @@ func waitUntil(ctx workflow.Context, t time.Time) (cancelled bool, err error) {
 		}).
 		AddReceive(ctx.Done(), func(workflow.ReceiveChannel, bool) {
 			cancelledByChannel = true
-		}).
-		Select(ctx)
+		})
+	if signal != nil {
+		selector.AddReceive(signal, func(workflow.ReceiveChannel, bool) {
+			interrupted = true
+		})
+	}
+	selector.Select(ctx)
 
 	// ctx.Err() is checked as well as the flag, because when a cancellation
 	// lands the timer future and the done channel can both be ready and
 	// Select picks among ready cases arbitrarily.
 	if cancelledByChannel || ctx.Err() != nil {
-		return true, nil
+		return true, false, nil
 	}
-	return false, nil
+	return false, interrupted, nil
 }
 
 // continueAsNewIfNeeded restarts the history when it has grown too large.

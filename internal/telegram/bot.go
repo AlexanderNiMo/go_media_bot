@@ -62,6 +62,7 @@ type mediaLookup interface {
 type requestStarter interface {
 	StartRequest(ctx context.Context, in request.StartInput) (*request.StartResult, error)
 	Cancel(ctx context.Context, requestID int64) error
+	SignalPick(ctx context.Context, requestID int64) error
 }
 
 // Bot answers messages and delivers notifications.
@@ -309,11 +310,27 @@ func (b *Bot) handleLink(ctx context.Context, api *tgbot.Bot, update *models.Upd
 			"где бы запрос ни был создан.", user.Username))
 }
 
-// handleList shows the active requests.
+// handleList shows the active requests, or the candidate list of one
+// request when the command carries a number.
+//
+// "/list" alone is the overview. "/list 12" is the list of releases the
+// request 12 is offering, with the rank each of them has — the number
+// "/pick 12 <rank>" takes. The two belong together: the pick command
+// points at this one.
 func (b *Bot) handleList(ctx context.Context, api *tgbot.Bot, update *models.Update) {
 	user, err := b.user(ctx, update)
 	if err != nil {
 		b.reply(ctx, update, "Сначала привяжите чат: /link <код>. Код есть в веб-интерфейсе.")
+		return
+	}
+
+	if args := strings.Fields(commandArgs(update)); len(args) > 0 {
+		id, convErr := strconv.Atoi(args[0])
+		if convErr != nil || id <= 0 {
+			b.reply(ctx, update, "Номер должен быть числом. Список запросов — в /list.")
+			return
+		}
+		b.listCandidates(ctx, update, user, int64(id))
 		return
 	}
 
@@ -339,8 +356,62 @@ func (b *Bot) handleList(ctx context.Context, api *tgbot.Bot, update *models.Upd
 		fmt.Fprintf(&out, "%d. %s\n   %s\n", r.ID, titleWithSeason(r), stateLine(r))
 	}
 	out.WriteString("\n/cancel <номер> — отменить")
+	out.WriteString("\n/list <номер> — кандидаты на выбор")
 
 	b.reply(ctx, update, out.String())
+}
+
+// listCandidates shows the releases a request is offering.
+//
+// The same defensive check as handlePick: only somebody watching the
+// request may see what it is offering, because the list is the picker's
+// menu and a pick starts a download.
+func (b *Bot) listCandidates(ctx context.Context, update *models.Update, user *storage.User, id int64) {
+	watchers, err := b.store.ListWatchers(ctx, id)
+	if err != nil {
+		b.log.Error("could not list watchers", "request", id, "error", err)
+		b.reply(ctx, update, "Не получилось проверить права на этот запрос.")
+		return
+	}
+	if !watching(watchers, user.ID) {
+		b.reply(ctx, update, "Это не ваш запрос.")
+		return
+	}
+
+	candidates, err := b.store.ListCandidates(ctx, id)
+	if err != nil {
+		b.log.Error("could not list candidates", "request", id, "error", err)
+		b.reply(ctx, update, "Не получилось посмотреть кандидатов.")
+		return
+	}
+	if len(candidates) == 0 {
+		b.reply(ctx, update, "У этого запроса нет кандидатов на выбор.")
+		return
+	}
+
+	var out strings.Builder
+	out.WriteString("Кандидаты:\n\n")
+	for _, c := range candidates {
+		fmt.Fprintf(&out, "%d. [%s] %s\n   сидеров: %d  размер: %s\n   отклонён: %s\n",
+			c.Rank, c.Indexer, c.Title, c.Seeders, humanBytes(c.SizeBytes), c.RejectionReason)
+	}
+	out.WriteString("\n/pick <номер> <rank> — скачать этот")
+
+	b.reply(ctx, update, out.String())
+}
+
+// humanBytes formats a byte count for a message.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d Б", n)
+	}
+	div, exp := int64(unit), 0
+	for size := n / unit; size >= unit; size /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), []string{"КБ", "МБ", "ГБ", "ТБ"}[exp])
 }
 
 // handlePick marks a candidate as the user's choice.
@@ -404,7 +475,18 @@ func (b *Bot) handlePick(ctx context.Context, api *tgbot.Bot, update *models.Upd
 
 	b.log.Info("user picked a candidate via telegram",
 		"user", user.Username, "request", id, "rank", rank)
-	b.reply(ctx, update, fmt.Sprintf("Выбран rank %d. Workflow подхватит на ближайшем тике.", rank))
+
+	// Wake the request so the choice takes effect now rather than at the
+	// request's next scheduled tick. The choice is already in the
+	// database, so a signal that does not arrive costs time, not the
+	// choice.
+	if err := b.req.SignalPick(ctx, id); err != nil {
+		b.log.Warn("could not wake the workflow for a picked candidate",
+			"request", id, "rank", rank, "error", err)
+		b.reply(ctx, update, fmt.Sprintf("Выбран rank %d. Workflow подхватит на ближайшем тике.", rank))
+		return
+	}
+	b.reply(ctx, update, fmt.Sprintf("Выбран rank %d. Загрузка начнётся через несколько секунд.", rank))
 }
 
 // handleCancel stops a request.
