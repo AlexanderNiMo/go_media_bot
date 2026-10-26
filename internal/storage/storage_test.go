@@ -1404,6 +1404,37 @@ func TestCountCandidates(t *testing.T) {
 	}
 }
 
+// TestIsValidManualLink pins down the link shapes the manual-release path
+// accepts. A tracker download endpoint is deliberately not one of them: the
+// client cannot fetch it without the tracker's session, so the file itself
+// is what a user hands over instead.
+func TestIsValidManualLink(t *testing.T) {
+	for _, tc := range []struct {
+		descr string
+		link  string
+		want  bool
+	}{
+		{"magnet", "magnet:?xt=urn:btih:abc123", true},
+		{"magnet in upper case", "MAGNET:?xt=urn:btih:abc123", true},
+		{"torrent file", "https://tracker.example/file.torrent", true},
+		{"torrent file behind a token", "https://tracker.example/file.torrent?token=abc", true},
+		{"spaces around the link", "  magnet:?xt=urn:btih:abc123  ", true},
+		{"a tracker download endpoint", "https://rutracker.org/forum/dl.php?t=5961950", false},
+		{"no scheme", "tracker.example/file.torrent", false},
+		{"a page rather than a download", "https://rutracker.org/forum/viewtopic.php?t=5961950", false},
+		{"a magnet without a query", "magnet:", false},
+		{"a scheme the client cannot fetch", "ftp://tracker.example/file.torrent", false},
+		{"no host", "https:///file.torrent", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.descr, func(t *testing.T) {
+			if got := isValidManualLink(tc.link); got != tc.want {
+				t.Errorf("isValidManualLink(%q) = %v, want %v", tc.link, got, tc.want)
+			}
+		})
+	}
+}
+
 // insertTestRequest creates a request the candidate tests can attach
 // candidates to. It exists in this file rather than the shared
 // helpers because the other tests build their requests through
