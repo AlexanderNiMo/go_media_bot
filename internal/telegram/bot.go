@@ -146,6 +146,7 @@ func newBot(cfg *config.Config, store *storage.Store, req requestStarter,
 		tgbot.WithMessageTextHandler("search", tgbot.MatchTypeCommand, b.handleSearch),
 		tgbot.WithMessageTextHandler("pick", tgbot.MatchTypeCommand, b.handlePick),
 		tgbot.WithCallbackQueryDataHandler(callbackPrefix, tgbot.MatchTypePrefix, b.handleSelect),
+		tgbot.WithCallbackQueryDataHandler(candidatePrefix, tgbot.MatchTypePrefix, b.handlePickCandidate),
 		tgbot.WithErrorsHandler(b.handleError),
 	}
 
@@ -586,6 +587,118 @@ func (b *Bot) handleSelect(ctx context.Context, api *tgbot.Bot, update *models.U
 	b.choose(ctx, chatID, user, sessionID, index, query.Message.Message.ID)
 }
 
+// handlePickCandidate marks a candidate as the user's choice, from a
+// button on the manual-mode notification.
+//
+// The shape mirrors handlePick: the chat must be linked to somebody
+// watching the request, the rank must be on the current candidate
+// list, and the choice is written to the database before the workflow
+// is signalled. A signal that does not arrive is not a lost choice —
+// the pick is in the database, and the workflow reads it on its next
+// tick whatever happens.
+//
+// The buttons go away once the choice is made: the list belongs to
+// the workflow now, and a second press would be a second choice.
+func (b *Bot) handlePickCandidate(ctx context.Context, api *tgbot.Bot, update *models.Update) {
+	query := update.CallbackQuery
+	if query == nil {
+		return
+	}
+
+	// Answered immediately, always — the same reason as handleSelect:
+	// Telegram spins the button until this call arrives.
+	if _, err := b.api.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
+		CallbackQueryID: query.ID,
+	}); err != nil {
+		b.log.Debug("could not answer a callback", "error", err)
+	}
+
+	// The message the button was pressed on. A callback whose message is
+	// gone has nothing to answer to and nothing to edit.
+	msg := messageOf(update)
+	if msg == nil {
+		b.log.Warn("a candidate button was pressed on a message that is gone",
+			"data", query.Data)
+		return
+	}
+
+	telegramID := telegramIDString(query.From.ID)
+	user, err := b.store.UserByTelegram(ctx, telegramID)
+	if err != nil {
+		b.send(ctx, msg.Chat.ID,
+			"Сначала привяжите чат: /link <код>. Код есть в веб-интерфейсе.")
+		return
+	}
+
+	// cnd:<request id>:<rank>
+	parts := strings.Split(query.Data, ":")
+	if len(parts) != 3 {
+		b.log.Warn("malformed callback data", "data", query.Data)
+		return
+	}
+
+	requestID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || requestID <= 0 {
+		b.log.Warn("malformed callback request id", "data", query.Data)
+		return
+	}
+
+	rank, err := strconv.Atoi(parts[2])
+	if err != nil || rank <= 0 {
+		b.log.Warn("malformed callback rank", "data", query.Data)
+		return
+	}
+
+	// Only somebody watching the request may pick from its candidate
+	// list. Same check as /pick: the id is a small number, and without
+	// it any chat could press the button and start a download on a
+	// stranger's request.
+	watchers, err := b.store.ListWatchers(ctx, requestID)
+	if err != nil {
+		b.log.Error("could not list watchers", "request", requestID, "error", err)
+		b.send(ctx, msg.Chat.ID, "Не получилось проверить права на этот запрос.")
+		return
+	}
+	if !watching(watchers, user.ID) {
+		b.send(ctx, msg.Chat.ID, "Это не ваш запрос.")
+		return
+	}
+
+	if _, err := b.store.MarkPicked(ctx, requestID, rank); err != nil {
+		if errors.Is(err, storage.ErrNoSuchCandidate) {
+			b.send(ctx, msg.Chat.ID, "Такого кандидата нет (rank="+strconv.Itoa(rank)+").")
+			return
+		}
+		b.log.Warn("could not mark candidate picked",
+			"request", requestID, "rank", rank, "error", err)
+		b.send(ctx, msg.Chat.ID, "Не получилось: "+err.Error())
+		return
+	}
+
+	b.log.Info("user picked a candidate via telegram",
+		"user", user.Username, "request", requestID, "rank", rank)
+
+	// Wake the request so the choice takes effect now rather than at the
+	// request's next scheduled tick. The choice is already in the
+	// database, so a signal that does not arrive costs time, not the
+	// choice.
+	confirmation := fmt.Sprintf("✅ Выбран rank %d. Загрузка начнётся через несколько секунд.", rank)
+	if err := b.req.SignalPick(ctx, requestID); err != nil {
+		b.log.Warn("could not wake the workflow for a picked candidate",
+			"request", requestID, "rank", rank, "error", err)
+		confirmation = fmt.Sprintf("✅ Выбран rank %d. Workflow подхватит на ближайшем тике.", rank)
+	}
+
+	// The list stays in the chat — it is the record of what was on
+	// offer — and the buttons go with it.
+	text := confirmation
+	if msg.Text != "" {
+		text = msg.Text + "\n\n" + confirmation
+	}
+
+	b.editMarkup(ctx, msg.Chat.ID, msg.ID, text, emptyKeyboard())
+}
+
 // search runs a TMDB lookup and offers the results.
 func (b *Bot) search(ctx context.Context, update *models.Update, query string) {
 	user, err := b.user(ctx, update)
@@ -855,10 +968,28 @@ func (b *Bot) deliverOnce(ctx context.Context) error {
 			continue
 		}
 
-		if _, err := b.api.SendMessage(ctx, &tgbot.SendMessageParams{
+		params := &tgbot.SendMessageParams{
 			ChatID: chatID,
 			Text:   notificationText(p),
-		}); err != nil {
+		}
+
+		// A manual-mode notification is the one kind that asks the user to
+		// do something: pick a release from the list. The list is read
+		// here rather than taken from the notification body, because the
+		// body was written when the list first appeared and the list is
+		// refreshed on every search — the current list is what the user
+		// should pick from.
+		if p.Kind == storage.NotificationManual && p.RequestID > 0 {
+			candidates, err := b.store.ListCandidates(ctx, p.RequestID)
+			if err != nil {
+				b.log.Warn("could not list the candidates of a manual notification",
+					"request", p.RequestID, "error", err)
+			} else if len(candidates) > 0 {
+				params.ReplyMarkup = candidatesKeyboard(p.RequestID, candidates)
+			}
+		}
+
+		if _, err := b.api.SendMessage(ctx, params); err != nil {
 			// Left undelivered on purpose, so the next pass tries again. A
 			// user who blocked the bot produces a permanent failure, which is
 			// a small price for not losing a message to a transient one.
@@ -897,11 +1028,23 @@ func notificationText(p storage.PendingTelegram) string {
 		b.WriteString("📚 ")
 	case storage.NotificationCanceled:
 		b.WriteString("🚫 ")
+	case storage.NotificationManual:
+		b.WriteString("🙋 ")
 	default:
 		b.WriteString("🔎 ")
 	}
 
 	b.WriteString(p.Title)
+
+	// The request number, for the one notification that asks the user to
+	// do something. "Pick a release" means little without it: the
+	// command that picks is "/pick <number> <rank>", and the number is
+	// otherwise only in /list.
+	if p.Kind == storage.NotificationManual && p.RequestID > 0 {
+		b.WriteString("\nЗапрос №")
+		b.WriteString(strconv.FormatInt(p.RequestID, 10))
+	}
+
 	if p.Body != "" {
 		b.WriteString("\n\n")
 		b.WriteString(p.Body)
