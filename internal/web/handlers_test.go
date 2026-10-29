@@ -694,6 +694,40 @@ func TestRequestDetailAndFilters(t *testing.T) {
 	})
 }
 
+// TestNotificationSettingsRoundTrip — the checkbox names are the option
+// names, and the form reads the same list the page renders. A name that
+// appears in one place and not the other is a setting the user cannot change.
+func TestNotificationSettingsRoundTrip(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+
+	users, err := store.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	userID := users[0].ID
+
+	// Turn everything off except the season notification.
+	resp := c.post("/settings/notifications", url.Values{
+		"season": {"1"},
+	})
+	resp.Body.Close()
+
+	mask, err := store.GetTelegramNotifyMask(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("GetTelegramNotifyMask: %v", err)
+	}
+	if mask != storage.NotifySeason {
+		t.Errorf("mask = %d, want %d (the season bit alone)", mask, storage.NotifySeason)
+	}
+
+	// And the page shows it as checked, so the setting survives a reload.
+	body := c.body("/settings?tab=notifications")
+	if !strings.Contains(body, `name="season" value="1" checked`) {
+		t.Error("the season checkbox is not shown as checked")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------------

@@ -146,6 +146,94 @@ type fakeIndexer struct {
 	releases []domain.Release
 }
 
+// TestSearchSeasonUpdatesPicksTheUpdateOfTheTrackedPack — the search a
+// request makes while it waits for the rest of a season.
+//
+// Only the release from the tracked pack's own thread, with more episodes in
+// it, is an update. A better release of the same season from somewhere else
+// is not what the request is waiting for.
+func TestSearchSeasonUpdatesPicksTheUpdateOfTheTrackedPack(t *testing.T) {
+	store, pool := newTestStore(t)
+	ctx := context.Background()
+	rid := insertRequest(t, pool, "tv-1399-s2-update")
+
+	acts := &Activities{
+		store:   store,
+		indexer: &fakeIndexer{releases: seasonReleases()},
+		profile: release.DefaultProfile(),
+		log:     slog.New(slog.DiscardHandler),
+	}
+
+	res, err := acts.SearchSeasonUpdates(ctx, UpdateSearchInput{
+		RequestID: rid,
+		Spec:      seasonSpec(),
+		Tracked: release.Tracked{
+			ThreadID: "rutracker:12345",
+			Episodes: 8,
+			Title:    "Игра престолов S02 1080p (1-8 из 10)",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SearchSeasonUpdates: %v", err)
+	}
+
+	if !res.Found() {
+		t.Fatalf("no update was found: %s", res.Summary)
+	}
+	if res.Chosen.Title != "Игра престолов S02 1080p (1-10 из 12)" {
+		t.Errorf("chose %q", res.Chosen.Title)
+	}
+
+	// The releases that are not updates are not options for this request,
+	// so they are not offered to the user either.
+	stored, err := store.ListCandidates(ctx, rid)
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(stored) != 0 {
+		t.Errorf("the list has %d rows, want 0: a request waiting for the rest of a "+
+			"season is not looking for a different release", len(stored))
+	}
+}
+
+// seasonReleases are the releases an indexer returns for a season that is
+// still being released: the update, the pack the request is already
+// following, and a pack of the same season from another upload.
+func seasonReleases() []domain.Release {
+	return []domain.Release{
+		{
+			Title:       "Игра престолов S02 1080p (1-10 из 12)",
+			Indexer:     "rutracker",
+			ThreadID:    "rutracker:12345",
+			InfoHash:    "e5",
+			MagnetURI:   "magnet:?xt=urn:btih:e5",
+			SizeBytes:   25 << 30,
+			Seeders:     50,
+			DownloadURL: "https://tracker/dl/e5",
+		},
+		{
+			Title:       "Игра престолов S02 1080p (1-8 из 10)",
+			Indexer:     "rutracker",
+			ThreadID:    "rutracker:12345",
+			InfoHash:    "f6",
+			MagnetURI:   "magnet:?xt=urn:btih:f6",
+			SizeBytes:   20 << 30,
+			Seeders:     40,
+			DownloadURL: "https://tracker/dl/f6",
+		},
+		{
+			Title:       "Игра престолов S02 720p (1-12 из 12)",
+			Indexer:     "rutor",
+			ThreadID:    "rutor:99999",
+			InfoHash:    "a7",
+			MagnetURI:   "magnet:?xt=urn:btih:a7",
+			SizeBytes:   12 << 30,
+			Seeders:     60,
+			DownloadURL: "https://tracker/dl/a7",
+		},
+	}
+}
+
 func (f *fakeIndexer) Search(context.Context, indexer.SearchRequest) ([]domain.Release, error) {
 	return f.releases, nil
 }
