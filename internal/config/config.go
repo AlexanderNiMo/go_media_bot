@@ -195,6 +195,26 @@ type Search struct {
 	Jitter          time.Duration   `koanf:"jitter"                   yaml:"jitter"`
 	PollInterval    time.Duration   `koanf:"poll_interval"            yaml:"poll_interval"`
 	ContinueAsNewAt int             `koanf:"continue_as_new_history"  yaml:"continue_as_new_history"`
+
+	// The four windows below govern the season that is still being released.
+	//
+	// A pack of a running season is short by definition — the rest of the
+	// season is on its way — so the request has to know whether the season is
+	// still running before it decides to wait for the rest of it.
+	//
+	// SeasonAiringWindow is how long after its newest episode a season still
+	// counts as running. A weekly show that aired three days ago is running;
+	// one that aired four months ago is not.
+	SeasonAiringWindow time.Duration `koanf:"season_airing_window"    yaml:"season_airing_window"`
+	// SeasonRecentWindow is how long after its premiere a season still
+	// counts as too new to be finished.
+	SeasonRecentWindow time.Duration `koanf:"season_recent_window"    yaml:"season_recent_window"`
+	// SeasonMonitorWindow is how long the request keeps waiting for an
+	// update after the season's last episode aired. A tracker publishes the
+	// rest of a season days after the last episode, not months.
+	SeasonMonitorWindow time.Duration `koanf:"season_monitor_window"  yaml:"season_monitor_window"`
+	// SeasonMonitorInterval is how often the request looks for the update.
+	SeasonMonitorInterval time.Duration `koanf:"season_monitor_interval" yaml:"season_monitor_interval"`
 }
 
 // Download bounds a single torrent attempt.
@@ -383,6 +403,15 @@ func defaults() Config {
 			// is the termination limit.
 			PollInterval:    5 * time.Minute,
 			ContinueAsNewAt: 5000,
+
+			// A running season is recognised by an episode that came out
+			// recently; a season that started three weeks ago is not over
+			// yet either. The wait for the rest of it ends eight weeks
+			// after the last episode aired, and the check runs once a day.
+			SeasonAiringWindow:    21 * 24 * time.Hour,
+			SeasonRecentWindow:    30 * 24 * time.Hour,
+			SeasonMonitorWindow:   56 * 24 * time.Hour,
+			SeasonMonitorInterval: 24 * time.Hour,
 		},
 		Download: Download{
 			Deadline:       48 * time.Hour,

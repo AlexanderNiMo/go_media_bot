@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/release"
 	"github.com/alex/mediad/internal/storage"
 	"github.com/alex/mediad/internal/temporalx"
 )
@@ -139,7 +140,7 @@ func runSearchCycle(ctx workflow.Context, in *Input, state *State, pickCh workfl
 			return nil, err
 		}
 		if taken {
-			return downloadCycle(ctx, in, state)
+			return downloadCycle(ctx, in, state, "")
 		}
 	}
 
@@ -153,12 +154,23 @@ func runSearchCycle(ctx workflow.Context, in *Input, state *State, pickCh workfl
 		return nil, err
 	}
 	if taken {
-		return downloadCycle(ctx, in, state)
+		return downloadCycle(ctx, in, state, "")
 	}
 
 	if workflow.Now(ctx).After(state.SearchDeadline) {
-		return failedResult(ctx, in, state,
-			"the search deadline passed without finding an acceptable release")
+		reason := "the search deadline passed without finding an acceptable release"
+		if state.Phase == storage.StateOngoing {
+			reason = "the search deadline passed while waiting for the rest of the season"
+		}
+		return failedResult(ctx, in, state, reason)
+	}
+
+	// A request that is waiting for the rest of a running season does not
+	// look for a release: it looks for an update of the one it is
+	// following. Anything else would take the request off the season it
+	// asked for.
+	if state.Phase == storage.StateOngoing {
+		return monitorCycle(ctx, in, state)
 	}
 
 	outcome, err := searchOnce(ctx, in, state)
@@ -179,7 +191,7 @@ func runSearchCycle(ctx workflow.Context, in *Input, state *State, pickCh workfl
 	case searchSatisfied:
 		return skippedResult(ctx, in, state)
 	case searchFound:
-		return downloadCycle(ctx, in, state)
+		return downloadCycle(ctx, in, state, "")
 	case searchManual:
 		return manualPhase(ctx, in, state, pickCh)
 	default:
@@ -549,7 +561,7 @@ func manualPhase(ctx workflow.Context, in *Input, state *State, pickCh workflow.
 				Get(actCtx, nil); err != nil {
 				workflow.GetLogger(ctx).Warn("clear candidates after a manual link failed", "error", err)
 			}
-			return downloadCycle(ctx, in, state)
+			return downloadCycle(ctx, in, state, "")
 		}
 
 		// The user picked. Build a release from the candidate data
@@ -559,7 +571,7 @@ func manualPhase(ctx workflow.Context, in *Input, state *State, pickCh workflow.
 			return nil, err
 		}
 		if taken {
-			return downloadCycle(ctx, in, state)
+			return downloadCycle(ctx, in, state, "")
 		}
 
 		// Wait until the next poll. Same shape as runSearchCycle's
@@ -644,9 +656,13 @@ func takePickedRelease(ctx workflow.Context, in *Input, state *State) (bool, err
 // download cycle hands the link to qBittorrent.
 func releaseFromCandidate(c storage.Candidate, spec domain.MediaSpec) *domain.Release {
 	return &domain.Release{
-		Title:       c.Title,
-		InfoHash:    c.InfoHash,
-		Indexer:     c.Indexer,
+		Title:    c.Title,
+		InfoHash: c.InfoHash,
+		Indexer:  c.Indexer,
+		// The thread the release came from. It is what the season watcher
+		// matches on, so a pack the user picked by hand can be followed
+		// the same way an automatic pick is.
+		ThreadID:    c.ThreadID,
 		MagnetURI:   c.MagnetLink,
 		DownloadURL: c.SourceURL,
 		// SizeBytes/Seeders/Leechers carry the candidate's data
@@ -661,7 +677,12 @@ func releaseFromCandidate(c storage.Candidate, spec domain.MediaSpec) *domain.Re
 }
 
 // downloadCycle adds the selected release and waits for it to finish.
-func downloadCycle(ctx workflow.Context, in *Input, state *State) (*Result, error) {
+// downloadCycle adds the selected release and waits for it to finish.
+//
+// note is an extra line for the notification that says what is being
+// downloaded — it is what tells the user that the pack is the rest of a
+// season rather than a new download.
+func downloadCycle(ctx workflow.Context, in *Input, state *State, note string) (*Result, error) {
 	if state.Selected == nil {
 		return nil, errors.New("download cycle entered with no selected release")
 	}
@@ -707,71 +728,85 @@ func downloadCycle(ctx workflow.Context, in *Input, state *State) (*Result, erro
 		return nil, err
 	}
 
-	// Ongoing-season check. A release from the same forum thread is
-	// usually a full reupload of the season, not a half-season
-	// release. The check asks qBittorrent how many video files the
-	// torrent contains and TMDB how many episodes the season has,
-	// and tips the request into StateOngoing when the torrent is
-	// short. The next search tick reads state.SelectedThreadID
-	// (set above) and prefers a release from the same thread.
+	// Season check. For a series, the pack that was just added is compared
+	// with the season it belongs to: a pack of a season that is still being
+	// released is not the season, and the request goes on watching for the
+	// update that completes it.
+	//
+	// The phase stays "downloading" either way. The request is waiting for
+	// the rest of the season only once the pack it has is on disk, and until
+	// then the download watcher has to keep polling it.
+	monitoring := false
 	if in.Spec.Ref.Type == domain.MediaTypeTV {
-		ongoing, saveErr := runOngoingCheck(ctx, in, state, added.Hash)
+		var saveErr error
+		monitoring, saveErr = runOngoingCheck(ctx, in, state, added.Hash)
 		if saveErr != nil {
 			return nil, saveErr
 		}
-		if ongoing {
-			return pollDownload(ctx, in, state)
-		}
+	}
+
+	body := describeRelease(*state.Selected)
+	if monitoring {
+		body = fmt.Sprintf("%s\n\nThe season is not out yet: %s",
+			body, describeSeasonShortfall(state))
+	}
+	if note != "" {
+		body = fmt.Sprintf("%s\n\n%s", body, note)
 	}
 
 	if err := notify(ctx, in, storage.NotificationStarted,
 		fmt.Sprintf("Downloading %s", in.Spec.DisplayTitle()),
-		describeRelease(*state.Selected)); err != nil {
+		body); err != nil {
 		return nil, err
 	}
 
 	return pollDownload(ctx, in, state)
 }
 
-// runOngoingCheck decides whether the just-added torrent is the
-// full season or a half-season one. The result is either:
+// runOngoingCheck decides what the just-added torrent is: the whole season,
+// or a part of a season the tracker might still complete.
 //
-//   - a transition into StateOngoing with the thread id and the
-//     two counts saved on the row, when the file count is below
-//     the season's episode count, OR
+// The result is either:
 //
-//   - no transition, when the request is for a film, when TMDB
-//     returned 0 (still-airing season), or when the file count
-//     is at or above the season's episode count.
+//   - no monitoring, when the pack has every episode the season is expected
+//     to have, or when the season is long over and short — there is nothing
+//     to wait for, and the request finishes with what it has;
 //
-// A failure in either activity (qBittorrent unreachable, TMDB
-// rate-limit) is a soft skip: the request goes to StateDownloading
-// anyway, the user can re-evaluate through the manual path if
-// the half-season slips past.
-func runOngoingCheck(ctx workflow.Context, in *Input, state *State, hash string) (ongoing bool, err error) {
+//   - monitoring, when the pack is short and the tracker might still publish
+//     the rest of the season: the request goes on watching for the update
+//     that carries it.
+//
+// A failure in the season facts is a soft skip: the request goes on with the
+// download it has, the user can re-evaluate through the manual path if the
+// half-season slips past.
+func runOngoingCheck(ctx workflow.Context, in *Input, state *State, hash string) (monitoring bool, err error) {
+	// The flag starts false and is set by the branch that decides to wait.
+	// A request that carried it from an earlier pack must not keep it when
+	// this pack turns out to be the whole season.
+	state.Monitoring = false
+
 	if state.Selected == nil {
 		return false, nil
 	}
 	season := in.Spec.Ref.SeasonNumber()
 	if season <= 0 {
 		// Either the spec is a film, or it is a series-wide search
-		// without a season number. The ongoing branch only makes
+		// without a season number. The season branch only makes
 		// sense for one season at a time.
 		return false, nil
 	}
 
 	dbCtx := withOptions(ctx, dbOptions())
-	var expected SeasonEpisodeCountResult
-	if err := workflow.ExecuteActivity(dbCtx, (*Activities).SeasonEpisodeCount, SeasonEpisodeCountInput{
+
+	var facts SeasonFactsResult
+	if err := workflow.ExecuteActivity(dbCtx, (*Activities).SeasonFacts, SeasonFactsInput{
 		TMDBID: in.Spec.Ref.TMDBID,
 		Season: season,
-	}).Get(dbCtx, &expected); err != nil {
-		return false, err
-	}
-	if expected.Count <= 0 {
-		// Still-airing season, or TMDB does not know the count.
-		// The ongoing branch has no idea when the season ends; fall
-		// through to the regular download path.
+	}).Get(dbCtx, &facts); err != nil {
+		// TMDB is down, or rate-limited. The download is fine and the
+		// request is not lost over it: it goes on with the pack it has.
+		workflow.GetLogger(ctx).Warn("could not fetch the season facts",
+			"request", in.RequestID, "error", err)
 		return false, nil
 	}
 
@@ -782,27 +817,108 @@ func runOngoingCheck(ctx workflow.Context, in *Input, state *State, hash string)
 		return false, err
 	}
 
-	state.SelectedEpisodeCount = expected.Count
 	state.SelectedVideoCount = videos.Count
 
-	if videos.Count >= expected.Count {
-		// Full season, regular path. The thread id is still saved
-		// (a future update from the same thread would be picked up
-		// before another thread even if the request is not ongoing).
+	seasonState := release.SeasonState{
+		AiredCount:    facts.AiredCount,
+		PlannedCount:  facts.PlannedCount,
+		NewestAirDate: facts.NewestAirDate,
+		AirDate:       facts.AirDate,
+	}
+
+	// The number of episodes the pack's own name says the season has
+	// ("1-8 из 10"). It is the tracker's own view of the season, and it is
+	// the one number that can say the pack is the whole of it.
+	claimed := release.Parse(state.Selected.Title).Episodes.Total
+
+	// The season's size, as best it is known: what TMDB expects, and the
+	// tracker's own number when it is the larger of the two. The display
+	// says "8 of 10" rather than "8 of 8" when the season is still running.
+	expected := seasonState.Expected()
+	if claimed > expected {
+		expected = claimed
+	}
+	state.SelectedEpisodeCount = expected
+
+	now := workflow.Now(ctx)
+	windows := in.Policy.SeasonWindows()
+
+	short := seasonState.NeedsMore(videos.Count, claimed, now, windows)
+	// Whether the tracker might still publish the rest of the season. It is
+	// the same measure the wait itself is bounded by: a season that ended
+	// three weeks ago very well might still be completed, and one that ended
+	// two months ago will not be.
+	mightComplete := seasonState.MightStillComplete(now, windows)
+
+	switch {
+	case !short:
+		// The pack has every episode the season is expected to have.
 		if err := saveState(ctx, in, state, "torrent.added.full", fmt.Sprintf(
-			"%d/%d episodes", videos.Count, expected.Count)); err != nil {
+			"%d/%d episodes", videos.Count, state.SelectedEpisodeCount)); err != nil {
+			return false, err
+		}
+		return false, nil
+
+	case mightComplete:
+		// The pack is short of a season the tracker may still complete. The
+		// rest of it is on its way, and the request goes on watching for the
+		// update that carries it.
+		state.Monitoring = true
+		if state.MonitorSince.IsZero() {
+			state.MonitorSince = now
+		}
+		if err := saveState(ctx, in, state, "torrent.added.partial", fmt.Sprintf(
+			"%d/%d episodes, the season is not out yet",
+			videos.Count, state.SelectedEpisodeCount)); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	default:
+		// The season is over and the pack is short of it. Nothing is coming,
+		// so there is nothing to wait for: the request finishes with the
+		// episodes it has.
+		if err := saveState(ctx, in, state, "torrent.added.partial", fmt.Sprintf(
+			"%d/%d episodes, the season is over",
+			videos.Count, state.SelectedEpisodeCount)); err != nil {
 			return false, err
 		}
 		return false, nil
 	}
+}
 
-	state.Phase = storage.StateOngoing
-	if err := saveState(ctx, in, state, "torrent.added.partial", fmt.Sprintf(
-		"%d/%d episodes, watching the same thread for the rest",
-		videos.Count, expected.Count)); err != nil {
-		return false, err
+// trackedPack describes the pack the request is following.
+//
+// It is what the season watcher looks for: the forum thread the pack came
+// from, and how many episodes it carries.
+//
+// The count is the one the pack's *name* claims, because that is what an
+// update is compared against — an update's count is read from its name too.
+// The torrent client's file count is the truth about the content, but
+// comparing a name against a file count lets a pack be recognised as an
+// update of itself: a pack named "1-10 из 10" whose torrent carries eight
+// video files would look like it has more episodes than it does, and the
+// watcher would delete it and add it again, forever.
+func trackedPack(state *State) release.Tracked {
+	tracked := release.Tracked{
+		ThreadID: state.SelectedThreadID,
+		Episodes: state.SelectedVideoCount,
 	}
-	return true, nil
+	if state.Selected != nil {
+		tracked.Title = state.Selected.Title
+		if n := release.Parse(state.Selected.Title).Episodes.Count(); n > 0 {
+			tracked.Episodes = n
+		}
+	}
+	return tracked
+}
+
+// describeSeasonShortfall renders how much of the season is missing.
+func describeSeasonShortfall(state *State) string {
+	if state.SelectedEpisodeCount > 0 {
+		return fmt.Sprintf("%d of %d episodes", state.SelectedVideoCount, state.SelectedEpisodeCount)
+	}
+	return fmt.Sprintf("%d episodes", state.SelectedVideoCount)
 }
 
 // pollDownload waits for the current torrent, one poll interval at a time.
@@ -914,6 +1030,10 @@ func abandonRelease(
 	// not been filed into the library, so this cannot destroy anything the user
 	// is watching.
 	//
+	// A request that is following a season is the exception: the pack it is
+	// on repeats the episodes it already downloaded — they are in Plex — and
+	// deleting the files would take them off the disk.
+	//
 	// Whether to blacklist comes from the activity rather than being decided
 	// here, because the evidence is there: a torrent that errored is the
 	// release's fault, a stalled one usually is, and one that vanished without
@@ -929,7 +1049,7 @@ func abandonRelease(
 	_ = workflow.ExecuteActivity(delCtx, (*Activities).DeleteTorrent, DeleteTorrentInput{
 		RequestID:    in.RequestID,
 		Hash:         state.QbitHash,
-		DeleteFiles:  true,
+		DeleteFiles:  !state.Monitoring,
 		BlacklistFor: blacklistFor,
 		Reason:       string(status.State) + ": " + status.Detail,
 	}).Get(delCtx, nil)
@@ -938,6 +1058,9 @@ func abandonRelease(
 	state.Selected = nil
 	state.QbitHash = ""
 	state.DownloadDeadline = time.Time{}
+	// The request is not following a season any more: whatever it picks
+	// next is decided from scratch.
+	state.Monitoring = false
 
 	if state.StallCount >= in.Policy.MaxStalls {
 		return failedResult(ctx, in, state, fmt.Sprintf(
@@ -956,6 +1079,12 @@ func abandonRelease(
 
 // completeDownload handles a finished torrent.
 func completeDownload(ctx workflow.Context, in *Input, state *State, contentPath string) (*Result, error) {
+	// A pack of a running season is not the season. The request does not
+	// finish here: it goes on watching for the rest of it.
+	if state.Monitoring {
+		return waitForSeason(ctx, in, state, contentPath)
+	}
+
 	if err := saveState(ctx, in, state, "download.completed", ""); err != nil {
 		return nil, err
 	}
@@ -984,6 +1113,39 @@ func completeDownload(ctx workflow.Context, in *Input, state *State, contentPath
 	return finishWith(ctx, in, state, result, storage.NotificationCompleted)
 }
 
+// waitForSeason is what happens when the pack of a running season has
+// finished downloading.
+//
+// The episodes that are here go into the library now. The rest of the season
+// is on its way, and the request goes on watching for the update that carries
+// it: the tracker replaces the torrent in the same forum thread, so the
+// update is the release in that thread with more episodes in it.
+//
+// It returns a nil result, because the request is not over — the caller loops
+// again and the next pass takes the monitoring branch.
+func waitForSeason(ctx workflow.Context, in *Input, state *State, contentPath string) (*Result, error) {
+	// The episodes that are here go into the library now; the rest arrive
+	// later, in a pack of their own.
+	refreshPlex(ctx, in, contentPath)
+
+	state.Phase = storage.StateOngoing
+	state.NextRunAt = workflow.Now(ctx).Add(in.Policy.SeasonMonitorInterval)
+
+	if err := saveNote(ctx, in, state, "season.awaiting_update", fmt.Sprintf(
+		"%s; watching for the rest of the season", describeSeasonShortfall(state))); err != nil {
+		return nil, err
+	}
+
+	if err := notify(ctx, in, storage.NotificationSeason,
+		fmt.Sprintf("%s: the season is not out yet", in.Spec.DisplayTitle()),
+		fmt.Sprintf("Downloaded %s. Waiting for the rest of the season.",
+			describeSeasonShortfall(state))); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
 // refreshPlex asks the server to rescan the directory the download landed in.
 //
 // The path comes from the torrent client, and passing it narrows the rescan to
@@ -1007,6 +1169,167 @@ func refreshPlex(ctx workflow.Context, in *Input, contentPath string) {
 		workflow.GetLogger(ctx).Warn("plex refresh failed",
 			"request", in.RequestID, "path", contentPath, "error", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The season watcher
+// ---------------------------------------------------------------------------
+
+// monitorCycle looks for an update of the pack the request is following.
+//
+// It is the branch a request takes while it waits for the rest of a season
+// that is still being released. The pack came from a forum thread, and the
+// tracker replaces the torrent in that thread when the rest of the season is
+// out — so the update is the release in the same thread with more episodes in
+// it.
+//
+// It returns a non-nil result when the request is over, and nil to ask the
+// caller to loop again.
+func monitorCycle(ctx workflow.Context, in *Input, state *State) (*Result, error) {
+	// The season facts come from TMDB, which is not the tracker: they get
+	// their own queue so that asking TMDB does not spend the indexer's
+	// rate limit.
+	dbCtx := withOptions(ctx, dbOptions())
+
+	// The wait has a deadline. A tracker publishes the rest of a season days
+	// after the last episode, not months, and a request that waits for years
+	// is a request nobody looks at.
+	//
+	// The deadline is measured from the season's newest episode rather than
+	// from the moment the request started waiting, so a season that is still
+	// running keeps the wait open: every episode that airs moves the
+	// deadline with it. The season's premiere is the fallback for a season
+	// whose episodes carry no dates of their own, and the moment the request
+	// started waiting is the fallback for a season TMDB has no dates for at
+	// all — without one of them the wait would have no end.
+	var facts SeasonFactsResult
+	if err := workflow.ExecuteActivity(dbCtx, (*Activities).SeasonFacts, SeasonFactsInput{
+		TMDBID: in.Spec.Ref.TMDBID,
+		Season: in.Spec.Ref.SeasonNumber(),
+	}).Get(dbCtx, &facts); err != nil {
+		// A TMDB failure must not end the wait: the request simply checks
+		// again tomorrow.
+		workflow.GetLogger(ctx).Warn("could not fetch the season facts",
+			"request", in.RequestID, "error", err)
+	} else {
+		basis := facts.NewestAirDate
+		if basis == nil {
+			basis = facts.AirDate
+		}
+		if basis == nil {
+			basis = &state.MonitorSince
+		}
+		if !basis.IsZero() && workflow.Now(ctx).After(basis.Add(in.Policy.SeasonMonitorWindow)) {
+			return finishSeasonShort(ctx, in, state)
+		}
+	}
+
+	// Look for the update.
+	actCtx := withOptions(ctx, indexerOptions())
+	var res SearchResult
+	if err := workflow.ExecuteActivity(actCtx, (*Activities).SearchSeasonUpdates, UpdateSearchInput{
+		RequestID: in.RequestID,
+		Spec:      in.Spec,
+		Tracked:   trackedPack(state),
+	}).Get(actCtx, &res); err != nil {
+		// An indexer failure is the indexer's problem, not the media's, so
+		// the attempt counter is not advanced and the wait continues on the
+		// error backoff.
+		state.ErrorStreak++
+		state.NextRunAt = workflow.Now(ctx).Add(indexerBackoff(state.ErrorStreak))
+
+		if saveErr := saveState(ctx, in, state, "season.indexer_error",
+			describeError(err, "indexer error")); saveErr != nil {
+			return nil, saveErr
+		}
+		return nil, nil
+	}
+	state.ErrorStreak = 0
+
+	if !res.Found() {
+		// Nothing yet. Check again tomorrow.
+		state.NextRunAt = workflow.Now(ctx).Add(in.Policy.SeasonMonitorInterval)
+		if err := saveNote(ctx, in, state, "season.no_update",
+			"the tracker has not published an update of the tracked pack yet"); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	// The update is a new torrent: the tracker replaces the file, so the
+	// infohash changes. The old one goes first, and without its files — the
+	// episodes already downloaded stay on disk, and the new torrent reuses
+	// them.
+	//
+	// The order is not a choice. qBittorrent's add is idempotent by tag, so
+	// while the old torrent is in the client the new one is not added at all:
+	// the old hash comes back and nothing happens.
+	delCtx := withOptions(ctx, deleteOptions())
+	if err := workflow.ExecuteActivity(delCtx, (*Activities).DeleteTorrent, DeleteTorrentInput{
+		RequestID: in.RequestID,
+		Hash:      state.QbitHash,
+		// The files stay: they are the episodes of the season that have
+		// already been downloaded, and the new torrent reuses them.
+		DeleteFiles: false,
+	}).Get(delCtx, nil); err != nil {
+		// The old torrent is still in the client, and the add would adopt
+		// it instead of adding the update. The wait continues, and the next
+		// tick tries again.
+		workflow.GetLogger(ctx).Warn("could not remove the old torrent; the update waits",
+			"request", in.RequestID, "hash", state.QbitHash, "error", err)
+		state.NextRunAt = workflow.Now(ctx).Add(in.Policy.SeasonMonitorInterval)
+		if saveErr := saveState(ctx, in, state, "season.update_deferred",
+			"the old torrent could not be removed from the client"); saveErr != nil {
+			return nil, saveErr
+		}
+		return nil, nil
+	}
+
+	state.QbitHash = ""
+	state.Selected = res.Chosen
+	state.Phase = storage.StateAdding
+
+	if err := saveNote(ctx, in, state, "season.update_found", res.Chosen.Title); err != nil {
+		return nil, err
+	}
+
+	workflow.GetLogger(ctx).Info("found an update of the tracked pack",
+		"request", in.RequestID, "release", res.Chosen.Title)
+
+	return downloadCycle(ctx, in, state, "This is the rest of the season.")
+}
+
+// finishSeasonShort ends a request that waited for the rest of a season and
+// did not get it.
+//
+// The episodes that did arrive are in the library, so this is not a failure —
+// but the season is not complete either, and the user is told rather than
+// left with a request that says "done".
+func finishSeasonShort(ctx workflow.Context, in *Input, state *State) (*Result, error) {
+	result := Result{
+		RequestID: in.RequestID,
+		Outcome:   storage.StateCompleted,
+		Title:     in.Spec.DisplayTitle(),
+		Year:      in.Spec.Year,
+		Reason: fmt.Sprintf("the season was not completed: %s",
+			describeSeasonShortfall(state)),
+		Attempts: state.Attempt,
+		Selected: state.Selected,
+	}
+
+	if err := notify(ctx, in, storage.NotificationSeason,
+		fmt.Sprintf("%s: the season is incomplete", in.Spec.DisplayTitle()),
+		result.Reason); err != nil {
+		workflow.GetLogger(ctx).Error("could not notify watchers",
+			"request", in.RequestID, "error", err)
+	}
+
+	state.Phase = storage.StateCompleted
+	if err := saveState(ctx, in, state, "season.incomplete", result.Reason); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,7 +1459,12 @@ func cancelRequest(ctx workflow.Context, in *Input, state *State) (*Result, erro
 			Hash:      state.QbitHash,
 			// The files go too: a cancelled download has not been filed into
 			// the library, so there is nothing here the user is watching.
-			DeleteFiles: true,
+			//
+			// A request waiting for the rest of a season is the exception:
+			// its pack is finished and already in Plex, and deleting the
+			// files would take the episodes the user is watching off the
+			// disk.
+			DeleteFiles: !state.Monitoring,
 		}).Get(dctx, &ignored); err != nil {
 			// The request is still cancelled. Failing to clean up the client
 			// must not resurrect it.
@@ -1172,6 +1500,9 @@ func handleAddFailure(ctx workflow.Context, in *Input, state *State, err error) 
 	state.Selected = nil
 	state.QbitHash = ""
 	state.Phase = storage.StatePending
+	// The request is not following a season any more: the pack it was
+	// following never landed.
+	state.Monitoring = false
 	state.NextRunAt = workflow.Now(ctx).Add(indexerBackoff(state.ErrorStreak))
 
 	return saveState(ctx, in, state, "torrent.add_failed",
@@ -1231,6 +1562,12 @@ func initialState(ctx workflow.Context, in Input) State {
 		// StateManual by writing the field, and a ContinueAsNew carries
 		// it across.
 		ManualSince: in.StartManualSince,
+		// Carried for the same reason as the deadlines above: a request that
+		// forgets it is following a season takes the pack it just
+		// downloaded as the whole season.
+		Monitoring: in.StartMonitoring,
+		// The fallback deadline for a season TMDB has no dates for.
+		MonitorSince: in.StartMonitorSince,
 	}
 }
 
@@ -1358,6 +1695,11 @@ func continueAsNewIfNeeded(ctx workflow.Context, in Input, state State) (bool, e
 	// Same reasoning for the manual-mode timeout: a ContinueAsNew during
 	// StateManual would otherwise reset the 14-day wait on every restart.
 	next.StartManualSince = state.ManualSince
+	// Carried for the same reason: a restart must not turn a request that is
+	// waiting for the rest of a season into one that takes the pack it has
+	// as the whole season.
+	next.StartMonitoring = state.Monitoring
+	next.StartMonitorSince = state.MonitorSince
 	// The iteration count has to survive too, or the log line above would
 	// report a number that resets at every restart.
 	next.StartIteration = state.Iteration
@@ -1478,6 +1820,23 @@ func latestPlexMatch(ctx workflow.Context, in *Input) (CheckPlexResult, error) {
 
 // saveState writes the projection and records an event.
 func saveState(ctx workflow.Context, in *Input, state *State, event, detail string) error {
+	return saveEvent(ctx, in, state, event, detail, true)
+}
+
+// saveNote records an event without touching the request's error field.
+//
+// The detail of an informational event — "the tracker has not published an
+// update yet" — is not an error, and the request page shows the error field
+// as one.
+func saveNote(ctx workflow.Context, in *Input, state *State, event, detail string) error {
+	return saveEvent(ctx, in, state, event, detail, false)
+}
+
+// saveEvent writes the projection and records an event.
+//
+// isError says whether the detail is an error. It decides whether the
+// request's error field is written, which the interface shows as "Ошибка".
+func saveEvent(ctx workflow.Context, in *Input, state *State, event, detail string, isError bool) error {
 	actCtx := withOptions(ctx, dbOptions())
 
 	selected := storage.RequestState{
@@ -1487,6 +1846,13 @@ func saveState(ctx workflow.Context, in *Input, state *State, event, detail stri
 		ErrorStreak: state.ErrorStreak,
 		StallCount:  state.StallCount,
 		QbitHash:    state.QbitHash,
+		// The three season fields. They are written on every state change,
+		// not only while a season is being followed, because the write is
+		// unconditional: a request that stops following a season must not
+		// leave the numbers of the last one behind.
+		SelectedThreadID:     state.SelectedThreadID,
+		SelectedVideoCount:   state.SelectedVideoCount,
+		SelectedEpisodeCount: state.SelectedEpisodeCount,
 	}
 	if !state.NextRunAt.IsZero() {
 		next := state.NextRunAt
@@ -1508,7 +1874,9 @@ func saveState(ctx workflow.Context, in *Input, state *State, event, detail stri
 	payload := map[string]string{}
 	if detail != "" {
 		payload["detail"] = detail
-		selected.LastError = detail
+		if isError {
+			selected.LastError = detail
+		}
 	}
 
 	return workflow.ExecuteActivity(actCtx, (*Activities).SaveState, SaveStateInput{

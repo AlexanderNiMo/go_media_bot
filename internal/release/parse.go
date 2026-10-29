@@ -186,6 +186,16 @@ type Parsed struct {
 	HasEpisode     bool
 	HasEpisodePack bool
 
+	// Episodes is the range of episodes the name claims to carry.
+	//
+	// It is what tells a pack of eight episodes from a single one, and — for a
+	// season that is still being released — how far along the pack is: a name
+	// that says "1-8 из 10" is eight episodes out of a season of ten.
+	//
+	// A name that says nothing about episodes leaves it unknown, which is a
+	// different thing from a range of zero episodes.
+	Episodes Span
+
 	// HDR flags are not scored today but are recorded, because a release that
 	// is HDR and one that is not are different downloads even at the same
 	// resolution.
@@ -218,6 +228,42 @@ var (
 	seasonRuRe    = regexp.MustCompile(`сезон\w*\s*(\d{1,2})\b`)
 	episodeWordRe = regexp.MustCompile(`\be\d{1,3}\b`)
 	episodeRuRe   = regexp.MustCompile(`серия|серии|эпизод`)
+
+	// Episode ranges are matched against the raw name, not the normalised
+	// one: the normalisation folds the hyphen that separates the two ends of
+	// a range into a space, and "S02E01-E08" and "S02E01 E08" would become
+	// indistinguishable.
+	//
+	// "S02E01-E08", "S02.E01.E08", "S02E01-08", "S02E01 E08".
+	spanWithSeasonRe = regexp.MustCompile(`(?i)\bs(\d{1,2})\s*[._\- ]*\s*e(\d{1,3})\s*[._\-–— ]+\s*e?(\d{1,3})\b`)
+
+	// "E01-E08", without a season marker.
+	spanEpisodeRe = regexp.MustCompile(`(?i)\be(\d{1,3})\s*[._\-–— ]+\s*e?(\d{1,3})\b`)
+
+	// "1x01-1x08" — the season-episode convention with an "x" between the
+	// two numbers.
+	spanXRe = regexp.MustCompile(`(?i)\b(\d{1,2})x(\d{1,3})\s*[-–—]\s*(?:\d{1,2}x)?(\d{1,3})\b`)
+
+	// A single "1x05" — one episode of a season, in the same convention.
+	singleXRe = regexp.MustCompile(`(?i)\b\d{1,2}x(\d{1,3})\b`)
+
+	// "1-8 из 10" — the Russian tracker convention, where the range is
+	// followed by the number of episodes the season has in total.
+	spanWithTotalRe = regexp.MustCompile(`(?i)(\d\.)?\b(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*(?:из|of)\s*(\d{1,2})\b`)
+
+	// A bare "1-8". It is only an episode range when the name also says which
+	// season it belongs to: on its own it is as likely to be a pair of years
+	// or a resolution as a pair of episodes.
+	//
+	// The optional leading group catches the audio track specification:
+	// "5.1-2.0" is two numbers with a hyphen between them, and reading it as
+	// a range would make a single-episode release look like a pack of two.
+	spanBareRe = regexp.MustCompile(`(?i)(\d\.)?\b(\d{1,2})\s*[-–—]\s*(\d{1,2})\b`)
+
+	// The number of episodes the season has, when the name says so. It is
+	// read on its own, because the total is worth having even when the range
+	// is written in a form the range patterns do not match.
+	totalRe = regexp.MustCompile(`(?i)(?:из|of)\s*(\d{1,2})\b`)
 
 	// Sources are matched longest-first so that BDRemux wins over BDRip and
 	// WEB-DL over WEB, which substring matching alone would get wrong.
@@ -282,11 +328,139 @@ func Parse(name string) Parsed {
 	}
 
 	p.parseSeason()
+	p.Episodes = episodeSpan(name, p.HasSeason)
+
+	// A name that carries a range of episodes is a pack, not a single
+	// episode. The SxxExx pattern matched the first episode of the range
+	// ("S02E01-E08" reads as season 2, episode 1), and without this the
+	// selector would refuse a whole season as if it were one episode.
+	if p.Episodes.Count() > 1 {
+		p.HasEpisode = false
+	}
+
+	// "1x05" is one episode, in the same convention as "S02E05" — a naming
+	// the season and episode without the "S" and the "E".
+	if !p.HasEpisode && p.Episodes.Count() == 0 && singleXRe.MatchString(name) {
+		p.HasEpisode = true
+	}
 
 	p.HDR = hdrRe.MatchString(p.Normalised)
 	p.DolbyVision = dvRe.MatchString(p.Normalised)
 
 	return p
+}
+
+// Span is the range of episodes a release name claims to carry.
+//
+// It is what tells a pack of eight episodes from a single one, and — for a
+// season that is still being released — how far along the pack is: a name
+// that says "1-8 из 10" is eight episodes out of a season of ten.
+type Span struct {
+	// From and To are the first and the last episode of the range.
+	From int
+	To   int
+	// Total is the number of episodes the season is expected to have, when
+	// the name says so ("1-8 из 10"). Zero when it does not.
+	Total int
+	// Known reports whether the name carried a range at all. A name that
+	// says nothing about its episodes has a span that is not known, which is
+	// a different thing from a range of zero episodes.
+	Known bool
+}
+
+// Count returns how many episodes the span covers.
+func (s Span) Count() int {
+	if !s.Known || s.To < s.From {
+		return 0
+	}
+	return s.To - s.From + 1
+}
+
+// episodeSpan reads the range of episodes out of a release name.
+//
+// hasSeason says whether the name names a season. It is what makes a bare
+// "1-8" readable as an episode range: without it, the same two numbers are
+// as likely to be a pair of years.
+//
+// The order of the attempts matters. The form with a total comes first
+// because "1-8 из 10" also matches the bare range, and the total is
+// information the bare form does not carry.
+//
+// The total is read on its own afterwards, so that a name which carries the
+// total in a form the range patterns do not match — "S02E01-E08 из 10" —
+// still says how big the season is.
+func episodeSpan(name string, hasSeason bool) Span {
+	lower := strings.ToLower(name)
+
+	span := Span{}
+	switch {
+	case matchSpan(spanWithSeasonRe, lower, 2, 3, 0, &span):
+	case matchSpan(spanXRe, lower, 2, 3, 0, &span):
+	case matchSpan(spanWithTotalRe, lower, 2, 3, 1, &span):
+	case matchSpan(spanEpisodeRe, lower, 1, 2, 0, &span):
+	case hasSeason && matchSpan(spanBareRe, lower, 2, 3, 1, &span):
+	}
+
+	if span.Known {
+		span.Total = episodeTotal(lower, span.To)
+	}
+	return span
+}
+
+// matchSpan reads a range out of a match, when the match is one.
+//
+// fromGroup and toGroup are the groups holding the two ends of the range.
+// skipGroup, when it is not zero, is the group holding an optional prefix:
+// a match whose prefix matched is the audio track specification
+// ("5.1-2.0"), not a range of episodes.
+func matchSpan(re *regexp.Regexp, name string, fromGroup, toGroup, skipGroup int, span *Span) bool {
+	m := re.FindStringSubmatch(name)
+	if m == nil {
+		return false
+	}
+	if skipGroup > 0 && m[skipGroup] != "" {
+		return false
+	}
+	from, to := atoiOrZero(m[fromGroup]), atoiOrZero(m[toGroup])
+	if !plausibleSpan(from, to) {
+		return false
+	}
+	span.From, span.To, span.Known = from, to, true
+	return true
+}
+
+// episodeTotal reads the number of episodes the season has, when the name
+// says so ("1-8 из 10").
+func episodeTotal(name string, atLeast int) int {
+	m := totalRe.FindStringSubmatch(name)
+	if m == nil {
+		return 0
+	}
+	total := atoiOrZero(m[1])
+	if total < atLeast {
+		return 0
+	}
+	return total
+}
+
+// plausibleSpan reports whether two numbers can be the ends of an episode
+// range.
+//
+// The upper bound is what keeps a resolution out of it: "S02E01.1080p" must
+// not read as a range ending at episode 1080, and a season does not have a
+// hundred and one episodes.
+func plausibleSpan(from, to int) bool {
+	return from >= 0 && to <= 99 && from <= to
+}
+
+// atoiOrZero parses a number that a regex has already guaranteed to be
+// digits.
+func atoiOrZero(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (p *Parsed) parseSeason() {

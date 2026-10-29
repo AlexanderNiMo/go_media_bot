@@ -25,9 +25,15 @@ import (
 // consumed is gone with the rest of the list when the workflow clears
 // the candidates after a successful pick or a 14-day timeout.
 type Candidate struct {
-	Rank            int
-	Title           string
-	Indexer         string
+	Rank    int
+	Title   string
+	Indexer string
+	// ThreadID is the forum thread the release came from. It is what the
+	// season watcher matches on: a tracker replaces the torrent in the
+	// same thread when the rest of a season is published, so a pack the
+	// user picked by hand can be followed the same way an automatic pick
+	// is.
+	ThreadID        string
 	InfoHash        string
 	MagnetLink      string
 	SourceURL       string
@@ -85,13 +91,13 @@ func (s *Store) StoreCandidates(ctx context.Context, requestID int64, candidates
 	for _, c := range candidates {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO request_candidates
-				(request_id, rank, title, indexer, info_hash,
+				(request_id, rank, title, indexer, thread_id, info_hash,
 				 magnet_link, source_url, size_bytes, seeders, leechers,
 				 rejection_reason)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		`, requestID, c.Rank, c.Title, c.Indexer, c.InfoHash,
-			c.MagnetLink, c.SourceURL, c.SizeBytes, c.Seeders, c.Leechers,
-			c.RejectionReason); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		`, requestID, c.Rank, c.Title, c.Indexer, nullString(c.ThreadID),
+			c.InfoHash, c.MagnetLink, c.SourceURL, c.SizeBytes, c.Seeders,
+			c.Leechers, c.RejectionReason); err != nil {
 			return fmt.Errorf("insert candidate rank %d: %w", c.Rank, err)
 		}
 	}
@@ -106,7 +112,7 @@ func (s *Store) StoreCandidates(ctx context.Context, requestID int64, candidates
 // special case.
 func (s *Store) ListCandidates(ctx context.Context, requestID int64) ([]Candidate, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT rank, title, indexer, info_hash,
+		SELECT rank, title, indexer, COALESCE(thread_id, ''), info_hash,
 		       magnet_link, source_url, size_bytes, seeders, leechers,
 		       rejection_reason, picked_at
 		FROM request_candidates
@@ -122,7 +128,7 @@ func (s *Store) ListCandidates(ctx context.Context, requestID int64) ([]Candidat
 	for rows.Next() {
 		var c Candidate
 		if err := rows.Scan(
-			&c.Rank, &c.Title, &c.Indexer, &c.InfoHash,
+			&c.Rank, &c.Title, &c.Indexer, &c.ThreadID, &c.InfoHash,
 			&c.MagnetLink, &c.SourceURL, &c.SizeBytes, &c.Seeders, &c.Leechers,
 			&c.RejectionReason, &c.PickedAt,
 		); err != nil {
@@ -166,11 +172,11 @@ func (s *Store) MarkPicked(ctx context.Context, requestID int64, rank int) (Cand
 		UPDATE request_candidates
 		SET picked_at = NOW()
 		WHERE request_id = $1 AND rank = $2
-		RETURNING rank, title, indexer, info_hash,
+		RETURNING rank, title, indexer, COALESCE(thread_id, ''), info_hash,
 		          magnet_link, source_url, size_bytes, seeders, leechers,
 		          rejection_reason, picked_at
 	`, requestID, rank).Scan(
-		&c.Rank, &c.Title, &c.Indexer, &c.InfoHash,
+		&c.Rank, &c.Title, &c.Indexer, &c.ThreadID, &c.InfoHash,
 		&c.MagnetLink, &c.SourceURL, &c.SizeBytes, &c.Seeders, &c.Leechers,
 		&c.RejectionReason, &c.PickedAt,
 	)
@@ -197,7 +203,7 @@ func (s *Store) MarkPicked(ctx context.Context, requestID int64, rank int) (Cand
 func (s *Store) GetPickedCandidate(ctx context.Context, requestID int64) (Candidate, error) {
 	var c Candidate
 	err := s.pool.QueryRow(ctx, `
-		SELECT rank, title, indexer, info_hash,
+		SELECT rank, title, indexer, COALESCE(thread_id, ''), info_hash,
 		       magnet_link, source_url, size_bytes, seeders, leechers,
 		       rejection_reason, picked_at
 		FROM request_candidates
@@ -205,7 +211,7 @@ func (s *Store) GetPickedCandidate(ctx context.Context, requestID int64) (Candid
 		ORDER BY picked_at ASC
 		LIMIT 1
 	`, requestID).Scan(
-		&c.Rank, &c.Title, &c.Indexer, &c.InfoHash,
+		&c.Rank, &c.Title, &c.Indexer, &c.ThreadID, &c.InfoHash,
 		&c.MagnetLink, &c.SourceURL, &c.SizeBytes, &c.Seeders, &c.Leechers,
 		&c.RejectionReason, &c.PickedAt,
 	)

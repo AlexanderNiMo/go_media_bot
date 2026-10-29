@@ -232,6 +232,19 @@ search:
   # run for two years; without this, the history would eventually
   # hit Temporal's event cap.
   # continue_as_new_history: 5000
+  # How long after its newest episode a season still counts as running.
+  # Default: 504h (21 days).
+  # season_airing_window: 504h
+  # How long after its premiere a season still counts as too new to be
+  # finished. Default: 720h (30 days).
+  # season_recent_window: 720h
+  # How long a request keeps waiting for the rest of a season after its
+  # last episode aired. Default: 1344h (8 weeks).
+  # season_monitor_window: 1344h
+  # How often the request looks for the update while it is waiting.
+  # Dev profile: an hour, so the watcher's behaviour is visible without
+  # waiting a day for it. Default: 24h.
+  season_monitor_interval: 1h
 
 
 # ---------------------------------------------------------------------------

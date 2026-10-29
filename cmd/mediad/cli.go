@@ -190,6 +190,15 @@ func requestWhen(r *storage.Request, now time.Time) string {
 		}
 		return "next in " + shortDuration(r.NextRunAt.Sub(now))
 
+	case storage.StateOngoing:
+		// The counts are what makes the line useful: how much of the season
+		// is already on disk, and how much is still to come.
+		if r.SelectedVideoCount > 0 && r.SelectedEpisodeCount > 0 {
+			return fmt.Sprintf("waiting for the rest: %d/%d",
+				r.SelectedVideoCount, r.SelectedEpisodeCount)
+		}
+		return "waiting for the rest of the season"
+
 	case storage.StateSkipped:
 		if r.PlexTitle != "" {
 			out := "in Plex: " + r.PlexTitle

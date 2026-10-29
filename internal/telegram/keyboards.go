@@ -301,6 +301,15 @@ func stateLine(r *storage.Request) string {
 	case storage.StateSearching:
 		return fmt.Sprintf("ищет сейчас, попыток: %d", r.AttemptCount)
 
+	case storage.StateOngoing:
+		// The counts are what makes the line useful: how much of the season
+		// is already on disk, and how much is still to come.
+		if r.SelectedVideoCount > 0 && r.SelectedEpisodeCount > 0 {
+			return fmt.Sprintf("ждёт остальные серии: %d из %d",
+				r.SelectedVideoCount, r.SelectedEpisodeCount)
+		}
+		return "ждёт остальные серии"
+
 	case storage.StatePending:
 		if r.AttemptCount == 0 {
 			return "ждёт первого поиска"

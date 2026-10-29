@@ -897,6 +897,8 @@ func notificationText(p storage.PendingTelegram) string {
 		b.WriteString("📚 ")
 	case storage.NotificationCanceled:
 		b.WriteString("🚫 ")
+	case storage.NotificationSeason:
+		b.WriteString("📅 ")
 	default:
 		b.WriteString("🔎 ")
 	}

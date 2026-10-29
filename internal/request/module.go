@@ -675,7 +675,29 @@ func (s *Service) Describe(ctx context.Context, requestID int64) (State, error) 
 }
 
 // policy builds the workflow policy from configuration.
+//
+// The season windows fall back to their defaults when they are not set. A
+// zero monitor interval would spin the workflow, and a zero monitor window
+// would end the wait before it began, so neither is a value a configuration
+// should be able to hold.
 func (s *Service) policy() Policy {
+	airing := s.cfg.Search.SeasonAiringWindow
+	if airing <= 0 {
+		airing = 21 * 24 * time.Hour
+	}
+	recent := s.cfg.Search.SeasonRecentWindow
+	if recent <= 0 {
+		recent = 30 * 24 * time.Hour
+	}
+	monitorWindow := s.cfg.Search.SeasonMonitorWindow
+	if monitorWindow <= 0 {
+		monitorWindow = 56 * 24 * time.Hour
+	}
+	monitorInterval := s.cfg.Search.SeasonMonitorInterval
+	if monitorInterval <= 0 {
+		monitorInterval = 24 * time.Hour
+	}
+
 	return Policy{
 		SearchDeadline:   s.cfg.Search.SearchDeadline,
 		BackoffLadder:    s.cfg.Search.BackoffLadder,
@@ -686,6 +708,11 @@ func (s *Service) policy() Policy {
 		ZeroStallAfter:   s.cfg.Download.ZeroStallAfter,
 		MissingGrace:     s.cfg.Download.MissingGrace,
 		MaxStalls:        s.cfg.Download.MaxStalls,
+
+		SeasonAiringWindow:    airing,
+		SeasonRecentWindow:    recent,
+		SeasonMonitorWindow:   monitorWindow,
+		SeasonMonitorInterval: monitorInterval,
 	}
 }
 

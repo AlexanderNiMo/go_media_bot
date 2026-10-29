@@ -576,6 +576,34 @@ func (c *Client) Season(ctx context.Context, tmdbID int64, season int) (*SeasonD
 	}, nil
 }
 
+// PlannedEpisodeCount returns the number of episodes a series says one of its
+// seasons will have.
+//
+// It comes from the series' own season list rather than from the season
+// itself. The season endpoint lists the episodes that have aired — and, if
+// TMDB knows them, the ones whose air date is still ahead — while the series
+// lists each season with the number of episodes it is expected to have. That
+// number is the one that says how long a season that is still running is
+// going to be.
+//
+// Zero when the series does not say, which is not an error: the season may
+// simply not have a planned size yet.
+func (c *Client) PlannedEpisodeCount(ctx context.Context, tmdbID int64, season int) (int, error) {
+	title, err := c.TV(ctx, tmdbID)
+	if err != nil {
+		return 0, err
+	}
+	if title == nil {
+		return 0, nil
+	}
+	for _, s := range title.Seasons {
+		if s.Number == season {
+			return s.EpisodeCount, nil
+		}
+	}
+	return 0, nil
+}
+
 // ---------------------------------------------------------------------------
 // HTTP plumbing
 // ---------------------------------------------------------------------------
