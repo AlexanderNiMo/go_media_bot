@@ -114,6 +114,58 @@ func seasonsKeyboard(sessionID string, seasons []tmdb.Season) *models.InlineKeyb
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
+// candidatePrefix marks a candidate button as ours.
+//
+// A search button carries a session id and an index into a stored
+// payload. A candidate button needs no payload at all: the request id
+// and the rank are both things the database already knows, so the data
+// stays a couple of dozen bytes against Telegram's limit of sixty-four.
+const candidatePrefix = "cnd:"
+
+// candidatesKeyboard builds the buttons for a request's candidate list.
+//
+// One button per release, in rank order: the rank is what the user
+// picks and the title is what they recognise. The seeders and the size
+// come along, because two releases with the same title are two
+// different downloads.
+//
+// Why the auto-selector refused each release is not on the button — it
+// is in the message above the keyboard, one line per candidate, which
+// is where the detail belongs. A button is for choosing, not for
+// reading.
+func candidatesKeyboard(requestID int64, candidates []storage.Candidate) *models.InlineKeyboardMarkup {
+	rows := make([][]models.InlineKeyboardButton, 0, len(candidates))
+
+	for _, c := range candidates {
+		label := fmt.Sprintf("%d. %s", c.Rank, c.Title)
+		if c.Seeders > 0 {
+			label += fmt.Sprintf(" · %d сидеров", c.Seeders)
+		}
+		if c.SizeBytes > 0 {
+			label += " · " + humanBytes(c.SizeBytes)
+		}
+
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text: truncateRunes(label, 60),
+			// The request id and the rank, not the title: the title is in
+			// the label, where a human reads it, and it would blow past
+			// the byte limit here.
+			CallbackData: fmt.Sprintf("%s%d:%d", candidatePrefix, requestID, c.Rank),
+		}})
+	}
+
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// emptyKeyboard is the markup that takes the buttons off a message.
+//
+// Telegram removes an inline keyboard when it is handed an empty one.
+// Passing null is not what the API documents for editing a message, so
+// it is not what this does.
+func emptyKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
+}
+
 // ---------------------------------------------------------------------------
 // Sending
 // ---------------------------------------------------------------------------
