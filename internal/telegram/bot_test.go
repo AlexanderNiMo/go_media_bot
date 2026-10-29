@@ -1081,6 +1081,136 @@ func TestDeliverySkipsUsersWithNoTelegramAddress(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The manual pick
+// ---------------------------------------------------------------------------
+
+// TestManualNotificationCarriesTheCandidateButtons — the notification that
+// says "pick a release" is the one that has to offer the choice, and the
+// only way to offer it in a chat is a keyboard. A message with a list in it
+// and no buttons is a message that asks the user to type a command they do
+// not know.
+func TestManualNotificationCarriesTheCandidateButtons(t *testing.T) {
+	h := newHarness(t)
+	user := h.link(t)
+	ctx := context.Background()
+
+	id := h.seedRequest(t, "Старый фильм", storage.StateManual)
+	if err := h.store.AddWatcher(ctx, id, user.ID); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+	if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 5, RejectionReason: "russian_audio"},
+		{Rank: 2, Title: "old film 720p", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2 << 30, Seeders: 3, RejectionReason: "size_under"},
+	}); err != nil {
+		t.Fatalf("store candidates: %v", err)
+	}
+	if _, err := h.store.CreateNotifications(ctx, id, storage.NotificationManual,
+		"Pick a release: Старый фильм", "1. [rutor] old film 1080p", nil); err != nil {
+		t.Fatalf("create notification: %v", err)
+	}
+
+	if err := h.bot.deliverOnce(ctx); err != nil {
+		t.Fatalf("deliverOnce: %v", err)
+	}
+
+	sent := h.stub.last("sendMessage")
+	if !sent.hasButton("old film 1080p") || !sent.hasButton("old film 720p") {
+		t.Fatalf("the candidates were not offered as buttons: %+v", sent)
+	}
+
+	// The request number is in the message: it is what "/pick" takes, and
+	// without it the notification is a list with no way to act on it.
+	if want := fmt.Sprintf("Запрос №%d", id); !strings.Contains(sent.Text, want) {
+		t.Errorf("the notification %q does not name the request (%s)", sent.Text, want)
+	}
+}
+
+// TestPressingACandidateButtonPicksIt — the button is not decoration:
+// pressing it marks the candidate and wakes the request, and the buttons
+// go away so a second press cannot be a second choice.
+func TestPressingACandidateButtonPicksIt(t *testing.T) {
+	h := newHarness(t)
+	user := h.link(t)
+	ctx := context.Background()
+
+	id := h.seedRequest(t, "Старый фильм", storage.StateManual)
+	if err := h.store.AddWatcher(ctx, id, user.ID); err != nil {
+		t.Fatalf("add watcher: %v", err)
+	}
+	if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 5, RejectionReason: "russian_audio"},
+		{Rank: 2, Title: "old film 720p", Indexer: "rutor", InfoHash: "h2", MagnetLink: "magnet:?xt=2", SizeBytes: 2 << 30, Seeders: 3, RejectionReason: "size_under"},
+	}); err != nil {
+		t.Fatalf("store candidates: %v", err)
+	}
+
+	h.press(t, h.callback(fmt.Sprintf("%s%d:%d", candidatePrefix, id, 2)))
+
+	list, err := h.store.ListCandidates(ctx, id)
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	var picked []storage.Candidate
+	for _, c := range list {
+		if c.PickedAt != nil {
+			picked = append(picked, c)
+		}
+	}
+	if len(picked) != 1 {
+		t.Fatalf("%d candidates were marked, want 1", len(picked))
+	}
+	if picked[0].Rank != 2 {
+		t.Errorf("picked rank = %d, want 2", picked[0].Rank)
+	}
+
+	// And the request was woken, so the choice takes effect now rather
+	// than at the request's next scheduled tick.
+	if len(h.req.signaled) != 1 || h.req.signaled[0] != id {
+		t.Errorf("signalled %v, want the request %d", h.req.signaled, id)
+	}
+
+	// The message says what was picked, and the buttons are gone.
+	edited := h.stub.last("editMessageText")
+	if !strings.Contains(edited.Text, "rank 2") {
+		t.Errorf("got %q, want a confirmation naming rank 2", edited.Text)
+	}
+	if len(edited.Buttons) != 0 {
+		t.Errorf("the buttons are still there: %v", edited.Buttons)
+	}
+}
+
+// TestCandidateButtonOnSomebodyElsesRequest — the button is a button like
+// any other: the id in it is a small number, and without the watchership
+// check any chat could press it and start a download on a stranger's
+// request. Same check as /pick.
+func TestCandidateButtonOnSomebodyElsesRequest(t *testing.T) {
+	h := newHarness(t)
+	h.link(t)
+	ctx := context.Background()
+
+	id := h.seedRequest(t, "Чужой фильм", storage.StateManual)
+	if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "old film 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", SizeBytes: 4 << 30, Seeders: 5, RejectionReason: "russian_audio"},
+	}); err != nil {
+		t.Fatalf("store candidates: %v", err)
+	}
+
+	h.press(t, h.callback(fmt.Sprintf("%s%d:%d", candidatePrefix, id, 1)))
+
+	if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "не ваш") {
+		t.Errorf("got %q, want a refusal", got)
+	}
+
+	// The candidate list is untouched.
+	list, _ := h.store.ListCandidates(ctx, id)
+	for _, c := range list {
+		if c.PickedAt != nil {
+			t.Errorf("a candidate was marked picked for a stranger: rank %d", c.Rank)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test database
 // ---------------------------------------------------------------------------
 
