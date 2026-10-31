@@ -13,6 +13,7 @@
   <dt>Plex</dt><dd>{{.PlexText}}</dd>
   <dt>Поиск</dt><dd>{{.SearchText}}</dd>
   {{if .ReleaseText}}<dt>Релиз</dt><dd>{{.ReleaseText}}</dd>{{end}}
+  {{if .SeasonText}}<dt>Сезон</dt><dd>{{.SeasonText}}</dd>{{end}}
   {{if .IsDownloading}}<dt>Прогресс</dt><dd>{{template "progress" .}}</dd>{{end}}
   {{if .QbitHash}}<dt>Торрент</dt><dd class="mono">{{.QbitHash}}</dd>{{end}}
   {{if .ContentPath}}<dt>Путь</dt><dd class="mono">{{.ContentPath}}</dd>{{end}}

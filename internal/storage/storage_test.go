@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"strconv"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/database"
 
 	"github.com/alex/mediad/internal/domain"
 )
@@ -301,13 +305,110 @@ func TestOnlyOneActiveRequestPerMedia(t *testing.T) {
 	}
 
 	// Every active state must be refused a second row.
-	for _, state := range []string{"pending", "searching", "adding", "downloading"} {
+	for _, state := range []string{"pending", "searching", "adding", "downloading", "ongoing"} {
 		t.Run("state "+state, func(t *testing.T) {
 			if err := insertRequest(state); err == nil {
 				t.Errorf("a second active request in state %q was accepted", state)
 			}
 		})
 	}
+}
+
+// TestMigrationResolvesDuplicateActiveRows — the migration that adds
+// 'ongoing' to the deduplication index has to cope with the rows the old
+// behaviour allowed: a request waiting for the rest of a season, and a second
+// request for the same season created while it waited.
+//
+// The unique index refuses to exist over both of them, and a migration that
+// fails is a deployment that does not start.
+func TestMigrationResolvesDuplicateActiveRows(t *testing.T) {
+	adminDSN := os.Getenv(testDSNEnv)
+	if adminDSN == "" {
+		t.Skipf("%s is not set; run `make up` and export it to run database tests", testDSNEnv)
+	}
+
+	ctx := context.Background()
+	name := fmt.Sprintf("mediad_test_%d_%s", time.Now().UnixNano(), sanitize(t.Name()))
+
+	admin, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		t.Fatalf("connect to admin database: %v", err)
+	}
+	defer admin.Close(ctx)
+
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	t.Cleanup(func() { dropDatabase(adminDSN, name) })
+
+	pool := openPool(t, adminDSN, name)
+	defer pool.Close()
+
+	// The state of the world before the migration: everything up to 00010.
+	if err := migrateTo(ctx, pool, 10); err != nil {
+		t.Fatalf("migrate to 10: %v", err)
+	}
+
+	mediaID := insertMedia(t, pool, "tv", 1399, ptr(int16(2)), "Игра престолов")
+	for i, state := range []string{"ongoing", "pending"} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+			VALUES ($1, $2, $3, now() + interval '2 years')`,
+			mediaID, fmt.Sprintf("tv-1399-s2-%d", i), state); err != nil {
+			t.Fatalf("insert request in state %q: %v", state, err)
+		}
+	}
+
+	// And now the migration that has to cope with them.
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// The oldest row keeps its state; the duplicate is closed.
+	var states []string
+	rows, err := pool.Query(ctx,
+		`SELECT state FROM requests WHERE media_id = $1 ORDER BY id`, mediaID)
+	if err != nil {
+		t.Fatalf("read the requests: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		states = append(states, state)
+	}
+
+	if len(states) != 2 {
+		t.Fatalf("got %d requests, want 2", len(states))
+	}
+	if states[0] != "ongoing" {
+		t.Errorf("the older request is %q, want it to keep its state", states[0])
+	}
+	if states[1] != "failed" {
+		t.Errorf("the duplicate is %q, want it closed", states[1])
+	}
+}
+
+// migrateTo applies the migrations up to a version.
+func migrateTo(ctx context.Context, pool *pgxpool.Pool, version int64) error {
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+
+	fsys, err := fs.Sub(migrationsFS, migrationsRoot)
+	if err != nil {
+		return fmt.Errorf("open embedded migrations: %w", err)
+	}
+
+	provider, err := goose.NewProvider(database.DialectPostgres, db, fsys)
+	if err != nil {
+		return fmt.Errorf("build migration provider: %w", err)
+	}
+	if _, err := provider.UpTo(ctx, version); err != nil {
+		return fmt.Errorf("apply migrations up to %d: %w", version, err)
+	}
+	return nil
 }
 
 // TestRequestCanBeRecreatedAfterTerminalState is the other half of the
@@ -971,13 +1072,84 @@ func TestNotificationsCarryNoPayload(t *testing.T) {
 	}
 }
 
-// TestAddWatcherIncludesManualBit — the manual-mode notification lives
-// at bit 8 of the watcher's notify_mask. Before this wire, new
-// watchers defaulted to 7 (started + completed + failed), and the
-// manual row was never created because 7 & 8 == 0. AddWatcher now
-// inserts 15 so every notification kind reaches a fresh watcher by
-// default. The migration in 00008 catches up existing rows.
-func TestAddWatcherIncludesManualBit(t *testing.T) {
+// TestSaveRequestStateKeepsTheSeasonFields — the three season columns are
+// what the interface shows for a request that is waiting for the rest of a
+// season: the thread the pack came from, how many episodes it carries, and
+// how many the season has.
+//
+// They are written on every state change, not only while a season is being
+// followed, so a request that stops following one does not leave the numbers
+// of the last one behind.
+func TestSaveRequestStateKeepsTheSeasonFields(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	mediaID := insertMedia(t, pool, "tv", 1399, ptr(int16(2)), "Игра престолов")
+
+	var requestID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO requests (media_id, workflow_id, state, search_deadline)
+		VALUES ($1, 'tv-1399-s2', 'pending', now() + interval '2 years')
+		RETURNING id`, mediaID).Scan(&requestID); err != nil {
+		t.Fatalf("insert request: %v", err)
+	}
+
+	err := store.SaveRequestState(ctx, RequestState{
+		ID:                   requestID,
+		State:                StateOngoing,
+		SelectedThreadID:     "rutracker:12345",
+		SelectedVideoCount:   8,
+		SelectedEpisodeCount: 10,
+	}, Event{
+		RequestID: requestID,
+		Event:     "season.awaiting_update",
+		ToState:   StateOngoing,
+		Actor:     "workflow",
+	})
+	if err != nil {
+		t.Fatalf("SaveRequestState: %v", err)
+	}
+
+	r, err := store.GetRequest(ctx, requestID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if r.State != StateOngoing {
+		t.Errorf("state = %q, want %q", r.State, StateOngoing)
+	}
+	if r.SelectedThreadID != "rutracker:12345" {
+		t.Errorf("thread id = %q, want %q", r.SelectedThreadID, "rutracker:12345")
+	}
+	if r.SelectedVideoCount != 8 {
+		t.Errorf("video count = %d, want 8", r.SelectedVideoCount)
+	}
+	if r.SelectedEpisodeCount != 10 {
+		t.Errorf("episode count = %d, want 10", r.SelectedEpisodeCount)
+	}
+}
+
+// TestActiveStatesIncludesOngoing — a request waiting for the rest of a
+// season is working, and it can be working for weeks. A request that is not
+// in this set is invisible to the reconciler and to the interface's filters.
+func TestActiveStatesIncludesOngoing(t *testing.T) {
+	var found bool
+	for _, s := range ActiveStates() {
+		if s == StateOngoing {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ActiveStates = %v, want it to include %q", ActiveStates(), StateOngoing)
+	}
+}
+
+// TestAddWatcherIncludesEveryKind — the notification kinds live at bits of
+// the watcher's notify_mask. Before the manual-mode wire, new watchers
+// defaulted to 7 (started + completed + failed), and the manual row was
+// never created because 7 & 8 == 0. AddWatcher now inserts the full mask so
+// every notification kind reaches a fresh watcher by default. The migrations
+// in 00008 and 00011 catch up existing rows.
+func TestAddWatcherIncludesEveryKind(t *testing.T) {
 	store, pool := newStoreFor(t)
 	ctx := context.Background()
 	mediaID := insertMedia(t, pool, "movie", 603, nil, "The Matrix")
@@ -1000,21 +1172,22 @@ func TestAddWatcherIncludesManualBit(t *testing.T) {
 		requestID, uid).Scan(&mask); err != nil {
 		t.Fatalf("read mask: %v", err)
 	}
-	if mask != 15 {
-		t.Errorf("AddWatcher mask = %d, want 15 (started|completed|failed|manual)", mask)
+	if mask != NotifyMaskAll {
+		t.Errorf("AddWatcher mask = %d, want %d (every kind)", mask, NotifyMaskAll)
 	}
 
-	// And the bit really does pass the manual notification through:
-	// CreateNotifications with NotificationManual produces a row for
-	// this watcher. Without the bit, the row would be skipped (zero
-	// rows returned).
-	created, err := store.CreateNotifications(ctx, requestID,
-		NotificationManual, "Pick a release", "candidates available", nil)
-	if err != nil {
-		t.Fatalf("CreateNotifications: %v", err)
-	}
-	if len(created) != 1 {
-		t.Fatalf("manual notification: %d rows, want 1 (mask=15 includes bit 8)", len(created))
+	// And the bits really do pass the notifications through:
+	// CreateNotifications produces a row for this watcher. Without the
+	// bits, the rows would be skipped (zero rows returned).
+	for _, kind := range []NotificationKind{NotificationManual, NotificationSeason} {
+		created, err := store.CreateNotifications(ctx, requestID,
+			kind, "Something happened", "the body", nil)
+		if err != nil {
+			t.Fatalf("CreateNotifications(%s): %v", kind, err)
+		}
+		if len(created) != 1 {
+			t.Fatalf("%s notification: %d rows, want 1 (the mask includes its bit)", kind, len(created))
+		}
 	}
 }
 
@@ -1134,7 +1307,7 @@ func TestUnlinkTelegramRemovesOnlyTheMatchingChat(t *testing.T) {
 	}
 }
 
-// TestTelegramNotifyMaskRoundTrip — the default is 15 (all bits), the
+// TestTelegramNotifyMaskRoundTrip — the default is the full mask, the
 // setter clamps out-of-range, and a freshly read row returns what was
 // written.
 func TestTelegramNotifyMaskRoundTrip(t *testing.T) {
@@ -1146,8 +1319,8 @@ func TestTelegramNotifyMaskRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTelegramNotifyMask: %v", err)
 	}
-	if got != 15 {
-		t.Errorf("default mask = %d, want 15", got)
+	if got != NotifyMaskAll {
+		t.Errorf("default mask = %d, want %d", got, NotifyMaskAll)
 	}
 
 	if err := store.SetTelegramNotifyMask(ctx, uid, 5); err != nil {
@@ -1161,8 +1334,8 @@ func TestTelegramNotifyMaskRoundTrip(t *testing.T) {
 		t.Errorf("after write, mask = %d, want 5", got)
 	}
 
-	if err := store.SetTelegramNotifyMask(ctx, uid, 16); err == nil {
-		t.Error("SetTelegramNotifyMask accepted 16, want an out-of-range error")
+	if err := store.SetTelegramNotifyMask(ctx, uid, 32); err == nil {
+		t.Error("SetTelegramNotifyMask accepted 32, want an out-of-range error")
 	}
 	if err := store.SetTelegramNotifyMask(ctx, uid, -1); err == nil {
 		t.Error("SetTelegramNotifyMask accepted -1, want an out-of-range error")

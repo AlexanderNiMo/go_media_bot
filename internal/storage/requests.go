@@ -218,7 +218,7 @@ func (s *Store) FindActiveRequest(ctx context.Context, ref domain.MediaRef) (*Re
 		 WHERE m.media_type = $1
 		   AND m.tmdb_id = $2
 		   AND COALESCE(m.season, -1) = COALESCE($3, -1)
-		   AND r.state IN ('pending','searching','adding','downloading')`
+		   AND r.state IN ('pending','searching','adding','downloading','ongoing')`
 
 	var (
 		id         int64
@@ -418,8 +418,17 @@ type RequestFilter struct {
 
 // ActiveStates is the set of states that mean a request is still being worked
 // on.
+//
+// StateOngoing is in the set: a request waiting for the rest of a season that
+// is still being released is working, and it can be working for weeks. A
+// request that is not in this set is invisible to the reconciler, to the
+// interface's filters and to the bot's list, and a request nobody can see is
+// a request nobody can cancel.
 func ActiveStates() []State {
-	return []State{StatePending, StateSearching, StateAdding, StateDownloading, StateManual}
+	return []State{
+		StatePending, StateSearching, StateAdding, StateDownloading,
+		StateManual, StateOngoing,
+	}
 }
 
 // AllStates is every state a request can be in, for callers that have to

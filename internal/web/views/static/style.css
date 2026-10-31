@@ -74,6 +74,10 @@ tr.unread td { font-weight: 500; }
 .state.canceled    { color: var(--pico-muted-color); }
 .state.skipped,
 .state.pending     { color: var(--pico-muted-color); }
+/* The season watcher: the request is waiting for the rest of a season that
+   is still being released. It is neither done nor failed, so it gets the
+   primary colour — the same one a download has. */
+.state.ongoing     { color: var(--pico-primary); border-color: var(--pico-primary); }
 
 .filters { margin-bottom: 0.5rem; color: var(--pico-muted-color); display: flex; gap: 1rem; flex-wrap: wrap; }
 .filters label { display: inline-flex; align-items: center; gap: 0.5rem; }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/release"
 	"github.com/alex/mediad/internal/storage"
 )
 
@@ -110,6 +111,31 @@ type Policy struct {
 	// available, and the user should be told rather than quietly retried
 	// forever.
 	MaxStalls int
+
+	// SeasonAiringWindow is how long after its newest episode a season still
+	// counts as running. A weekly show that aired three days ago is running;
+	// one that aired four months ago is not, and a short pack of a season
+	// that is over is not worth waiting for.
+	SeasonAiringWindow time.Duration
+	// SeasonRecentWindow is how long after its premiere a season still
+	// counts as too new to be finished.
+	SeasonRecentWindow time.Duration
+	// SeasonMonitorWindow is how long the request keeps waiting for an
+	// update after the season's last episode aired.
+	SeasonMonitorWindow time.Duration
+	// SeasonMonitorInterval is how often the request looks for the update
+	// while it is waiting.
+	SeasonMonitorInterval time.Duration
+}
+
+// SeasonWindows returns the deadlines that decide whether a season is still
+// being produced.
+func (p Policy) SeasonWindows() release.SeasonWindows {
+	return release.SeasonWindows{
+		Airing:  p.SeasonAiringWindow,
+		Recent:  p.SeasonRecentWindow,
+		Monitor: p.SeasonMonitorWindow,
+	}
 }
 
 // Input starts a request workflow.
@@ -169,6 +195,14 @@ type Input struct {
 	// manual-mode timeout on every history reset, and the same trap as
 	// StartSearchDeadline (the timeout never arrives) follows.
 	StartManualSince time.Time
+	// StartMonitoring carries the season-waiting flag across a restart. A
+	// request that loses it would take the download it just finished as the
+	// whole season and end there.
+	StartMonitoring bool
+	// StartMonitorSince carries the moment the request started waiting for
+	// the rest of a season. It is the fallback deadline for a season TMDB
+	// has no dates for: without it the wait would have no end at all.
+	StartMonitorSince time.Time
 }
 
 // State is the workflow's own state, carried across ContinueAsNew.
@@ -202,12 +236,24 @@ type State struct {
 	// different one.
 	SelectedThreadID string
 	// SelectedVideoCount is the count of video files the qBittorrent
-	// client reported when the torrent was added. Compared against
-	// SelectedEpisodeCount to drive the full-or-ongoing decision.
+	// client reported when the torrent was added. It is how many episodes
+	// the pack being followed carries, and it is the number an update has
+	// to beat.
 	SelectedVideoCount int
-	// SelectedEpisodeCount is the season's full episode count from
-	// TMDB, captured at selection time.
+	// SelectedEpisodeCount is the number of episodes the season is
+	// expected to have, as TMDB reported it when the pack was added.
 	SelectedEpisodeCount int
+	// Monitoring reports that the request is waiting for the rest of a
+	// season that is still being released.
+	//
+	// It is the difference between a pack that is the season and a pack
+	// that is part of one. A request that loses the flag would take the
+	// download it just finished as the whole season and end there.
+	Monitoring bool
+	// MonitorSince is when the request started waiting for the rest of a
+	// season. It is the fallback deadline for a season TMDB has no dates
+	// for.
+	MonitorSince time.Time
 	// DownloadDeadline is when the current torrent attempt is abandoned.
 	DownloadDeadline time.Time
 
@@ -337,6 +383,17 @@ type Rejection struct {
 	Title  string
 	Reason string
 	Detail string
+}
+
+// UpdateSearchInput asks the indexer for an updated version of the pack a
+// request is following.
+type UpdateSearchInput struct {
+	RequestID int64
+	Spec      domain.MediaSpec
+	// Tracked is the pack being followed: the forum thread it came from, and
+	// how many episodes it carries. An update has to come from that thread
+	// and carry more episodes.
+	Tracked release.Tracked
 }
 
 // AddTorrentInput hands a release to the torrent client.
@@ -469,16 +526,30 @@ type VideoFileCountResult struct {
 	Count int
 }
 
-// SeasonEpisodeCountInput asks TMDB how many episodes a season
-// has. Empty EpisodeCount (zero) means the season is not yet
-// known — TMDB returns that for a still-airing season, and the
-// workflow then skips the ongoing branch.
-type SeasonEpisodeCountInput struct {
+// SeasonFactsInput asks TMDB what it knows about a season.
+type SeasonFactsInput struct {
 	TMDBID int64
 	Season int
 }
 
-// SeasonEpisodeCountResult is the count TMDB reports.
-type SeasonEpisodeCountResult struct {
-	Count int
+// SeasonFactsResult is what TMDB knows about a season.
+//
+// The counts are the difference between a season that is over and one that is
+// still running: a pack that has every episode aired so far is still short
+// while the season is running, and there is no point waiting for a season
+// that ended years ago.
+type SeasonFactsResult struct {
+	// AiredCount is the number of episodes that have aired.
+	AiredCount int
+	// PlannedCount is the number of episodes the season is expected to have.
+	//
+	// It is only set when it says more than has aired: a number equal to the
+	// aired count says nothing about how long the season is going to be, and
+	// treating it as the season's size would end the wait early.
+	PlannedCount int
+	// NewestAirDate is when the most recent episode aired. Nil when no
+	// episode carries an air date.
+	NewestAirDate *time.Time
+	// AirDate is when the season started. Nil when it has no date.
+	AirDate *time.Time
 }

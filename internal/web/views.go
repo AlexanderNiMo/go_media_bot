@@ -52,6 +52,9 @@ type requestDetail struct {
 	Created     string
 	CompletedAt string
 	Active      bool
+	// SeasonText says how much of a season that is still being released is
+	// on disk. It is empty for everything else.
+	SeasonText string
 
 	Events []eventRow
 }
@@ -200,6 +203,30 @@ type notificationOption struct {
 	Checked bool
 }
 
+// notificationOptions are the bits of the Telegram notify mask.
+//
+// One list for the settings page and for the form that saves it: the
+// checkbox name is the option name, and a name that appears in one place and
+// not the other is a setting the user cannot change.
+func notificationOptions() []notificationOption {
+	return []notificationOption{
+		{Bit: 1, Name: "started", Label: "Поиск начался"},
+		{Bit: 2, Name: "completed", Label: "Загрузка завершилась"},
+		{Bit: 4, Name: "failed", Label: "Загрузка провалилась"},
+		// Bit 8 covers two kinds on the watcher side: "skipped"
+		// (the request was already in Plex) and "manual" (the workflow
+		// is waiting for the user to pick a release from a candidate
+		// list). They share the same bit because the user-facing
+		// decision is the same: do you want the bot to bother you about
+		// an out-of-band result?
+		{Bit: 8, Name: "skipped_and_manual", Label: "Уже было в Plex или пора выбрать релиз"},
+		// Bit 16 covers the season watcher: the request is waiting for
+		// the rest of a season that is still being released, or the wait
+		// ended without it.
+		{Bit: 16, Name: "season", Label: "Сезон ещё выходит"},
+	}
+}
+
 type settingsView struct {
 	page
 	Tab string
@@ -311,6 +338,8 @@ func whenText(r *storage.Request, now time.Time) string {
 			return since(*r.CompletedAt)
 		}
 		return "готово"
+	case storage.StateOngoing:
+		return seasonWaitText(r)
 	case storage.StateCanceled:
 		if r.CompletedAt != nil {
 			return since(*r.CompletedAt)
@@ -319,6 +348,20 @@ func whenText(r *storage.Request, now time.Time) string {
 	default:
 		return ""
 	}
+}
+
+// seasonWaitText describes a request that is waiting for the rest of a
+// season that is still being released.
+//
+// The counts are what makes the line useful: "ждёт остальные серии" says
+// that something is pending, and "8 из 12" says how much of it is already
+// on disk.
+func seasonWaitText(r *storage.Request) string {
+	if r.SelectedVideoCount > 0 && r.SelectedEpisodeCount > 0 {
+		return fmt.Sprintf("ждёт остальные серии: %d из %d",
+			r.SelectedVideoCount, r.SelectedEpisodeCount)
+	}
+	return "ждёт остальные серии"
 }
 
 // progressText describes a download in progress.
@@ -366,6 +409,12 @@ func detailFor(r *storage.Request, watchers []storage.Watcher, events []storage.
 		Abandoned:   r.StallCount,
 		Active:      r.State.Active(),
 		PlexText:    plexText(r),
+	}
+
+	// The season line only exists while the request is waiting for the rest
+	// of a season that is still being released.
+	if r.State == storage.StateOngoing {
+		d.SeasonText = seasonWaitText(r)
 	}
 
 	// Formatted here rather than in the template: a time.Time printed directly

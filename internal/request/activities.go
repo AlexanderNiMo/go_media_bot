@@ -318,6 +318,77 @@ func (a *Activities) hasPicked(ctx context.Context, requestID int64) bool {
 	return err == nil
 }
 
+// SearchSeasonUpdates looks for an updated version of the pack a request is
+// following.
+//
+// It is the search a request makes while it waits for the rest of a season
+// that is still being released. The pack came from a forum thread, and the
+// tracker replaces the torrent in that thread when the rest of the season is
+// out — so the update is the release in the same thread with more episodes in
+// it.
+//
+// Nothing else is accepted. A request waiting for the rest of a season is not
+// looking for a better release of it; it is looking for the rest of it.
+//
+// The candidate list is not refreshed: the releases that are not updates of
+// the tracked pack are not options for this request, and offering them would
+// invite the user to pick something the request is not waiting for.
+func (a *Activities) SearchSeasonUpdates(ctx context.Context, in UpdateSearchInput) (SearchResult, error) {
+	log := a.logOrDefault().With("request", in.RequestID, "media", in.Spec.Ref.String())
+
+	req := indexer.ForMedia(in.Spec, categoriesFor(in.Spec), 100)
+
+	releases, err := a.indexer.Search(ctx, req)
+	if err != nil {
+		if isRateLimited(err) {
+			return SearchResult{}, temporal.NewNonRetryableApplicationError(
+				"the indexer refused the request; backing off", "IndexerRateLimited", err)
+		}
+		return SearchResult{}, fmt.Errorf("search indexer: %w", err)
+	}
+
+	if len(releases) == 0 {
+		return SearchResult{Summary: "the indexer returned nothing"}, nil
+	}
+
+	identities := make([]string, 0, len(releases))
+	for _, r := range releases {
+		identities = append(identities, r.Identity())
+	}
+
+	blacklist, err := a.store.IsBlacklisted(ctx, identities)
+	if err != nil {
+		log.Warn("could not read the release blacklist", "error", err)
+		blacklist = map[string]bool{}
+	}
+
+	verdict := release.NewSelector(a.profile).SelectUpdate(in.Spec, releases, blacklist, in.Tracked)
+
+	result := SearchResult{
+		Considered: verdict.Considered,
+		Summary:    verdict.Summary(),
+	}
+	for _, rej := range verdict.Rejected {
+		result.Rejections = append(result.Rejections, Rejection{
+			Title:  rej.Release.Title,
+			Reason: string(rej.Reason),
+			Detail: rej.Detail,
+		})
+	}
+
+	if !verdict.Acceptable {
+		log.Info("no update of the tracked pack",
+			"considered", verdict.Considered, "summary", verdict.Summary())
+		return result, nil
+	}
+
+	log.Info("season update selected", "title", verdict.Chosen.Title, "score", verdict.Score)
+
+	chosen := verdict.Chosen
+	result.Chosen = &chosen
+	return result, nil
+}
+
 // storeCandidates persists the releases the selector refused, so the user
 // has something to pick from.
 //
@@ -370,6 +441,7 @@ func candidatesFromVerdict(verdict release.Verdict) []storage.Candidate {
 			Rank:            i + 1,
 			Title:           r.Release.Title,
 			Indexer:         r.Release.Indexer,
+			ThreadID:        r.Release.ThreadID,
 			InfoHash:        r.Release.InfoHash,
 			MagnetLink:      r.Release.MagnetURI,
 			SourceURL:       r.Release.DownloadURL,
@@ -562,29 +634,62 @@ func (a *Activities) VideoFileCount(ctx context.Context, in VideoFileCountInput)
 	return VideoFileCountResult{Count: n}, nil
 }
 
-// SeasonEpisodeCount returns the episode count TMDB reports for
-// a season. Zero is the "still airing" answer and is the
-// "skip the ongoing branch" signal for the workflow; the
-// request goes to StateCompleted because we have no way to
-// know when the season ends.
+// SeasonFacts reports what TMDB knows about a season: how many episodes have
+// aired, how many the season is expected to have, and when it last had one.
 //
-// A failure is a soft skip too: the request goes to
-// StateCompleted and any user who notices the half-season
-// can react through the existing manual path.
-func (a *Activities) SeasonEpisodeCount(ctx context.Context, in SeasonEpisodeCountInput) (SeasonEpisodeCountResult, error) {
+// It is what tells a request whether a short pack is a season that is over —
+// nothing to wait for — or one that is still being released, in which case the
+// rest of it is on its way.
+//
+// The planned count is only set when it says more than has aired. A number
+// equal to the aired count says nothing about how long the season is going to
+// be, and treating it as the season's size would end the wait on a season
+// that is only half way through.
+func (a *Activities) SeasonFacts(ctx context.Context, in SeasonFactsInput) (SeasonFactsResult, error) {
 	if in.TMDBID == 0 || in.Season < 0 {
-		return SeasonEpisodeCountResult{}, nil
+		return SeasonFactsResult{}, nil
 	}
-	s, err := a.tmdb.Season(ctx, in.TMDBID, in.Season)
+
+	details, err := a.tmdb.Season(ctx, in.TMDBID, in.Season)
 	if err != nil {
-		a.logOrDefault().Warn("could not fetch season episode count",
-			"tmdb", in.TMDBID, "season", in.Season, "error", err)
-		return SeasonEpisodeCountResult{}, nil
+		return SeasonFactsResult{}, fmt.Errorf("fetch season %d of %d: %w", in.Season, in.TMDBID, err)
 	}
-	if s == nil {
-		return SeasonEpisodeCountResult{}, nil
+	if details == nil {
+		return SeasonFactsResult{}, nil
 	}
-	return SeasonEpisodeCountResult{Count: s.EpisodeCount}, nil
+
+	now := time.Now()
+	result := SeasonFactsResult{
+		AiredCount:    details.AiredCount(now),
+		NewestAirDate: details.NewestAirDate(),
+		AirDate:       details.AirDate,
+	}
+
+	// The season endpoint lists the episodes that have aired and, when TMDB
+	// knows them, the ones whose air date is still ahead. That is the
+	// planned size for free.
+	planned := details.EpisodeCount
+
+	if planned <= result.AiredCount {
+		// The season endpoint knows nothing more than what has aired, so the
+		// series is asked: it lists each season with the number of episodes
+		// the season is expected to have.
+		count, err := a.tmdb.PlannedEpisodeCount(ctx, in.TMDBID, in.Season)
+		if err != nil {
+			// The planned count is a refinement, not a necessity: without it
+			// the request falls back to the aired count and the air dates.
+			a.logOrDefault().Warn("could not fetch the planned episode count",
+				"tmdb", in.TMDBID, "season", in.Season, "error", err)
+		} else {
+			planned = count
+		}
+	}
+
+	if planned > result.AiredCount {
+		result.PlannedCount = planned
+	}
+
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

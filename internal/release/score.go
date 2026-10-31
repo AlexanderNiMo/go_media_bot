@@ -32,6 +32,10 @@ const (
 	ReasonIsSingleEpisode  Reason = "single_episode"
 	ReasonWrongYear        Reason = "wrong_year"
 	ReasonNoDownloadLink   Reason = "no_download_link"
+	// ReasonNotAnUpdate is for the release that is perfectly good but is not
+	// the one the request is waiting for: a different pack, or the same pack
+	// with nothing added to it.
+	ReasonNotAnUpdate Reason = "not_an_update"
 )
 
 // Rejection pairs a release with the reason it was refused.
@@ -112,6 +116,12 @@ func (v Verdict) topReasons(n int) string {
 // Selector picks the release to download.
 type Selector interface {
 	Select(spec domain.MediaSpec, releases []domain.Release, blacklist map[string]bool, ongoingThread string) Verdict
+
+	// SelectUpdate picks the release that is a newer version of the pack a
+	// request is following. It is the selection a request in the season
+	// watcher makes, and it is stricter than Select: the release has to be
+	// an update of that pack, not merely the best on offer.
+	SelectUpdate(spec domain.MediaSpec, releases []domain.Release, blacklist map[string]bool, tracked Tracked) Verdict
 }
 
 // NewSelector returns the default selector.
@@ -137,6 +147,10 @@ type selector struct {
 func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, blacklist map[string]bool, ongoingThread string) Verdict {
 	verdict := Verdict{Considered: len(releases)}
 
+	// The hard filters come first, and what survives them is what the choice
+	// is between. The scoring needs to see all of them at once: the episode
+	// bonus is relative to the most complete pack on offer.
+	accepted := make([]scored, 0, len(releases))
 	for _, rel := range releases {
 		parsed := Parse(rel.Title)
 		audio := DetectAudio(rel.Title, rel.Indexer, s.profile)
@@ -148,9 +162,49 @@ func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, black
 			})
 			continue
 		}
+		accepted = append(accepted, scored{release: rel, parsed: parsed, audio: audio})
+	}
 
-		score := s.score(rel, parsed, audio)
-		if ongoingThread != "" && rel.ThreadID == ongoingThread {
+	// The most complete pack on offer. A tracker publishes both a season
+	// pack and the episodes of a season it has finished, and the one with
+	// more episodes is the one that finishes the request.
+	//
+	// The comparison is only made when every candidate says how many
+	// episodes it carries. A pack whose name says nothing about its
+	// episodes might be the whole season, and giving the others a bonus
+	// for naming themselves would punish the one that does not.
+	mostEpisodes := 0
+	allNamed := len(accepted) > 0
+	for _, c := range accepted {
+		n := c.parsed.Episodes.Count()
+		if n == 0 {
+			allNamed = false
+			continue
+		}
+		if n > mostEpisodes {
+			mostEpisodes = n
+		}
+	}
+
+	for _, c := range accepted {
+		score := s.score(c.release, c.parsed, c.audio)
+
+		if allNamed && mostEpisodes > 0 && c.parsed.Episodes.Count() == mostEpisodes {
+			// Episode bonus. A season request is for the whole season, and
+			// a pack of eight episodes is not the same thing as a pack of
+			// ten.
+			//
+			// The bonus is relative to the other candidates, so it decides
+			// between two packs of the same season and leaves a season of
+			// one episode per pack alone. Its 0.10 figure sits between
+			// weightSize (0.08) and weightSeeders (0.12), the same place
+			// the same-thread bonus sits: it can tip the scales between two
+			// acceptable releases but never overrides a resolution or an
+			// audio difference.
+			score += bonusEpisodes
+		}
+
+		if ongoingThread != "" && c.release.ThreadID == ongoingThread {
 			// Same-thread bonus. Picking the release from the
 			// previously-selected thread means qBittorrent
 			// sees the new torrent as an update of the old
@@ -165,16 +219,25 @@ func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, black
 			// not flatten them.
 			score += 0.06
 		}
+
 		if !verdict.Acceptable || score > verdict.Score {
 			verdict.Acceptable = true
-			verdict.Chosen = rel
+			verdict.Chosen = c.release
 			verdict.Score = score
-			verdict.Audio = audio
-			verdict.Parsed = parsed
+			verdict.Audio = c.audio
+			verdict.Parsed = c.parsed
 		}
 	}
 
 	return verdict
+}
+
+// scored is a release that passed the hard filters, with what the selector
+// read out of its name.
+type scored struct {
+	release domain.Release
+	parsed  Parsed
+	audio   AudioTrack
 }
 
 // reject applies the hard filters, in order of how certain each one is.
@@ -441,6 +504,17 @@ const (
 	// bonusHEVC rewards a smaller file at the same quality, which for a
 	// library that is streamed to a TV is a real benefit.
 	bonusHEVC = 0.03
+
+	// bonusEpisodes rewards the release that carries the most of the season.
+	//
+	// A season request is for the whole season, and a tracker publishes both
+	// the finished season and the episodes of one that is still running. The
+	// pack with more episodes is the one that finishes the request.
+	//
+	// The figure sits between weightSize (0.08) and weightSeeders (0.12):
+	// it decides between two packs of the same season and never overrides a
+	// resolution or an audio difference.
+	bonusEpisodes = 0.10
 )
 
 // score rates an acceptable release. Higher is better; the absolute value is

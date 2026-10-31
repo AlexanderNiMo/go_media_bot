@@ -324,6 +324,25 @@ func TestSeasonPackIsAccepted(t *testing.T) {
 	}
 }
 
+// TestSeasonPackWithAnEpisodeRangeIsAccepted — "S02E01-E08" is a pack of eight
+// episodes, not one episode. The SxxExx pattern matches the first episode of
+// the range, and reading it that way refuses a whole season as if it were a
+// tenth of one.
+func TestSeasonPackWithAnEpisodeRangeIsAccepted(t *testing.T) {
+	s := selectorFor(t)
+
+	verdict := s.Select(seasonSpec(), []domain.Release{
+		rel("Игра престолов S02E01-E08 1080p WEB-DL | LostFilm", 25, 100),
+	}, nil, "")
+
+	if !verdict.Acceptable {
+		t.Fatalf("a season pack was refused: %s", verdict.Summary())
+	}
+	if verdict.Parsed.Episodes.Count() != 8 {
+		t.Errorf("parsed episodes = %d, want 8", verdict.Parsed.Episodes.Count())
+	}
+}
+
 func TestWrongSeasonIsRejected(t *testing.T) {
 	s := selectorFor(t)
 

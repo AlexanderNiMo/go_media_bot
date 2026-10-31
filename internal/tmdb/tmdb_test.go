@@ -251,6 +251,36 @@ const seasonBody = `{
   ]
 }`
 
+// TestPlannedEpisodeCount — the series says how many episodes a season is
+// expected to have, which is the number a running season needs: the season
+// endpoint only lists the episodes that have aired.
+func TestPlannedEpisodeCount(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tv/1399" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(tvBody))
+	})
+
+	count, err := c.PlannedEpisodeCount(context.Background(), 1399, 2)
+	if err != nil {
+		t.Fatalf("PlannedEpisodeCount: %v", err)
+	}
+	if count != 10 {
+		t.Errorf("planned count = %d, want 10", count)
+	}
+
+	// A season the series does not list has no planned size. That is not an
+	// error: the caller falls back to the aired count.
+	count, err = c.PlannedEpisodeCount(context.Background(), 1399, 9)
+	if err != nil {
+		t.Fatalf("PlannedEpisodeCount: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("planned count for an unlisted season = %d, want 0", count)
+	}
+}
+
 func TestSeasonAiredCount(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/tv/1399/season/2" {

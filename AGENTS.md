@@ -169,6 +169,61 @@ re-capture both `download-watcher` and one `movie-XXXX` history.
 missing unless `MEDIAD_REQUIRE_REPLAY` is set. Capture needs Temporal,
 which a developer without one cannot rebuild.
 
+### The torrent client's add is idempotent by tag
+
+`qbit.Add` looks for a torrent carrying the request's tag (`mediadbot:<id>`)
+**before** it adds anything. If one is there and it is not in a failure state,
+the add is a no-op and the *old* torrent's hash comes back.
+
+That is what makes an add safe to retry. It is also why **replacing** a
+torrent means deleting the old one first — `internal/request/workflow.go`'s
+season watcher deletes the old torrent (without its files, so the episodes
+already on disk survive and the new pack reuses them) and only then adds the
+update. Add first and the update silently never lands.
+
+The delete has to be checked too: if it fails, the add adopts the old
+torrent, and the request would believe it had downloaded the update.
+
+### The season watcher
+
+A request for a season that is still being released gets a pack of the
+episodes that exist so far. The request does not treat that as the season: it
+compares the pack with the season (`internal/release/season.go`), and while
+the tracker might still complete it, it waits for the update — the release
+from the same forum thread with more episodes in it.
+
+The pieces, in the order they matter:
+
+- `internal/release/parse.go` — `Parsed.Episodes` is the range of episodes a
+  release name claims (`S02E01-E08`, `1-8 из 10`, `1x01-1x08`). It is also
+  what tells a pack of eight episodes from a single one: without it
+  `S02E01-E08` is read as episode 1 and refused as "a single episode".
+- `internal/release/season.go` — `SeasonState` (is the season still
+  running, is the pack short of it, might the tracker still complete it),
+  `Tracked` and `IsUpdateOf` (is this release the tracked pack with more
+  episodes in it).
+- `internal/request/workflow.go` — `runOngoingCheck` decides whether to
+  monitor, `monitorCycle` looks for the update, `waitForSeason` is where a
+  finished partial pack goes instead of finishing the request.
+- `storage.StateOngoing` is "waiting for the rest of the season". It is in
+  `ActiveStates()` (a request nobody can see is a request nobody can cancel)
+  and in the `ux_requests_active` index.
+
+Three things about it are easy to get wrong:
+
+- **The count an update is compared against comes from the pack's name**, not
+  from the torrent client's file count. The update's count is read from its
+  name too, and comparing a name against a file count lets a pack be
+  recognised as an update of itself — the watcher would delete it and add it
+  again, for as long as the season lasts.
+- **The files of a season pack are not deleted** when the torrent goes: not
+  on a cancel, not on a stall. The pack repeats the episodes that are already
+  in Plex, and deleting its files would take them off the disk.
+- **The three season columns** (`selected_thread_id`,
+  `selected_video_count`, `selected_episode_count`) are written by
+  `saveState` on every state change. They used to be dropped on the floor,
+  which left the interface showing nothing about a request that was waiting.
+
 ### qBittorrent runs on 8113, not 8080
 
 Default in the codebase is `8080`. The live deployment is on `:8113`.

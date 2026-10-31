@@ -34,7 +34,18 @@ const (
 	NotifyCompleted = 2
 	NotifyFailed    = 4
 	NotifyManual    = 8
+	// NotifySeason is sent while a request waits for the rest of a season
+	// that is still being released, and when the wait ends without it.
+	NotifySeason = 16
 )
+
+// NotifyMaskAll is the mask that lets every kind through.
+//
+// It is the default for a new watcher and the value every existing watcher
+// is bumped to: there has never been a way to opt out of a kind, so a mask
+// that is not this one means the watcher was set up before the newest kind
+// existed rather than that the user asked for less.
+const NotifyMaskAll = 31
 
 // AddWatcher attaches a user to a request.
 //
@@ -42,15 +53,16 @@ const (
 // no-op rather than an error. A user re-asking for something they already
 // watch is a normal thing to do.
 //
-// The notify_mask is 15 (all four bits set: started, completed, failed,
-// manual). There is no opt-out today; setting a smaller mask would mean
-// dropping a notification kind for the watcher entirely. 15 keeps the
-// watcher informed of every phase the workflow goes through, including
-// the manual-pick entry that asks them to choose a release.
+// The notify_mask is NotifyMaskAll (every bit set: started, completed,
+// failed, manual, season). There is no opt-out today; setting a smaller mask
+// would mean dropping a notification kind for the watcher entirely. The full
+// mask keeps the watcher informed of every phase the workflow goes through,
+// including the manual-pick entry that asks them to choose a release and the
+// wait for the rest of a season that is still being released.
 func (s *Store) AddWatcher(ctx context.Context, requestID, userID int64) error {
 	const q = `
 		INSERT INTO request_watchers (request_id, user_id, notify_mask)
-		VALUES ($1, $2, 15)
+		VALUES ($1, $2, 31)
 		ON CONFLICT (request_id, user_id) DO NOTHING`
 	_, err := s.pool.Exec(ctx, q, requestID, userID)
 	if err != nil {
@@ -138,6 +150,12 @@ const (
 	// owner probably wants — they would see someone else's manual
 	// list and have nothing to pick.
 	NotificationManual NotificationKind = "manual"
+	// NotificationSeason is sent while a request waits for the rest of a
+	// season that is still being released: the pack is short, the season is
+	// still running, and the rest of it is on its way. It is also sent when
+	// the wait ends without the season being completed. Bit 16 of the watcher
+	// notify_mask.
+	NotificationSeason NotificationKind = "season"
 )
 
 // Mask returns the notify_mask bit this kind corresponds to, or 0 for a kind
@@ -152,6 +170,8 @@ func (k NotificationKind) Mask() int {
 		return NotifyFailed
 	case NotificationManual:
 		return NotifyManual
+	case NotificationSeason:
+		return NotifySeason
 	default:
 		return 0
 	}
@@ -709,8 +729,8 @@ func (s *Store) UnlinkTelegram(ctx context.Context, userID int64, telegramID str
 // GetTelegramNotifyMask returns the user's current Telegram notification mask.
 //
 // A user with no entry (a freshly-migrated row that the default did not catch)
-// reads as 15, which is the documented default and the right answer either
-// way.
+// reads as the full mask, which is the documented default and the right
+// answer either way.
 func (s *Store) GetTelegramNotifyMask(ctx context.Context, userID int64) (int, error) {
 	var mask int
 	err := s.pool.QueryRow(ctx,
@@ -726,7 +746,7 @@ func (s *Store) GetTelegramNotifyMask(ctx context.Context, userID int64) (int, e
 
 // SetTelegramNotifyMask records a new Telegram notification mask.
 func (s *Store) SetTelegramNotifyMask(ctx context.Context, userID int64, mask int) error {
-	if mask < 0 || mask > 15 {
+	if mask < 0 || mask > NotifyMaskAll {
 		return fmt.Errorf("notify mask out of range: %d", mask)
 	}
 	_, err := s.pool.Exec(ctx,

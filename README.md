@@ -101,9 +101,53 @@ Two of those deserve a note:
   some indexers, and treating that as zero would make those indexers look
   permanently empty.
 
+Among the releases that pass, the one that carries the most of the season
+wins. A tracker publishes both the finished season and the episodes of one
+that is still running, and the pack with more episodes is the one that
+finishes the request. The advantage is small enough that it never overrides a
+resolution or an audio difference — it decides between two packs of the same
+season, not between a season and a film.
+
 Every rejection carries a machine-readable reason, recorded in the event log.
 That is what makes "there were results, why did nothing download" answerable
 without reproducing anything.
+
+## A season that is still being released
+
+A season pack is not a thing that exists or does not exist. A tracker
+publishes the episodes it has, and the pack grows as the season does: a
+request for a season that is halfway through its run gets a pack of eight
+episodes out of ten, and that is all there is to download.
+
+The request does not treat that pack as the season. It compares the pack with
+the season — the episodes the torrent client counted against the ones the
+season has — and, when the pack is short of a season the tracker might still
+complete, it goes on watching for the update that completes it.
+
+The update is found by its thread. A tracker does not publish a new torrent
+for a season that grew; it replaces the torrent in the same forum thread, so
+the infohash changes and the file names stay. The indexer extracts the thread
+id from the release description, and an update is a release from that thread
+whose name claims more episodes than the pack has. Nothing else is accepted:
+a request waiting for the rest of a season is not looking for a better
+release of it.
+
+When the update appears, the old torrent is removed **without its files** and
+the new one is added. The episodes already on disk are the ones the update
+repeats, and the torrent client reuses them. The order matters and is not a
+choice: the client's add is idempotent by tag, so while the old torrent is
+there the new one is not added at all.
+
+The wait has a deadline, and it is the same deadline that decides whether to
+wait at all: eight weeks after the season's last episode aired. A tracker
+publishes the rest of a season days after the last episode, not months, so a
+season that ended two months ago is not going to be completed and the request
+finishes with what it has. A season that is still running keeps the wait
+open — every episode that airs moves the deadline with it.
+
+Either way the user is told which of the two happened: a request that ends
+with a season the tracker never completed says so, rather than reporting a
+season that is missing episodes as "done".
 
 ## The workflow
 
@@ -521,6 +565,10 @@ The settings worth knowing about:
 | `search.search_deadline` | `17520h` (2 years) | How long a request keeps looking. |
 | `search.backoff_ladder` | `1h,2h,4h,8h,12h,24h` | Check frequency. Strictly hourly would be 17 520 searches per request over two years, each fanning out across every tracker. The ladder gives ~735 for effectively the same result. |
 | `download.deadline` | `48h` | A torrent that has not finished in two days is treated as dead: the release is blacklisted and the search resumes. |
+| `search.season_airing_window` | `504h` (21 days) | How long after its newest episode a season still counts as running. A weekly show that aired three days ago is running; one that aired four months ago is not. |
+| `search.season_recent_window` | `720h` (30 days) | How long after its premiere a season still counts as too new to be finished. |
+| `search.season_monitor_window` | `1344h` (8 weeks) | How long after its last episode the tracker may still publish the rest of the season. It decides both whether a request waits and when it gives up. |
+| `search.season_monitor_interval` | `24h` | How often the request looks for the update while it is waiting. |
 | `indexer.rate_per_second` | `0.25` | One request per four seconds. Deliberately below the one-per-three target, because the server spreads activity tasks across several partitions and can burst above the configured average — and a burst that trips a tracker's limit gets the IP banned. |
 | `tmdb.proxy` | unset | An HTTP proxy for TMDB, where the API is not reachable directly. Covers the images too: the browser is never sent to `image.tmdb.org`, it asks our own `/poster/` endpoint. |
 

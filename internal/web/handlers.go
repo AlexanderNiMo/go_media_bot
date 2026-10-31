@@ -759,18 +759,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	opts := []notificationOption{
-		{Bit: 1, Name: "started", Label: "Поиск начался"},
-		{Bit: 2, Name: "completed", Label: "Загрузка завершилась"},
-		{Bit: 4, Name: "failed", Label: "Загрузка провалилась"},
-		// Bit 8 covers two kinds on the watcher side: "skipped"
-		// (request was already in Plex) and "manual" (the
-		// workflow is waiting for you to pick a release from a
-		// candidate list). They share the same bit because the
-		// user-facing decision is the same: do you want the bot
-		// to bother you about an out-of-band result?
-		{Bit: 8, Name: "skipped_and_manual", Label: "Уже было в Plex или пора выбрать релиз"},
-	}
+	opts := notificationOptions()
 	for i := range opts {
 		opts[i].Checked = mask&opts[i].Bit != 0
 	}
@@ -861,14 +850,9 @@ func (s *Server) handleNotificationSettings(w http.ResponseWriter, r *http.Reque
 
 	user := sessionUser(r)
 	mask := 0
-	for _, opt := range []struct {
-		name string
-		bit  int
-	}{
-		{"started", 1}, {"completed", 2}, {"failed", 4}, {"skipped", 8},
-	} {
-		if r.PostFormValue(opt.name) != "" {
-			mask |= opt.bit
+	for _, opt := range notificationOptions() {
+		if r.PostFormValue(opt.Name) != "" {
+			mask |= opt.Bit
 		}
 	}
 	if err := s.store.SetTelegramNotifyMask(r.Context(), user.ID, mask); err != nil {
