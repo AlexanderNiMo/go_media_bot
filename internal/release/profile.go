@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/alex/mediad/internal/config"
+	"github.com/alex/mediad/internal/domain"
 )
 
 // Profile is the acceptance policy: what counts as a good release.
@@ -342,6 +343,28 @@ func ProfileFromConfig(cfg *config.Config) Profile {
 	p.RequireRussianAudio = q.RequireRussianAudio
 
 	return p
+}
+
+// MaxSizeGBFor returns the size cap that applies to a media.
+//
+// The per-type caps are what the selector applies, and the interface shows
+// the same number: a second copy of the rule would drift, and the page
+// would promise a size the selector does not enforce.
+//
+// A cap of zero for the type falls back to the general one, so a profile
+// that has not been configured per type keeps the old behaviour.
+func MaxSizeGBFor(p Profile, spec domain.MediaSpec) float64 {
+	switch spec.Ref.Type {
+	case domain.MediaTypeMovie:
+		if p.MaxSizeGBMovies > 0 {
+			return p.MaxSizeGBMovies
+		}
+	case domain.MediaTypeTV:
+		if p.MaxSizeGBSeries > 0 {
+			return p.MaxSizeGBSeries
+		}
+	}
+	return p.MaxSizeGB
 }
 
 // parseSources maps configured source names onto the enum.

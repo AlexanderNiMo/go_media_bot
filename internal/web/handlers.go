@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/release"
 	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
 	"github.com/alex/mediad/internal/tmdb"
@@ -657,11 +658,36 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("could not list events", "request", id, "error", err)
 	}
 
+	detail := detailFor(req, watchers, events, len(candidates), time.Now(), s.cfg.Server.BasePath)
+	detail.RequestedBy = s.requesterName(r.Context(), req.RequestedBy)
+	detail.Requirements = requirementsFor(release.ProfileFromConfig(s.cfg), req.Media)
+
 	s.render(w, r, "request", requestView{
 		page:       s.basePage(w, r, "dashboard"),
-		Request:    detailFor(req, watchers, events, len(candidates), time.Now(), s.cfg.Server.BasePath),
+		Request:    detail,
 		Candidates: candidates,
 	})
+}
+
+// requesterName is the name of the account that asked for the request.
+//
+// Empty when nobody is behind it — a CLI run on the host — or when the
+// account has since been deleted. The watcher list cannot answer the
+// question: anybody may attach themselves to a request, so the people who
+// watch it are not the people who asked for it.
+func (s *Server) requesterName(ctx context.Context, id int64) string {
+	if id == 0 {
+		return ""
+	}
+	user, err := s.store.GetUser(ctx, id)
+	if err != nil {
+		if !errors.Is(err, storage.ErrNotFound) {
+			s.log.Warn("could not resolve the account that asked for a request",
+				"user", id, "error", err)
+		}
+		return ""
+	}
+	return user.Username
 }
 
 // handleCancelConfirm is the page that asks before a cancellation.

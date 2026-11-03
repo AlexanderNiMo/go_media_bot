@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/release"
 	"github.com/alex/mediad/internal/storage"
 	"github.com/alex/mediad/internal/tmdb"
 )
@@ -76,6 +78,11 @@ type requestDetail struct {
 	// doing something" and "the bot has been doing something for four
 	// months".
 	Status string
+	// RequestedBy is the name of the account that asked for this request.
+	// Empty when nobody is behind it.
+	RequestedBy string
+	// Requirements are the rules the release is looked for under.
+	Requirements []requirement
 
 	WorkflowID  string
 	QbitHash    string
@@ -628,6 +635,68 @@ func detailFor(r *storage.Request, watchers []storage.Watcher, events []storage.
 	}
 
 	return d
+}
+
+// requirement is one rule of the policy, as a label and its value.
+//
+// The label carries the noun and the value carries the number, so nothing
+// has to be declined: "Сидеры: не меньше 3" is the same in every case,
+// while "не меньше 3 сидеров" is not.
+type requirement struct {
+	Label string
+	Value string
+}
+
+// requirementsFor says what the request is looking for.
+//
+// These are the rules the selector applies to every release it sees, as the
+// configuration stands. The size cap is the one that applies to *this*
+// request: a film and a season are capped differently, and the request
+// knows which it is.
+func requirementsFor(p release.Profile, spec domain.MediaSpec) []requirement {
+	out := []requirement{}
+
+	quality := "не ниже " + p.MinResolution.String()
+	if p.PreferredResolution > p.MinResolution {
+		quality += ", лучше " + p.PreferredResolution.String()
+	}
+	out = append(out, requirement{"Качество", quality})
+
+	if p.MinSeeders > 0 {
+		out = append(out, requirement{"Сидеры", "не меньше " + strconv.Itoa(p.MinSeeders)})
+	}
+
+	if p.MinSizeGB > 0 || p.MaxSizeGB > 0 {
+		size := ""
+		if p.MinSizeGB > 0 {
+			size += "от " + decimal(p.MinSizeGB) + " ГБ"
+		}
+		if limit := release.MaxSizeGBFor(p, spec); limit > 0 {
+			if size != "" {
+				size += " до "
+			}
+			size += decimal(limit) + " ГБ"
+		}
+		if size != "" {
+			out = append(out, requirement{"Размер", size})
+		}
+	}
+
+	if p.RequireRussianAudio {
+		out = append(out, requirement{"Русская дорожка", "обязательна"})
+	} else {
+		out = append(out, requirement{"Русская дорожка", "не обязательна"})
+	}
+
+	if len(p.ExcludedSources) > 0 {
+		names := make([]string, 0, len(p.ExcludedSources))
+		for _, src := range p.ExcludedSources {
+			names = append(names, src.String())
+		}
+		out = append(out, requirement{"Источники", "исключены " + strings.Join(names, ", ")})
+	}
+
+	return out
 }
 
 // statusLine is the one sentence that says what the bot is doing.

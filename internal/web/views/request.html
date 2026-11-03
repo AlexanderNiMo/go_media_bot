@@ -1,6 +1,10 @@
 {{define "content"}}
 {{/* $.CSRF rather than .CSRF: inside this block "." is the request, and the
-     token belongs to the page one level out. */}}
+     token belongs to the page one level out.
+
+     The page is in the order the plan puts it: who asked, what the bot is
+     doing, what it is looking for, and then — behind one disclosure — the
+     machine's own view of the request. */}}
 {{with .Request}}
 <div class="confirm">
   {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
@@ -9,6 +13,9 @@
     {{/* The age is the product's claim made visible: this request has been
          alive for this long, and it is still here. */}}
     {{if .Age}}<p class="muted">Запрошено {{.Age}} назад</p>{{end}}
+    {{/* Who asked is not the same question as who watches: anybody may
+         attach themselves to a request. */}}
+    {{if .RequestedBy}}<p class="muted">Запросил: {{.RequestedBy}}</p>{{end}}
   </div>
 </div>
 
@@ -17,19 +24,24 @@
      something for four months". */}}
 {{if .Status}}<p class="status">{{.Status}}</p>{{end}}
 
+{{/* The rules the release is looked for under. The user cannot see why a
+     release was refused without seeing the rule it violated. */}}
+{{if .Requirements}}
+<h3>Требования</h3>
+<dl class="facts">
+  {{range .Requirements}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}
+</dl>
+{{end}}
+
 <dl class="facts">
   <dt>Plex</dt><dd>{{.PlexText}}</dd>
   {{if .ReleaseText}}<dt>Релиз</dt><dd>{{.ReleaseText}}</dd>{{end}}
   {{if .SeasonText}}<dt>Сезон</dt><dd>{{.SeasonText}}</dd>{{end}}
   {{if .IsDownloading}}<dt>Прогресс</dt><dd>{{template "progress" .}}</dd>{{end}}
-  {{if .QbitHash}}<dt>Торрент</dt><dd class="mono">{{.QbitHash}}</dd>{{end}}
-  {{if .ContentPath}}<dt>Путь</dt><dd class="mono">{{.ContentPath}}</dd>{{end}}
   <dt>Сроки</dt><dd>{{.Deadlines}}</dd>
   {{if .LastError}}<dt>Ошибка</dt><dd class="warn">{{.LastError}}</dd>{{end}}
-  {{if .Abandoned}}<dt>Бракованных</dt><dd>{{.Abandoned}}</dd>{{end}}
   <dt>Создан</dt><dd>{{.Created}}</dd>
   {{if .CompletedAt}}<dt>Завершён</dt><dd>{{.CompletedAt}}</dd>{{end}}
-  <dt>Workflow</dt><dd class="mono">{{.WorkflowID}}</dd>
 </dl>
 
 <div class="actions">
@@ -122,21 +134,58 @@
   <p class="muted">Текущая ссылка: <span class="mono">{{.SelectedLink}}</span></p>
 {{end}}
 
-{{if .Events}}
-  <h2>Что происходило</h2>
-  <table class="events">
-    <thead><tr><th>Когда</th><th>Событие</th><th>Кто</th><th>Подробности</th></tr></thead>
-    <tbody>
-    {{range .Events}}
-      <tr>
-        <td class="muted mono">{{.At}}</td>
-        <td class="mono">{{.Event}}</td>
-        <td class="muted">{{.Actor}}</td>
-        <td class="muted">{{.Detail}}</td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-{{end}}
+{{/*
+  The machine's own view of the request: the workflow id, the torrent hash,
+  the path on disk and the raw event log. It is here rather than deleted,
+  one click away — an operator needs it, and the reader does not.
+*/}}
+<details class="advanced" id="request-advanced">
+  <summary>Расширенное</summary>
+
+  <dl class="facts">
+    <dt>Workflow</dt><dd class="mono">{{.WorkflowID}}</dd>
+    {{if .QbitHash}}<dt>Торрент</dt><dd class="mono">{{.QbitHash}}</dd>{{end}}
+    {{if .ContentPath}}<dt>Путь</dt><dd class="mono">{{.ContentPath}}</dd>{{end}}
+    {{if .Abandoned}}<dt>Бракованных</dt><dd>{{.Abandoned}}</dd>{{end}}
+  </dl>
+
+  {{if .Events}}
+    <h3>Что происходило</h3>
+    <table class="events">
+      <thead><tr><th>Когда</th><th>Событие</th><th>Кто</th><th>Подробности</th></tr></thead>
+      <tbody>
+      {{range .Events}}
+        <tr>
+          <td class="muted mono">{{.At}}</td>
+          <td class="mono">{{.Event}}</td>
+          <td class="muted">{{.Actor}}</td>
+          <td class="muted">{{.Detail}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{end}}
+</details>
+
+<script>
+  // The disclosure remembers whether it was open, the way the sidebar does.
+  // Read here — inline, before the first paint — so the page does not flash
+  // open for a reader who closed it last time.
+  (function () {
+    var el = document.getElementById("request-advanced");
+    if (!el) return;
+    var key = "mediad.advanced";
+    try {
+      var saved = localStorage.getItem(key);
+      if (saved === "open") el.open = true;
+      if (saved === "closed") el.open = false;
+    } catch (e) {}
+    el.addEventListener("toggle", function () {
+      try {
+        localStorage.setItem(key, el.open ? "open" : "closed");
+      } catch (e) {}
+    });
+  })();
+</script>
 {{end}}
 {{end}}

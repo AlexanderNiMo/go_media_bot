@@ -751,3 +751,39 @@ ul.consequences {
   padding-left: 1.25rem;
 }
 ul.consequences li { margin-bottom: 0.35rem; }
+
+/* The disclosure that holds the machine's view of a request: the workflow
+   id, the torrent hash, the path on disk and the raw event log. It is at the
+   bottom of the page because it is for the operator, not for the reader. */
+details.advanced {
+  margin: 2rem 0 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--m-border);
+}
+details.advanced > summary {
+  cursor: pointer;
+  color: var(--m-text-muted);
+  font-size: 0.9em;
+}
+details.advanced h3 { margin-top: 1.25rem; }
+
+/* The theme picker in the settings. Not a form: the choice is written to
+   this browser and applied at once. */
+.theme-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0 0 0.5rem;
+}
+.theme-picker label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+.theme-picker input[type="radio"] {
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0;
+}

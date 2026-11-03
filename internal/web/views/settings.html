@@ -18,6 +18,29 @@
     <dt>Права</dt><dd>{{if .User.IsAdmin}}администратор{{else}}пользователь{{end}}</dd>
   </dl>
 
+  <h3>Тема</h3>
+  {{/*
+    The theme is a preference of this browser, not of the account: it is
+    kept in localStorage and applied at once, the way the sidebar's state is.
+    There is no server round-trip and no form — the control writes the
+    choice and the page changes under it.
+  */}}
+  <div class="theme-picker" role="radiogroup" aria-label="Тема оформления">
+    <label>
+      <input type="radio" name="theme" value="auto">
+      <span>Как в системе</span>
+    </label>
+    <label>
+      <input type="radio" name="theme" value="light">
+      <span>Светлая</span>
+    </label>
+    <label>
+      <input type="radio" name="theme" value="dark">
+      <span>Тёмная</span>
+    </label>
+  </div>
+  <p class="muted">Тема сохраняется в этом браузере и применяется сразу.</p>
+
   <h3>Сменить пароль</h3>
   <form method="post" action="{{path $.BasePath "/settings/password"}}" class="stack">
     <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
@@ -149,4 +172,35 @@
     </table>
   </article>
 {{end}}
+
+<script>
+  // The theme picker. It reads the saved choice, ticks the right radio and
+  // applies the change as it is made. Nothing is sent anywhere: the theme
+  // belongs to this browser.
+  (function () {
+    var picker = document.querySelector(".theme-picker");
+    if (!picker) return;
+    var key = "mediad.theme";
+
+    var current = "auto";
+    try { current = localStorage.getItem(key) || "auto"; } catch (e) {}
+
+    var radios = picker.querySelectorAll('input[name="theme"]');
+    radios.forEach(function (radio) {
+      radio.checked = (radio.value === current);
+    });
+
+    picker.addEventListener("change", function (e) {
+      var theme = e.target.value;
+      try { localStorage.setItem(key, theme); } catch (err) {}
+      if (theme === "light" || theme === "dark") {
+        document.documentElement.setAttribute("data-theme", theme);
+      } else {
+        // "auto" is the absence of the attribute: Pico then follows the
+        // operating system's preference.
+        document.documentElement.removeAttribute("data-theme");
+      }
+    });
+  })();
+</script>
 {{end}}
