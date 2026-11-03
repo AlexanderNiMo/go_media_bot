@@ -44,7 +44,7 @@
   </header>
 
   <div class="layout">
-    <aside class="sidebar" id="sidebar" aria-hidden="true">
+    <aside class="sidebar" id="sidebar" aria-hidden="true" onclick="mediadCloseSidebarOnNav(event)">
       <nav>
         <a href="{{path $.BasePath "/"}}" {{if eq .Nav "dashboard"}}class="on"{{end}} title="Запросы" aria-label="Запросы">
           <svg viewBox="0 0 20 20" fill="currentColor" class="icon" aria-hidden="true"><path fill-rule="evenodd" d="M2 3.75A.75.75 0 0 1 2.75 3h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75Zm0 4.167a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Zm0 4.166a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Zm0 4.167a.75.75 0 0 1 .75-.75h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd"/></svg>
@@ -139,6 +139,18 @@
           document.documentElement.getAttribute('data-sidebar') === 'open') {
         mediadSetSidebar('icons');
       }
+    }
+    // On a narrow viewport the sidebar is a drawer over the content, and a
+    // menu item navigates away. The drawer has to close before the browser
+    // follows the link — otherwise the next page opens with the drawer still
+    // covering the content, because the state is persisted. Writing 'icons'
+    // here happens before the navigation, so the next page starts collapsed.
+    function mediadCloseSidebarOnNav(e) {
+      if (!window.matchMedia('(max-width: 768px)').matches) return;
+      if (document.documentElement.getAttribute('data-sidebar') !== 'open') return;
+      var t = e.target;
+      if (!t || !t.closest || !t.closest('a')) return;
+      mediadSetSidebar('icons');
     }
     // Sync aria-hidden with the state at load, so a collapsed column does
     // not leave its links in the tab order.
