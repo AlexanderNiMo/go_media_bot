@@ -371,6 +371,37 @@ The period filter («за сутки» and friends) applies to «Недавно�
 used to apply to the active list too, which made a request that had been
 searching for four months disappear.
 
+### The requester's name is a column, not an inference
+
+`requests.requested_by` (migration `00012`) holds the id of the account
+that asked for the request.
+
+It is a column because the watcher list cannot answer the question:
+anybody may attach themselves to a request, so the people who *watch* it
+are not the people who *asked* for it. The create path writes no event at
+all, so there was nothing to promote out of the event log either.
+
+Two things to know when you touch it:
+
+- **The projection view is frozen at creation.** `request_view` was last
+  rebuilt by `00010`; a migration that adds a column to `requests` and
+  forgets the view leaves the column invisible to every reader. The reader
+  selects by *name*, so the failure is a scan error, not a wrong value.
+- **A new migration must keep the three ongoing-season columns** in the
+  view (`selected_thread_id`, `selected_video_count`,
+  `selected_episode_count`) — 00010 added them and 00012 has to carry
+  them forward.
+
+### The theme is a browser preference
+
+`localStorage["mediad.theme"]`, applied as `data-theme` on `<html>` before
+the first paint, from the script in `layout.html`.
+
+**«Auto» is the absence of the attribute**, not a third value of it: Pico
+reads `data-theme` when it is there and falls back to `prefers-color-scheme`
+when it is not. The picker in the settings therefore *removes* the
+attribute for «Как в системе».
+
 ---
 
 ## Working with the user

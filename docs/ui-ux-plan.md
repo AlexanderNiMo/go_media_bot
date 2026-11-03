@@ -1,7 +1,7 @@
 # UI/UX Project Plan — `mediad`
 
 **Date:** 2026-11-03 (Phase 1b and D5 added 2026-11-04)
-**Status:** Phase 0, Phase 1a and Phase 1b shipped; the rest of Phase 1 is not implemented
+**Status:** Phase 0 and Phase 1 (a, b and c) shipped; Phases 2–5 are not implemented
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
@@ -1041,7 +1041,7 @@ that costs the user their files.
 
 > Commit: `web: the safety slices of phase 1b`.
 
-#### Phase 1c — Shared installation and theme (Week 4)
+#### Phase 1c — Shared installation and theme (Week 4) — **shipped**
 
 Everything in this sub-phase follows from D1 (several people) and D3 (theme).
 
@@ -1052,16 +1052,25 @@ Everything in this sub-phase follows from D1 (several people) and D3 (theme).
   mirrors it — the `TestDashboardFilterFormsCarryEveryControl` test enforces
   the mirroring, and now runs once per role, because the administrator is
   offered no control at all.
-- **«Запросил»** on the request page — the requester's username, promoted out
-  of the create event's raw JSON detail (§3.3).
-- **«Расширенное» disclosure** — workflow ID, infohash, content path and the
-  events table move behind one collapsed `<details>`, state remembered per user
-  in `localStorage` like the sidebar. Admin-only operator surfaces stay
-  admin-gated at the page level.
+- **«Запросил»** on the request page — the requester's name.
+- **«Расширенное» disclosure** — workflow ID, qBittorrent hash, content path
+  and the events table move behind one collapsed `<details>`, state
+  remembered in `localStorage` like the sidebar.
 - **«Требования» panel** — the policy as applied to this request: resolution
-  floor, size range, minimum seeders, required audio tier.
+  floor, size range, minimum seeders, required audio tier, excluded sources.
 - **Theme toggle** (auto / light / dark) in Settings, reusing the sidebar's
   persistence pattern (§4.2).
+
+#### What Phase 1c actually shipped
+
+| Planned | Shipped | Why it differs |
+|---|---|---|
+| «Запросил» — the requester's username, promoted out of the create event's raw JSON detail | Shipped, and it needed a **migration** | The plan was wrong about where the name was. The create path writes **no event at all**, and the retry path put the name in the retry event's detail — so for every request but a retried one there was nothing to promote. `00012_requested_by.sql` adds the column, and the interface resolves the id to a name at render time |
+| The policy's size range | The cap that applies to **this** request | A film and a season are capped differently, and the panel shows the one that applies — the same number the selector uses, through `release.MaxSizeGBFor`, because a second copy of the rule would drift |
+| Theme toggle in Settings | Shipped, and it is **client-side only** | The theme is a preference of a browser, not of an account: two people sharing a machine may want different ones. It is applied before the first paint, so a dark-theme reader never sees a light page first |
+| — | The request page's story and machinery are now **separate lists** | The facts list mixed the two: the workflow id and the path on disk sat next to the release. The machinery moved behind the disclosure; nothing was deleted |
+
+> Commit: `web: phase 1c — who asked, what it looks for, and the theme`.
 
 ---
 
@@ -1292,3 +1301,27 @@ Added while implementing Phase 1b:
 - The dashboard's active table is now **form-free**: the cancel action is a
   link to the confirmation page, so the filter forms and the table have
   nothing left to swallow each other.
+
+Added while implementing Phase 1c:
+
+- **The requester was recorded nowhere.** This document claimed, in §3.3 and
+  in Appendix B, that the requester's name sat in the create event's detail
+  and only needed promoting. It does not: the create path writes no event
+  at all, and `requested_by` appears only in the *retry* event's detail
+  (`internal/storage/requests.go:377`). For every request but a retried one
+  there was nothing to promote — which is why «Запросил» needed migration
+  `00012` rather than a template change.
+- **The projection view is frozen at creation.** `request_view` was last
+  rebuilt by `00010`, which appended three ongoing-season columns. A new
+  migration that adds a column to `requests` and forgets the view leaves
+  the column invisible to every reader — and the reader's
+  `requestViewColumns` selects by *name*, so the failure is a scan error
+  rather than a wrong value.
+- **`release.MaxSizeGBFor` exists so the rule has one copy.** The selector
+  picks the size cap per media type; the «Требования» panel shows the same
+  number. Two copies of that rule would drift, and the page would promise a
+  size the selector does not enforce.
+- **Pico reads `data-theme` when it is there and falls back to
+  `prefers-color-scheme` when it is not** — so "auto" is the *absence* of
+  the attribute, not a third value of it. The theme script therefore
+  removes the attribute for "auto" and sets it for the other two.

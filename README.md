@@ -664,6 +664,20 @@ therefore leads to a page that says what will happen — including the
 exception, a request waiting for the rest of a season, whose episodes are
 already in Plex and stay on the disk.
 
+**One request tells the whole story, and keeps the machinery behind a
+disclosure.** Who asked for it, how long it has been alive, one sentence
+saying what the bot is doing right now, and the rules the release is looked
+for under — the resolution floor, the size range, the number of seeders, the
+excluded sources. The workflow id, the torrent hash, the path on disk and
+the raw event log are one click away, in «Расширенное», because an operator
+needs them and a reader does not.
+
+**The theme is a preference of the browser, not of the account.** «Как в
+системе», «Светлая» and «Тёмная» live in the settings and are kept in
+localStorage, so two people sharing a machine may read the same instance in
+different themes. The choice is applied before the first paint: a
+dark-theme reader never sees a light page first.
+
 **A refused release is not offered.** When the selector refuses a release on
 principle — a camrip, a blacklisted hash, a release with Russian subtitles
 and no Russian audio — the candidate row carries no button, and the endpoint
