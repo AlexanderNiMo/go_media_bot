@@ -3,15 +3,22 @@
      token belongs to the page one level out. */}}
 {{with .Request}}
 <div class="confirm">
-  {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
+  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
   <div>
     <h1>{{.Title}} <span class="state {{stateClass .State}}">{{stateLabel .State}}</span></h1>
+    {{/* The age is the product's claim made visible: this request has been
+         alive for this long, and it is still here. */}}
+    {{if .Age}}<p class="muted">Запрошено {{.Age}} назад</p>{{end}}
   </div>
 </div>
 
+{{/* One sentence that says what the bot is doing. It is the difference
+     between "the bot is doing something" and "the bot has been doing
+     something for four months". */}}
+{{if .Status}}<p class="status">{{.Status}}</p>{{end}}
+
 <dl class="facts">
   <dt>Plex</dt><dd>{{.PlexText}}</dd>
-  <dt>Поиск</dt><dd>{{.SearchText}}</dd>
   {{if .ReleaseText}}<dt>Релиз</dt><dd>{{.ReleaseText}}</dd>{{end}}
   {{if .SeasonText}}<dt>Сезон</dt><dd>{{.SeasonText}}</dd>{{end}}
   {{if .IsDownloading}}<dt>Прогресс</dt><dd>{{template "progress" .}}</dd>{{end}}
@@ -33,9 +40,9 @@
       A link, because the page that follows is a GET that states the
       consequence — and because the table on the dashboard holds no form.
     */}}
-    <a role="button" class="small" href="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">Отменить</a>
+    <a role="button" class="small" href="{{.CancelHref}}">Отменить</a>
   {{else}}
-    <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/retry">
+    <form method="post" action="{{.RetryHref}}">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
       <button type="submit" class="small">Запустить снова</button>
     </form>

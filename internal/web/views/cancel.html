@@ -13,7 +13,7 @@
 */}}
 {{with .Request}}
 <div class="confirm">
-  {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
+  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
   <div>
     <h1>Отменить запрос?</h1>
     <p class="muted">{{.Title}}</p>
@@ -26,11 +26,11 @@
 </ul>
 
 <div class="actions">
-  <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">
+  <form method="post" action="{{.CancelHref}}">
     <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
     <button type="submit" class="small">Отменить запрос</button>
   </form>
-  <a role="button" class="small secondary" href="{{path $.BasePath "/requests/"}}{{.ID}}">Не отменять</a>
+  <a role="button" class="small secondary" href="{{.Href}}">Не отменять</a>
 </div>
 {{end}}
 {{end}}

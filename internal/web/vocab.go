@@ -308,9 +308,14 @@ func scopeLabel(scope string) string {
 // The accusative singular is kept separately because it differs from the
 // nominative in one form only: минута becomes минуту after a verb, while
 // минуты and минут are the same in both cases.
+//
+// The genitive plural is kept for the nouns that need one: after "после" a
+// count takes the genitive, and "после 3 ошибок" is not "после 3 ошибки".
+// A noun without a genitive carries one only where the case is the same.
 type ruNoun struct {
 	nom [3]string
 	acc string
+	gen [3]string
 }
 
 // count renders n with the noun in the nominative: "5 минут".
@@ -330,6 +335,18 @@ func (n ruNoun) countA(k int) string {
 	return fmt.Sprintf("%d %s", k, n.nom[pluralForm(k)])
 }
 
+// countG renders n with the noun in the genitive plural: "после 3 ошибок".
+//
+// Only the nouns that carry a genitive can be rendered this way; the rest
+// fall back to the nominative, which is the same form in every case except
+// the singular.
+func (n ruNoun) countG(k int) string {
+	if n.gen[0] == "" {
+		return n.count(k)
+	}
+	return fmt.Sprintf("%d %s", k, n.gen[pluralForm(k)])
+}
+
 var (
 	nounSecond = ruNoun{nom: [3]string{"секунда", "секунды", "секунд"}, acc: "секунду"}
 	nounMinute = ruNoun{nom: [3]string{"минута", "минуты", "минут"}, acc: "минуту"}
@@ -337,6 +354,17 @@ var (
 	nounDay    = ruNoun{nom: [3]string{"день", "дня", "дней"}, acc: "день"}
 	nounMonth  = ruNoun{nom: [3]string{"месяц", "месяца", "месяцев"}, acc: "месяц"}
 	nounYear   = ruNoun{nom: [3]string{"год", "года", "лет"}, acc: "год"}
+
+	// The nouns of the status line. "Раз" has an unusual shape: the third
+	// form is the same as the first, because five times is "пять раз", not
+	// "пять разов". The error carries a genitive, because "после" wants one.
+	nounTime      = ruNoun{nom: [3]string{"раз", "раза", "раз"}, acc: "раз"}
+	nounCandidate = ruNoun{nom: [3]string{"кандидат", "кандидата", "кандидатов"}, acc: "кандидата"}
+	nounError     = ruNoun{
+		nom: [3]string{"ошибка", "ошибки", "ошибок"},
+		acc: "ошибки",
+		gen: [3]string{"ошибки", "ошибок", "ошибок"},
+	}
 )
 
 // pluralForm picks which of the three Russian plural forms a count takes.

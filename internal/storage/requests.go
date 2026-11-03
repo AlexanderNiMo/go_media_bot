@@ -407,6 +407,10 @@ type RequestFilter struct {
 	// Default (false) sorts by created_at DESC, which is what a list of
 	// work-in-progress wants.
 	SortByTitle bool
+	// OldestFirst sorts by created_at ASC — the longest wait first. It is
+	// what a list of parked requests wants: the request somebody asked for
+	// a year ago and is still quietly running is the one worth seeing.
+	OldestFirst bool
 	// Since limits to rows with created_at >= now() - Since. Zero means no
 	// lower bound. The dashboard's "recent" window uses this; Pending rows
 	// are excluded by States, so it does not double up.
@@ -497,9 +501,12 @@ func (s *Store) ListRequests(ctx context.Context, f RequestFilter) ([]*Request, 
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	if f.SortByTitle {
+	switch {
+	case f.SortByTitle:
 		q += ` ORDER BY title ASC`
-	} else {
+	case f.OldestFirst:
+		q += ` ORDER BY created_at ASC`
+	default:
 		q += ` ORDER BY created_at DESC`
 	}
 	q += fmt.Sprintf(` LIMIT %d`, limit)

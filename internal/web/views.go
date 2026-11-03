@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/storage"
@@ -38,14 +39,43 @@ type requestRow struct {
 	ProgressText  string
 	SearchText    string
 
+	// Age is how long the request has existed. It is the answer to the
+	// question the product is actually about: a request that has been
+	// looking for four months has to *look* like it, and not like a row
+	// that is stuck.
+	Age string
+	// NextCheck is when the request will look again, or empty when it is
+	// not waiting for a moment but for a person.
+	NextCheck string
+	// Attempts is how many times the request has searched.
+	Attempts int
+	// NeedsPick marks a request that is waiting for somebody to choose a
+	// release. It is the one state that blocks on a person, and the row
+	// says so with an action rather than with a word.
+	NeedsPick bool
+
 	PosterURL    string
 	Year         int
 	SelectedLink string
+
+	// Href, CancelHref and RetryHref are the row's own links, with the
+	// deployment's base path already in them. A row is a self-contained
+	// thing: a template that has to reach for the page to build a URL
+	// cannot be shared between pages, and the bucket tables are shared.
+	Href       string
+	CancelHref string
+	RetryHref  string
 }
 
 // requestDetail is one request as a page.
 type requestDetail struct {
 	requestRow
+
+	// Status is the one sentence that says what the bot is doing. It is the
+	// highest-value line in the product: the difference between "the bot is
+	// doing something" and "the bot has been doing something for four
+	// months".
+	Status string
 
 	WorkflowID  string
 	QbitHash    string
@@ -116,10 +146,82 @@ type confirmation struct {
 // restating its shape, so the template ends up checked by nothing. These are
 // also the contract with the template — a field removed here is a compile
 // error in the handler that sets it, rather than a blank cell.
+// dashboardBucket is one time-scale of the dashboard.
+//
+// The buckets are split by how long a thing takes, not by which phase of the
+// workflow it is in: a transfer takes seconds and a parked request takes two
+// years, and they are different products wearing the same shirt. A request
+// that has been searching for four months and a download at 90% do not belong
+// in the same list.
+type dashboardBucket struct {
+	// Key names the bucket in the markup: the block's id, the count's id and
+	// the table's id are all built from it.
+	Key string
+	// Title is the Russian name of the bucket.
+	Title string
+	// States are the request states that belong to it.
+	States []storage.State
+	// ShowProgress, ShowAge, ShowAttempts and ShowNext are the columns the
+	// bucket carries besides the title and the state. A transfer has a
+	// progress bar and nothing to wait for; a parked request has the other
+	// three and no progress, because there is nothing moving.
+	ShowProgress bool
+	ShowAge      bool
+	ShowAttempts bool
+	ShowNext     bool
+	// Empty is what the bucket says when it has nothing in it.
+	Empty string
+}
+
+// The three buckets of the dashboard, in the order they are shown.
+var dashboardBuckets = []dashboardBucket{
+	{
+		Key:   "downloading",
+		Title: "Качается",
+		States: []storage.State{
+			storage.StateDownloading, storage.StateAdding,
+		},
+		ShowProgress: true,
+		Empty:        "Ничего не качается.",
+	},
+	{
+		Key:   "searching",
+		Title: "Ищет",
+		States: []storage.State{
+			storage.StateSearching, storage.StatePending,
+		},
+		ShowAge:      true,
+		ShowAttempts: true,
+		ShowNext:     true,
+		Empty:        "Ничего не ищется.",
+	},
+	{
+		Key:   "waiting",
+		Title: "Ждёт выбора",
+		States: []storage.State{
+			storage.StateManual, storage.StateOngoing,
+		},
+		ShowAge: true,
+		Empty:   "Никто не ждёт выбора.",
+	},
+}
+
+// bucketView is one bucket with the rows in it.
+type bucketView struct {
+	dashboardBucket
+	Rows []requestRow
+}
+
+// buckets is the part of the dashboard that polls.
+type buckets struct {
+	List []bucketView
+}
+
+// dashboardView is the front page.
 type dashboardView struct {
 	page
 	Filter dashboardFilter
-	Active []requestRow
+	buckets
 	Recent []requestRow
 	// ActiveAll is the full set of active states, regardless of which subset
 	// the user has filtered to. Used to render the state pills with their
@@ -141,11 +243,14 @@ type cancelView struct {
 	Consequences []string
 }
 
+// activeFragmentView is what the dashboard polls: the three buckets, and
+// nothing else. The blocks themselves stay on the page — they are what the
+// reader looks at, and replacing them every three seconds would throw away
+// whether they are open.
 type activeFragmentView struct {
 	page
-	Filter    dashboardFilter
-	Active    []requestRow
-	ActiveAll []storage.State
+	Filter dashboardFilter
+	buckets
 }
 
 type searchView struct {
@@ -294,13 +399,31 @@ type helpView struct {
 // ---------------------------------------------------------------------------
 
 // rowFor renders one request as a table row.
-func rowFor(r *storage.Request, watchers []storage.Watcher, now time.Time) requestRow {
+//
+// The base path comes in because the row carries its own links: the bucket
+// tables are shared between the page and the polled fragment, and a template
+// that has to reach for the page to build a URL cannot be shared.
+func rowFor(r *storage.Request, watchers []storage.Watcher, now time.Time, basePath string) requestRow {
 	row := requestRow{
 		ID:        r.ID,
 		Title:     titleOf(r),
 		State:     r.State,
 		CreatedAt: r.CreatedAt,
 		When:      whenText(r, now),
+		Age:       durationHuman(now.Sub(r.CreatedAt)),
+		Attempts:  r.AttemptCount,
+		// The one state that blocks on a person. The row says so with an
+		// action, not with a word.
+		NeedsPick: r.State == storage.StateManual,
+		Href:      pathFunc(basePath, fmt.Sprintf("/requests/%d", r.ID)),
+	}
+	row.CancelHref = row.Href + "/cancel"
+	row.RetryHref = row.Href + "/retry"
+
+	// The next check is only meaningful for a request that is waiting for a
+	// moment. One that is waiting for a person has no next check.
+	if r.NextRunAt != nil {
+		row.NextCheck = relativeTime(*r.NextRunAt)
 	}
 
 	if len(watchers) > 0 {
@@ -318,7 +441,7 @@ func rowFor(r *storage.Request, watchers []storage.Watcher, now time.Time) reque
 	row.ProgressValue = progressValue(r)
 	row.ProgressText = progressText(r)
 	row.SearchText = searchText(r, now)
-	row.PosterURL = posterPath(r.PosterPath, "w185")
+	row.PosterURL = pathFunc(basePath, posterPath(r.PosterPath, "w185"))
 	row.Year = r.Media.Year
 	row.SelectedLink = r.SelectedLink
 
@@ -398,7 +521,7 @@ func progressText(r *storage.Request) string {
 		return ""
 	}
 
-	out := fmt.Sprintf("%.1f%%", r.Progress*100)
+	out := decimal(r.Progress*100) + "%"
 	if r.DlSpeed > 0 {
 		out += " · " + humanBytes(r.DlSpeed) + "/s"
 	}
@@ -446,9 +569,14 @@ func searchText(r *storage.Request, now time.Time) string {
 }
 
 // detailFor renders one request as a page.
-func detailFor(r *storage.Request, watchers []storage.Watcher, events []storage.EventRow, now time.Time) requestDetail {
+//
+// The candidate count is a parameter rather than something it looks up: the
+// handler already has the list, and the count is what the status line says
+// about a request waiting for a person.
+func detailFor(r *storage.Request, watchers []storage.Watcher, events []storage.EventRow, candidates int, now time.Time, basePath string) requestDetail {
 	d := requestDetail{
-		requestRow:  rowFor(r, watchers, now),
+		requestRow:  rowFor(r, watchers, now, basePath),
+		Status:      statusLine(r, now, candidates),
 		WorkflowID:  r.WorkflowID,
 		QbitHash:    r.QbitHash,
 		ContentPath: r.ContentPath,
@@ -500,6 +628,95 @@ func detailFor(r *storage.Request, watchers []storage.Watcher, events []storage.
 	}
 
 	return d
+}
+
+// statusLine is the one sentence that says what the bot is doing.
+//
+// It is the highest-value line in the product: the difference between "the
+// bot is doing something" and "the bot has been doing something for four
+// months". Every number in it comes from the request itself, because a
+// sentence that could be wrong is worse than no sentence at all.
+func statusLine(r *storage.Request, now time.Time, candidates int) string {
+	return capitalise(statusSentence(r, now, candidates))
+}
+
+// capitalise puts the first letter of a sentence in upper case.
+//
+// The sentences are built from phrases that were written to stand inside a
+// sentence — "ждёт остальные серии: 5 из 8" — and the line is a sentence of
+// its own.
+func capitalise(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	return string(unicode.ToUpper(r[0])) + string(r[1:])
+}
+
+// statusSentence is the body of the status line.
+func statusSentence(r *storage.Request, now time.Time, candidates int) string {
+	switch r.State {
+	case storage.StateSearching:
+		out := "Ищет релиз с русским звуком."
+		if r.AttemptCount > 0 {
+			out += " Проверено " + nounTime.count(r.AttemptCount) + " за " +
+				durationHuman(now.Sub(r.CreatedAt)) + "."
+		}
+		if r.NextRunAt != nil {
+			out += " Следующая проверка " + relativeTime(*r.NextRunAt) + "."
+		}
+		return out
+
+	case storage.StatePending:
+		if r.AttemptCount == 0 {
+			return "Ждёт первой проверки."
+		}
+		out := "Проверено " + nounTime.count(r.AttemptCount) + "."
+		if r.NextRunAt != nil {
+			out += " Следующая проверка " + relativeTime(*r.NextRunAt) + "."
+		}
+		return out
+
+	case storage.StateDownloading:
+		pct := progressValue(r)
+		if r.SelectedSize > 0 {
+			done := int64(float64(r.SelectedSize) * r.Progress)
+			return fmt.Sprintf("Качает %s из %s (%d%%).",
+				humanBytes(done), humanBytes(r.SelectedSize), pct)
+		}
+		return fmt.Sprintf("Качает, %d%%.", pct)
+
+	case storage.StateAdding:
+		return "Добавляет релиз в клиент."
+
+	case storage.StateManual:
+		if candidates == 0 {
+			return "Индексатор ничего не вернул. Релиз можно прикрепить вручную."
+		}
+		return fmt.Sprintf("Индексатор вернул %s, авто-подбор не выбрал ни один. Нужен ваш выбор.",
+			nounCandidate.count(candidates))
+
+	case storage.StateOngoing:
+		return seasonWaitText(r) + ". Сезон ещё выходит."
+
+	case storage.StateCompleted:
+		return "Загрузка завершена."
+
+	case storage.StateFailed:
+		if r.ErrorStreak > 0 {
+			return "Поиск остановлен после " + nounError.countG(r.ErrorStreak) + " подряд."
+		}
+		return "Поиск остановлен."
+
+	case storage.StateCanceled:
+		return "Запрос отменён."
+
+	case storage.StateSkipped:
+		return "Уже есть в Plex."
+
+	default:
+		return ""
+	}
 }
 
 // plexText says what the library check found.
@@ -573,6 +790,14 @@ func cancelOutcome(r *storage.Request) string {
 // Small renderers
 // ---------------------------------------------------------------------------
 
+// decimal renders a number the way a Russian reader writes it.
+//
+// The dot is the machine's separator; the comma is the reader's. A size
+// that says "21.0 ГиБ" in a Russian interface reads as a machine talking.
+func decimal(v float64) string {
+	return strings.Replace(fmt.Sprintf("%.1f", v), ".", ",", 1)
+}
+
 // humanBytes renders a size the way a person reads one.
 func humanBytes(n int64) string {
 	const unit = 1024
@@ -584,10 +809,10 @@ func humanBytes(n int64) string {
 	for _, u := range []string{"КиБ", "МиБ", "ГиБ", "ТиБ"} {
 		value /= unit
 		if value < unit {
-			return fmt.Sprintf("%.1f %s", value, u)
+			return decimal(value) + " " + u
 		}
 	}
-	return fmt.Sprintf("%.1f ПиБ", value)
+	return decimal(value) + " ПиБ"
 }
 
 // humanDuration renders an interval at the resolution somebody cares about.

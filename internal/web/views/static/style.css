@@ -676,57 +676,69 @@ html[data-sidebar="open"] .hamburger::before { content: '✕'; }
    so the reading order is still the logical one — only the visual order
    changes, which is safe because it already was. */
 @media (max-width: 767px) {
-  table.cards,
-  table.cards tbody { display: block; width: 100%; }
-  table.cards thead { display: none; }
+  table.table-cards,
+  table.table-cards tbody { display: block; width: 100%; }
+  table.table-cards thead { display: none; }
 
-  table.cards tr {
-    display: grid;
-    grid-template-columns: 3rem 1fr;
-    column-gap: 0.75rem;
-    row-gap: 0.35rem;
+  table.table-cards tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
     padding: 0.75rem 0;
     border-bottom: 1px solid var(--m-border);
   }
 
-  table.cards td {
+  table.table-cards td {
     display: block;
-    grid-column: 2;
+    flex: 1 1 100%;
     min-width: 0;
     padding: 0;
     border: 0;
   }
 
+  /* The poster and the title share the first line; every other cell takes a
+     line of its own. Flex rather than a grid, because the buckets have
+     different columns and a grid would have to be told how many rows the
+     poster spans. */
+  table.table-cards td.thumb { flex: 0 0 3rem; }
+  table.table-cards td.what { flex: 1 1 calc(100% - 3.75rem); }
+
   /* The label of a field is the name of the column it came from. Two cells
      carry no label: the poster and the title are the card's heading. */
-  table.cards td[data-label]::before {
+  table.table-cards td[data-label]::before {
     content: attr(data-label);
     display: block;
     color: var(--m-text-muted);
     font-size: 0.75rem;
   }
-  table.cards td.thumb::before,
-  table.cards td.what::before { content: none; }
-
-  /* The poster sits at the top left, beside the title, and spans the rows
-     below it. The span counts the cells in the second column: four in the
-     active table, three in the recent one. */
-  table.cards td.thumb {
-    grid-column: 1;
-    grid-row: 1 / span 4;
-    width: 3rem;
-    padding: 0;
-  }
-  table.cards-recent td.thumb { grid-row: 1 / span 3; }
+  table.table-cards td.thumb::before,
+  table.table-cards td.what::before { content: none; }
 
   /* The cancel action is the thing a finger reaches for, and a 24 px link
      is below the 44 px minimum a thumb needs. */
-  table.cards td.actions a {
+  table.table-cards td.actions a {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
   }
 }
+
+/* The generated status line: one sentence that says what the bot is doing.
+   It is the answer to "is it still looking, and what is it looking for",
+   and it gets a frame because it is the first thing on the page. */
+.status {
+  font-size: 1.05rem;
+  margin: 0 0 1.25rem;
+  padding: 0.65rem 0.9rem;
+  border-left: 3px solid var(--m-accent);
+  background: var(--m-surface);
+  border-radius: var(--m-radius);
+}
+
+/* The bucket that waits for a person. It is the one bucket whose rows are
+   not waiting for a moment but for a human, so the block says so before
+   the word does. */
+#block-waiting { border-left: 3px solid var(--m-warn); }
 
 /* A candidate row that was refused on principle. It carries no action, so
    it is dimmed: the eye should pass over it to the row that can be picked. */

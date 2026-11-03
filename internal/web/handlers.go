@@ -28,6 +28,12 @@ import (
 // dashboardLimit caps the lists on the front page.
 const dashboardLimit = 50
 
+// fragmentLimit caps the lists in the polled fragment.
+//
+// It is smaller than the page's: the fragment is fetched every three seconds
+// by every open browser, and nobody scrolls a live table.
+const fragmentLimit = 20
+
 // dashboardFilter is the parsed query string for the dashboard. It carries
 // both the values used to query storage and the same values formatted back for
 // the template's form: that way a filter that round-tripped through the URL
@@ -51,38 +57,45 @@ type dashboardFilter struct {
 	WatcherUserID int64
 }
 
-// toStorage turns the parsed values into a storage.RequestFilter. Since and
-// SortByTitle come from the same source, so they live together here. The
-// dashboard's Active list always asks for all active states, and then trims
-// in the template; the per-state filter only narrows what the user sees.
-func (f dashboardFilter) toStorage(activeDefaultLimit int, recentLimit int) (active storage.RequestFilter, recent storage.RequestFilter) {
-	common := func(states []storage.State, limit int) storage.RequestFilter {
-		return storage.RequestFilter{
-			States:        states,
-			MediaType:     domain.MediaType(f.Type),
-			Query:         f.Q,
-			SortByTitle:   f.Sort == "title",
-			Since:         sinceDuration(f.Since),
-			Limit:         limit,
-			WatcherUserID: f.WatcherUserID,
-		}
+// toStorage turns the parsed values into a storage.RequestFilter.
+//
+// Since and SortByTitle come from the same source, so they live together
+// here. The states are the bucket's own, narrowed by the state pills.
+//
+// The period is *not* applied to a bucket: it is a window for the recent
+// list, and a request that has been searching for four months must not
+// disappear because somebody asked for the last day.
+func (f dashboardFilter) toStorage(states []storage.State, limit int) storage.RequestFilter {
+	return storage.RequestFilter{
+		States:        applyActiveSubset(states, f.ActiveSubs),
+		MediaType:     domain.MediaType(f.Type),
+		Query:         f.Q,
+		SortByTitle:   f.Sort == "title",
+		OldestFirst:   f.Sort == "waiting",
+		Limit:         limit,
+		WatcherUserID: f.WatcherUserID,
 	}
-	active = common(storage.ActiveStates(), activeDefaultLimit)
-	active.States = applyActiveSubset(active.States, f.ActiveSubs)
+}
 
-	recentStates := []storage.State{
+// toRecent turns the parsed values into the filter for the recent list.
+//
+// The period belongs here and nowhere else: it is a window on what finished,
+// not on what is still running.
+func (f dashboardFilter) toRecent(limit int) storage.RequestFilter {
+	states := []storage.State{
 		storage.StateCompleted, storage.StateFailed,
 		storage.StateCanceled, storage.StateSkipped,
 	}
-	recent = common(recentStates, recentLimit)
-	return
-}
-
-// activeStatesForTemplate reports which of the four active states are
-// currently visible to the user. Used to render the pills.
-func (f dashboardFilter) activeStatesForTemplate() []storage.State {
-	all := storage.ActiveStates()
-	return applyActiveSubset(all, f.ActiveSubs)
+	return storage.RequestFilter{
+		States:        states,
+		MediaType:     domain.MediaType(f.Type),
+		Query:         f.Q,
+		SortByTitle:   f.Sort == "title",
+		OldestFirst:   f.Sort == "waiting",
+		Since:         sinceDuration(f.Since),
+		Limit:         limit,
+		WatcherUserID: f.WatcherUserID,
+	}
 }
 
 // MirrorStates reports the state pills that are checked.
@@ -257,10 +270,17 @@ func mediaTypeFilter(s string) string {
 }
 
 func sortFilter(s string) string {
-	if s == "title" {
+	switch s {
+	case "title":
 		return "title"
+	case "waiting":
+		// The longest wait first. This is the sort that makes the two-year
+		// horizon real: a list of the things you asked for a year ago that
+		// are still quietly running.
+		return "waiting"
+	default:
+		return "date"
 	}
-	return "date"
 }
 
 func sinceFilter(s string) string {
@@ -275,15 +295,14 @@ func sinceFilter(s string) string {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	filter := parseDashboardFilter(r)
-	af, rf := filter.toStorage(dashboardLimit, 10)
 
-	active, err := s.store.ListRequests(r.Context(), af)
+	wall, err := s.bucketsFor(r, filter, now, dashboardLimit)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 
-	recent, err := s.store.ListRequests(r.Context(), rf)
+	recent, err := s.store.ListRequests(r.Context(), filter.toRecent(10))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -292,21 +311,25 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "dashboard", dashboardView{
 		page:      s.basePage(w, r, "dashboard"),
 		Filter:    filter,
-		Active:    s.rowsFor(r, active, now),
+		buckets:   wall,
 		Recent:    s.rowsFor(r, recent, now),
 		ActiveAll: storage.ActiveStates(),
 	})
 }
 
 // handleActiveFragment is what the dashboard polls.
+//
+// It carries the three tables and the three counts, and every one of them is
+// an out-of-band swap: the blocks they live in stay exactly where they are,
+// so a poll never touches whether the reader has them open, and never
+// replaces the filter form somebody is typing in.
 func (s *Server) handleActiveFragment(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	filter := parseDashboardFilter(r)
-	af, _ := filter.toStorage(20, 0)
 
 	// A shorter list than the page's: this is fetched every three seconds by
 	// every open browser, and nobody scrolls a live table.
-	active, err := s.store.ListRequests(r.Context(), af)
+	wall, err := s.bucketsFor(r, filter, now, fragmentLimit)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -317,16 +340,33 @@ func (s *Server) handleActiveFragment(w http.ResponseWriter, r *http.Request) {
 	// whatever it read first.
 	w.Header().Set("Cache-Control", "no-store")
 
-	// The page struct travels with the fragment because the fragment contains
-	// a form, and a form without a token is rejected at submission — which
-	// would look like the cancel button being broken rather than like a
-	// missing field.
-	s.renderFragment(w, r, "active_table", activeFragmentView{
-		page:      s.basePage(w, r, "dashboard"),
-		Filter:    filter,
-		Active:    s.rowsFor(r, active, now),
-		ActiveAll: storage.ActiveStates(),
+	s.renderFragment(w, r, "active_fragment", activeFragmentView{
+		page:    s.basePage(w, r, "dashboard"),
+		Filter:  filter,
+		buckets: wall,
 	})
+}
+
+// bucketsFor fetches the three buckets of the dashboard.
+//
+// One query per bucket, rather than one query for all of them: a single
+// query with a limit would let a busy bucket starve a quiet one — fifty
+// downloads in progress and nothing from the parking list.
+func (s *Server) bucketsFor(r *http.Request, filter dashboardFilter, now time.Time, limit int) (buckets, error) {
+	var out buckets
+
+	for _, b := range dashboardBuckets {
+		requests, err := s.store.ListRequests(r.Context(), filter.toStorage(b.States, limit))
+		if err != nil {
+			return out, err
+		}
+		out.List = append(out.List, bucketView{
+			dashboardBucket: b,
+			Rows:            s.rowsFor(r, requests, now),
+		})
+	}
+
+	return out, nil
 }
 
 // rowsFor renders requests, attaching the watchers of each.
@@ -342,7 +382,7 @@ func (s *Server) rowsFor(r *http.Request, requests []*storage.Request, now time.
 			s.log.Warn("could not list the watchers of a request",
 				"request", req.ID, "error", err)
 		}
-		rows = append(rows, rowFor(req, watchers, now))
+		rows = append(rows, rowFor(req, watchers, now, s.cfg.Server.BasePath))
 	}
 	return rows
 }
@@ -619,7 +659,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	s.render(w, r, "request", requestView{
 		page:       s.basePage(w, r, "dashboard"),
-		Request:    detailFor(req, watchers, events, time.Now()),
+		Request:    detailFor(req, watchers, events, len(candidates), time.Now(), s.cfg.Server.BasePath),
 		Candidates: candidates,
 	})
 }
@@ -658,7 +698,7 @@ func (s *Server) handleCancelConfirm(w http.ResponseWriter, r *http.Request) {
 
 	s.render(w, r, "cancel", cancelView{
 		page:         s.basePage(w, r, "dashboard"),
-		Request:      detailFor(req, watchers, nil, time.Now()),
+		Request:      detailFor(req, watchers, nil, 0, time.Now(), s.cfg.Server.BasePath),
 		Consequences: cancelConsequences(req),
 	})
 }
