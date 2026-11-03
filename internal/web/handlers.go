@@ -499,9 +499,9 @@ func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	all := make([]string, 0, len(storage.AllStates()))
+	all := make([]storage.State, 0, len(storage.AllStates()))
 	for _, st := range storage.AllStates() {
-		all = append(all, string(st))
+		all = append(all, st)
 	}
 
 	s.render(w, r, "requests", requestsView{

@@ -3,7 +3,53 @@
    and `container`/`grid`/`card` primitives. This stylesheet layers
    project-specific layout on top of it. */
 
-:root { --pico-spacing-vertical: 1rem; }
+:root {
+  --pico-spacing-vertical: 1rem;
+
+  /* The project's own tokens.
+     Each one names a role rather than a colour, and each one resolves to a
+     Pico variable — so the interface follows the operating system's light or
+     dark preference without a second palette to keep in sync. A literal
+     colour appears below only where Pico has no token for the role, and
+     then it is marked as an exception with its own value per theme. */
+  --m-bg: var(--pico-background-color);
+  --m-surface: var(--pico-card-background-color);
+  --m-border: var(--pico-muted-border-color);
+  --m-text: var(--pico-color);
+  --m-text-muted: var(--pico-muted-color);
+  --m-accent: var(--pico-primary);
+  --m-ok: var(--pico-ins-color);
+  --m-danger: var(--pico-del-color);
+
+  /* Pico has no warning token at all, so this one is ours. It needs a value
+     per theme: a fixed amber is unreadable on a dark page, and the whole
+     point of the token layer is that the two themes cannot drift apart.
+     Both values clear 4.5:1 against their own background. */
+  --m-warn: #8a5a00;
+
+  /* The progress bar's track and fill. */
+  --m-bar-track: var(--pico-muted-border-color);
+  --m-bar-fill: var(--pico-primary);
+
+  /* The scrim over a poster. These do not follow the theme on purpose: they
+     sit on a photograph, not on the page, and a light scrim would disappear
+     into a light poster. */
+  --m-scrim: rgba(0, 0, 0, 0.65);
+  --m-on-scrim: #fff;
+  --m-on-scrim-accent: #ffd86b;
+
+  --m-radius: var(--pico-border-radius);
+  --m-radius-pill: 999px;
+}
+
+/* The warning colour for the dark theme, in both ways a theme can be chosen:
+   by the operating system's preference, or by the data-theme attribute the
+   toggle sets. This mirrors exactly how Pico itself switches, so the two
+   never disagree about which theme is in force. */
+@media only screen and (prefers-color-scheme: dark) {
+  :root:not([data-theme]) { --m-warn: #e0a63c; }
+}
+[data-theme="dark"] { --m-warn: #e0a63c; }
 
 main.container, main { max-width: 76rem; }
 
@@ -24,7 +70,7 @@ header.top {
 .badge {
   background: var(--pico-primary);
   color: var(--pico-primary-inverse);
-  border-radius: 999px;
+  border-radius: var(--m-radius-pill);
   padding: 0 0.45em;
   font-size: 0.8em;
   font-weight: 600;
@@ -35,18 +81,18 @@ h2 { font-size: 1.15rem; margin: 2rem 0 0.75rem; }
 h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
 
 .muted { color: var(--pico-muted-color); }
-.warn { color: var(--pico-del-color, #c1272d); }
+.warn { color: var(--m-danger); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
 
 .flash {
   background: var(--pico-card-background-color);
-  border-left: 3px solid var(--pico-ins-color, #2c7a4b);
+  border-left: 3px solid var(--m-ok);
   padding: 0.6rem 0.9rem;
   border-radius: var(--pico-border-radius);
   margin: 0 0 1rem;
 }
-.flash.bad { border-left-color: var(--pico-del-color, #c1272d); }
-.flash.warn { border-left-color: var(--pico-contrast-warning, #c98300); }
+.flash.bad { border-left-color: var(--m-danger); }
+.flash.warn { border-left-color: var(--m-warn); }
 
 table { width: 100%; border-collapse: collapse; margin: 0.5rem 0 1rem; }
 
@@ -67,17 +113,68 @@ tbody tr:hover { background: var(--pico-card-background-color); }
 tr.unread td { font-weight: 500; }
 .events td { font-size: 0.9em; }
 
-.state { font-size: 0.85em; padding: 0.05rem 0.4rem; border-radius: 999px; border: 1px solid var(--pico-muted-border-color); }
-.state.downloading { color: var(--pico-primary); border-color: var(--pico-primary); }
-.state.completed   { color: var(--pico-ins-color, #2c7a4b); border-color: var(--pico-ins-color, #2c7a4b); }
-.state.failed      { color: var(--pico-del-color, #c1272d); border-color: var(--pico-del-color, #c1272d); }
-.state.canceled    { color: var(--pico-muted-color); }
+/* The state pill.
+   Colour marks responsibility, not phase: the machine is on it, a person is
+   needed, it finished, it broke, or it is closed. Ten states cannot each
+   have their own colour without the legend becoming the interface — and the
+   phase is already carried by the label and by the bucket the row sits in. */
+.state {
+  font-size: 0.85em;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--m-radius-pill);
+  border: 1px solid var(--m-border);
+}
+
+/* The machine is on it.
+   The season watcher is in this group: it is waiting for the rest of a
+   season that is still being released, which is neither done nor failed, so
+   it gets the same colour a download has. */
+.state.searching,
+.state.adding,
+.state.downloading,
+.state.ongoing { color: var(--m-accent); border-color: var(--m-accent); }
+
+/* A person is needed. This is the only state that blocks on somebody, and
+   it is the only one that gets the warning colour. */
+.state.manual { color: var(--m-warn); border-color: var(--m-warn); }
+
+/* Finished, broken, closed. */
+.state.completed { color: var(--m-ok); border-color: var(--m-ok); }
+.state.failed { color: var(--m-danger); border-color: var(--m-danger); }
+.state.canceled,
 .state.skipped,
-.state.pending     { color: var(--pico-muted-color); }
-/* The season watcher: the request is waiting for the rest of a season that
-   is still being released. It is neither done nor failed, so it gets the
-   primary colour — the same one a download has. */
-.state.ongoing     { color: var(--pico-primary); border-color: var(--pico-primary); }
+.state.pending { color: var(--m-text-muted); }
+
+/* A rejection reason. The tone says whether the release was refused on
+   principle — a camrip, a blacklisted hash — or merely on quality, which is
+   the difference between a row with no action and a row with one. */
+.reason { display: inline-block; }
+.reason.danger { color: var(--m-danger); }
+.reason.warn { color: var(--m-warn); }
+.reason.neutral { color: var(--m-text-muted); }
+
+/* The download progress bar.
+   The fill is a block, not an inline element: an inline element ignores a
+   width, which is why the bar rendered as nothing at all before this rule
+   existed. */
+.bar {
+  display: block;
+  width: 100%;
+  height: 0.5rem;
+  background: var(--m-bar-track);
+  border-radius: var(--m-radius-pill);
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--m-bar-fill);
+  border-radius: inherit;
+  transition: width 0.3s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bar > i { transition: none; }
+}
 
 .filters { margin-bottom: 0.5rem; color: var(--pico-muted-color); display: flex; gap: 1rem; flex-wrap: wrap; }
 .filters label { display: inline-flex; align-items: center; gap: 0.5rem; }
@@ -118,22 +215,22 @@ tr.unread td { font-weight: 500; }
   position: absolute;
   bottom: 0.4rem;
   left: 0.4rem;
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
+  background: var(--m-scrim);
+  color: var(--m-on-scrim);
   font-size: 0.75em;
   padding: 0.05rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--m-radius-pill);
 }
 .poster .rating {
   position: absolute;
   bottom: 0.4rem;
   right: 0.4rem;
-  background: rgba(0, 0, 0, 0.65);
-  color: #ffd86b;
+  background: var(--m-scrim);
+  color: var(--m-on-scrim-accent);
   font-size: 0.75em;
   font-weight: 600;
   padding: 0.05rem 0.45rem;
-  border-radius: 999px;
+  border-radius: var(--m-radius-pill);
 }
 .poster .type {
   position: absolute;
@@ -208,7 +305,7 @@ button.link {
   cursor: pointer;
   font: inherit;
 }
-button.link.warn { color: var(--pico-del-color, #c1272d); }
+button.link.warn { color: var(--m-danger); }
 button.link:hover { text-decoration: underline; }
 
 /* Logout control: the same look as button.link (no chrome) holding a
@@ -303,7 +400,7 @@ table td > input.notif-check {
 .invite {
   background: var(--pico-card-background-color);
   border: 1px solid var(--pico-muted-border-color);
-  border-left: 3px solid var(--pico-ins-color, #2c7a4b);
+  border-left: 3px solid var(--m-ok);
   border-radius: var(--pico-border-radius);
   padding: 0.75rem 1rem;
   margin: 0 0 1rem;
@@ -414,7 +511,7 @@ table td > input.notif-check {
   align-items: center;
   gap: 0.35rem;
   padding: 0.25rem 0.6rem;
-  border-radius: 999px;
+  border-radius: var(--m-radius-pill);
   border: 1px solid var(--pico-muted-border-color);
   font-size: 0.85em;
   cursor: pointer;

@@ -7,7 +7,7 @@
       <option value="" {{if not .State}}selected{{end}}>активные</option>
       <option value="all" {{if eq .State "all"}}selected{{end}}>все</option>
       {{range .States}}
-        <option value="{{.}}" {{if eq $.State .}}selected{{end}}>{{.}}</option>
+        <option value="{{.}}" {{if eq $.State .}}selected{{end}}>{{stateLabel .}}</option>
       {{end}}
     </select>
   </label>
@@ -24,7 +24,7 @@
       <tr>
         <td class="muted">{{.ID}}</td>
         <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
-        <td><span class="state {{.State}}">{{.State}}</span></td>
+        <td><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
         <td class="muted">{{.When}}</td>
         <td class="muted">{{.Watchers}}</td>
       </tr>

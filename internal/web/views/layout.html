@@ -44,7 +44,14 @@
   </header>
 
   <div class="layout">
-    <aside class="sidebar" id="sidebar" aria-hidden="true" onclick="mediadCloseSidebarOnNav(event)">
+    {{/* No aria-hidden here. The attribute used to be hard-coded to "true",
+         which hid the whole navigation from assistive technology and took it
+         out of the tab order — on a desktop, where the sidebar is a visible
+         column. The script at the end of the body sets it to match what is
+         actually on screen: hidden only in the mobile drawer state, where
+         the panel is off-canvas. A user without JavaScript gets the visible
+         sidebar, which is the honest description of it. */}}
+     <aside class="sidebar" id="sidebar" onclick="mediadCloseSidebarOnNav(event)">
       <nav>
         <a href="{{path $.BasePath "/"}}" {{if eq .Nav "dashboard"}}class="on"{{end}} title="Запросы" aria-label="Запросы">
           <svg viewBox="0 0 20 20" fill="currentColor" class="icon" aria-hidden="true"><path fill-rule="evenodd" d="M2 3.75A.75.75 0 0 1 2.75 3h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75Zm0 4.167a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Zm0 4.166a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Zm0 4.167a.75.75 0 0 1 .75-.75h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1-.75-.75Z" clip-rule="evenodd"/></svg>

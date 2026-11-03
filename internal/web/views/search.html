@@ -3,7 +3,7 @@
 
 <form method="get" action="{{path .BasePath "/search"}}" role="search">
   <input type="search" name="q" value="{{.Query}}" placeholder="Название фильма или сериала"
-         autofocus autocomplete="off">
+         autofocus autocomplete="off" aria-label="название фильма или сериала">
   <button type="submit">Найти</button>
 </form>
 

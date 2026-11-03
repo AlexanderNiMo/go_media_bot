@@ -38,6 +38,32 @@ const (
 	ReasonNotAnUpdate Reason = "not_an_update"
 )
 
+// AllReasons returns every reason code the selector can produce.
+//
+// The set is closed, so the enumeration is here rather than left to whoever
+// needs it: a caller that has to name every reason — the interface, which
+// translates them for a person — has no way to notice a new one otherwise, and
+// an untranslated reason reaches the page as a raw identifier.
+func AllReasons() []Reason {
+	return []Reason{
+		ReasonExcludedSource,
+		ReasonResolutionTooLow,
+		ReasonUnknownQuality,
+		ReasonTooFewSeeders,
+		ReasonTooSmall,
+		ReasonTooLarge,
+		ReasonImplausibleSize,
+		ReasonBlacklisted,
+		ReasonNoRussianAudio,
+		ReasonSubtitlesOnly,
+		ReasonWrongSeason,
+		ReasonIsSingleEpisode,
+		ReasonWrongYear,
+		ReasonNoDownloadLink,
+		ReasonNotAnUpdate,
+	}
+}
+
 // Rejection pairs a release with the reason it was refused.
 type Rejection struct {
 	Release domain.Release

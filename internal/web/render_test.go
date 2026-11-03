@@ -154,7 +154,7 @@ func fixtures(t *testing.T) map[string]any {
 		"requests": requestsView{
 			page:     testPage(),
 			State:    "all",
-			States:   []string{"pending", "failed"},
+			States:   []storage.State{"pending", "failed"},
 			Requests: []requestRow{row},
 		},
 		"request": requestView{page: testPage(), Request: detail},
@@ -253,9 +253,9 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 		{"requests", struct {
 			page
 			State    string
-			States   []string
+			States   []storage.State
 			Requests []requestRow
-		}{p, "all", []string{"pending", "failed"}, []requestRow{rowFor(req, nil, now)}}},
+		}{p, "all", []storage.State{"pending", "failed"}, []requestRow{rowFor(req, nil, now)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

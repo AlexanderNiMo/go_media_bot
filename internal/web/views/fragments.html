@@ -5,7 +5,14 @@
 
 {{define "progress"}}
 {{if .IsDownloading}}
-  <div class="bar"><i style="width: {{.ProgressPct}}%"></i></div>
+  {{/* The bar carries the role and the value, not just the width: a
+       screen reader announces "45, progress bar" from these, and nothing
+       from a width. */}}
+  <div class="bar" role="progressbar"
+       aria-valuenow="{{.ProgressValue}}" aria-valuemin="0" aria-valuemax="100"
+       aria-label="Прогресс загрузки: {{.Title}}">
+    <i style="width: {{.ProgressPct}}%"></i>
+  </div>
   <span class="muted">{{.ProgressText}}</span>
 {{else}}
   <span class="muted">{{.SearchText}}</span>
