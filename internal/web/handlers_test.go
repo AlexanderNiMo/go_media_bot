@@ -327,7 +327,7 @@ func TestSetupCreatesAnAdminAndSignsIn(t *testing.T) {
 	c := signedIn(t, s)
 
 	// Signed in, so the dashboard renders rather than redirecting.
-	if body := c.body("/"); !strings.Contains(body, "Что качается") {
+	if body := c.body("/"); !strings.Contains(body, "Качается") {
 		t.Errorf("the dashboard did not render: %s", truncateForTest(body, 200))
 	}
 
@@ -592,7 +592,9 @@ func TestDashboardShowsARequest(t *testing.T) {
 
 	body := c.body("/")
 
-	for _, want := range []string{"Матрица (1999)", "downloading", "43.0%", "12.0 МиБ/s"} {
+	// The decimal separator is a comma: the interface is Russian, and a dot
+	// is the machine's separator rather than the reader's.
+	for _, want := range []string{"Матрица (1999)", "downloading", "43,0%", "12,0 МиБ/s"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the dashboard does not show %q", want)
 		}
@@ -867,7 +869,7 @@ func TestInviteFlow(t *testing.T) {
 	})
 	body := readBody(t, resp)
 
-	if !strings.Contains(body, "Что качается") {
+	if !strings.Contains(body, "Качается") {
 		t.Errorf("registration did not sign the new user in: %s", truncateForTest(body, 300))
 	}
 

@@ -74,6 +74,40 @@ func sampleRequest() *storage.Request {
 	}
 }
 
+// sampleBuckets is the dashboard's three buckets, one row each.
+//
+// One row per bucket, and a row in a different state each, because the
+// buckets differ in their columns as well as in their meaning: a transfer
+// has no age and no next check, and a request waiting for a person has an
+// age and a pick.
+func sampleBuckets(t *testing.T) buckets {
+	t.Helper()
+
+	rowIn := func(state storage.State) requestRow {
+		req := sampleRequest()
+		req.State = state
+		return rowFor(req, nil, time.Now(), "")
+	}
+
+	var out buckets
+	for _, b := range dashboardBuckets {
+		var state storage.State
+		switch b.Key {
+		case "downloading":
+			state = storage.StateDownloading
+		case "searching":
+			state = storage.StateSearching
+		default:
+			state = storage.StateManual
+		}
+		out.List = append(out.List, bucketView{
+			dashboardBucket: b,
+			Rows:            []requestRow{rowIn(state)},
+		})
+	}
+	return out
+}
+
 // testPage is the layout data every fixture starts from.
 func testPage() page {
 	return page{
@@ -97,7 +131,7 @@ func fixtures(t *testing.T) map[string]any {
 
 	now := time.Now()
 	req := sampleRequest()
-	row := rowFor(req, []storage.Watcher{{Username: "alex"}}, now)
+	row := rowFor(req, []storage.Watcher{{Username: "alex"}}, now, "")
 	detail := detailFor(req, []storage.Watcher{{Username: "alex"}},
 		[]storage.EventRow{
 			{
@@ -110,7 +144,7 @@ func fixtures(t *testing.T) map[string]any {
 			},
 			{At: now, Event: "no detail", Actor: "workflow"},
 			{At: now, Event: "broken detail", Detail: []byte(`not json`)},
-		}, now)
+		}, 0, now, "")
 
 	return map[string]any{
 		"dashboard": dashboardView{
@@ -125,7 +159,7 @@ func fixtures(t *testing.T) map[string]any {
 				Since:      "7d",
 				ActiveSubs: []string{"downloading", "adding"},
 			},
-			Active:    []requestRow{row},
+			buckets:   sampleBuckets(t),
 			Recent:    []requestRow{row},
 			ActiveAll: storage.ActiveStates(),
 		},
@@ -243,7 +277,7 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 				Detail:    []byte(`{"score":0.87,"title":"Матрица"}`),
 			},
 			{At: now, Event: "no detail", Actor: "workflow"},
-		}, now)
+		}, 0, now, "")
 
 	p := page{User: &storage.User{ID: 1, Username: "alex"}, CSRF: "token"}
 
@@ -261,7 +295,7 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 			State    string
 			States   []storage.State
 			Requests []requestRow
-		}{p, "all", []storage.State{"pending", "failed"}, []requestRow{rowFor(req, nil, now)}}},
+		}{p, "all", []storage.State{"pending", "failed"}, []requestRow{rowFor(req, nil, now, "")}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -279,18 +313,14 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 func TestActiveFragmentRendersPopulated(t *testing.T) {
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
 
-	now := time.Now()
-	data := struct {
-		page
-		Active []requestRow
-	}{
-		page:   page{CSRF: "token"},
-		Active: []requestRow{rowFor(sampleRequest(), nil, now)},
+	data := activeFragmentView{
+		page:    page{CSRF: "token"},
+		buckets: sampleBuckets(t),
 	}
 
 	rec := httptest.NewRecorder()
 	s.renderFragment(rec, httptest.NewRequest(http.MethodGet, "/fragments/active", nil),
-		"active_table", data)
+		"active_fragment", data)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("returned %d: %s", rec.Code, truncateForTest(rec.Body.String(), 300))
@@ -527,8 +557,8 @@ func TestDashboardFilterFormsCarryEveryControl(t *testing.T) {
 						ActiveSubs: []string{"downloading", "adding"},
 						Scope:      tc.scope, ShowScope: tc.showScope,
 					},
-					Active:    []requestRow{rowFor(sampleRequest(), nil, time.Now())},
-					Recent:    []requestRow{rowFor(sampleRequest(), nil, time.Now())},
+					buckets:   sampleBuckets(t),
+					Recent:    []requestRow{rowFor(sampleRequest(), nil, time.Now(), "")},
 					ActiveAll: storage.ActiveStates(),
 				})
 
@@ -674,7 +704,7 @@ func checkRowRolesAndLabels(t *testing.T, table *html.Node) {
 func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
 
-	detail := detailFor(sampleRequest(), nil, nil, time.Now())
+	detail := detailFor(sampleRequest(), nil, nil, 0, time.Now(), "")
 	rec := httptest.NewRecorder()
 	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "request", requestView{
 		page:    testPage(),
@@ -752,6 +782,114 @@ func hasCell(n *html.Node) bool {
 	}
 	walk(n)
 	return found
+}
+
+// TestTheFragmentCarriesTheBucketsOutOfBand checks that the polled fragment
+// replaces the tables and the counts in place.
+//
+// The blocks live on the page and the fragment carries the new contents as
+// out-of-band swaps. A mismatch between the two is silent: htmx drops an
+// out-of-band element whose target is not on the page, and the dashboard
+// goes on showing the tables it was rendered with, for ever.
+//
+// So the ids are checked against each other, in both directions.
+func TestTheFragmentCarriesTheBucketsOutOfBand(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+	cases := fixtures(t)
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard", cases["dashboard"])
+	page, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	frag := httptest.NewRecorder()
+	s.renderFragment(frag, httptest.NewRequest(http.MethodGet, "/fragments/active", nil),
+		"active_fragment", activeFragmentView{page: testPage(), buckets: sampleBuckets(t)})
+	if frag.Code != http.StatusOK {
+		t.Fatalf("the fragment returned %d: %s", frag.Code, truncateForTest(frag.Body.String(), 300))
+	}
+	fragment, err := html.Parse(strings.NewReader(frag.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered fragment: %v", err)
+	}
+
+	// The ids the page carries.
+	onPage := map[string]bool{}
+	var collect func(*html.Node)
+	collect = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			if id := attrForTest(n, "id"); id != "" {
+				onPage[id] = true
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			collect(c)
+		}
+	}
+	collect(page)
+
+	// The ids the fragment swaps in, and whether they are marked for it.
+	swapped := map[string]bool{}
+	var outOfBand func(*html.Node)
+	outOfBand = func(n *html.Node) {
+		if n.Type == html.ElementNode && attrForTest(n, "hx-swap-oob") != "" {
+			id := attrForTest(n, "id")
+			if id == "" {
+				t.Error("an out-of-band element has no id; htmx cannot find its target")
+			}
+			swapped[id] = true
+			if !onPage[id] {
+				t.Errorf("the fragment swaps in %q, which is not on the page; the swap "+
+					"is dropped and the table stays as it was", id)
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			outOfBand(c)
+		}
+	}
+	outOfBand(fragment)
+
+	// Both halves of every bucket: the table and the count.
+	for _, b := range dashboardBuckets {
+		for _, id := range []string{"table-" + b.Key, "count-" + b.Key} {
+			if !swapped[id] {
+				t.Errorf("the fragment does not swap in %q; the bucket would freeze "+
+					"after the first render", id)
+			}
+			if !onPage[id] {
+				t.Errorf("the page has no %q for the fragment to replace", id)
+			}
+		}
+	}
+}
+
+// TestTheDashboardHasTheThreeBuckets checks that the wall is split by
+// time-scale.
+//
+// The split is the point of Phase 1a: a request that has been searching for
+// four months and a download at 90% are different things, and putting them
+// in one table is what made the horizon invisible.
+func TestTheDashboardHasTheThreeBuckets(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard", fixtures(t)["dashboard"])
+
+	body := rec.Body.String()
+	for _, want := range []string{"Качается", "Ищет", "Ждёт выбора"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the dashboard has no %q bucket", want)
+		}
+	}
+
+	// The horizon's numbers: an age, a next check and an attempt count.
+	for _, want := range []string{"Возраст", "След. проверка", "Попыток"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the dashboard does not show %q", want)
+		}
+	}
 }
 
 // TestTemplateSetsDoNotShareContent — each page is parsed into its own set,
