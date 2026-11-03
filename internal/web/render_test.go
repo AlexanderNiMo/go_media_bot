@@ -540,9 +540,95 @@ func TestTemplateSetsDoNotShareContent(t *testing.T) {
 	}
 }
 
+// TestSidebarClosesOnNavClick checks that choosing a menu item on a narrow
+// viewport closes the sidebar.
+//
+// On a phone the sidebar is a drawer over the content, and a menu item
+// navigates away. The drawer has to close before the browser follows the
+// link — the state is persisted, so an 'open' state follows the user to the
+// next page and keeps the drawer on top of the content.
+//
+// The check is on the wiring, because the browser does the clicking and this
+// file can only read what it was given: the sidebar carries a handler, the
+// page defines it, and the handler acts on the narrow viewport only.
+func TestSidebarClosesOnNavClick(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard", fixtures(t)["dashboard"])
+
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	var sidebar *html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "aside" && attrForTest(n, "id") == "sidebar" {
+			sidebar = n
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if sidebar == nil {
+		t.Fatal("the page has no sidebar")
+	}
+
+	handler := strings.TrimSpace(attrForTest(sidebar, "onclick"))
+	if handler == "" {
+		t.Fatal("the sidebar has no click handler; on a phone the drawer would stay open over the next page")
+	}
+	name := handler
+	if i := strings.IndexByte(handler, '('); i >= 0 {
+		name = strings.TrimSpace(handler[:i])
+	}
+
+	src := jsFunctionSource(rec.Body.String(), name)
+	if src == "" {
+		t.Fatalf("the sidebar's handler %q is not defined on the page", name)
+	}
+	if !strings.Contains(src, "matchMedia") {
+		t.Error("the sidebar's handler ignores the viewport; the column would collapse on a wide screen too")
+	}
+	if !strings.Contains(src, "'icons'") {
+		t.Error("the sidebar's handler does not collapse the sidebar to the 'icons' state")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// jsFunctionSource returns the source of a JS function in the rendered page,
+// or "" when the page does not define it. The braces are counted, so the
+// body of the function comes back whole.
+func jsFunctionSource(body, name string) string {
+	start := strings.Index(body, "function "+name+"(")
+	if start < 0 {
+		return ""
+	}
+	open := strings.IndexByte(body[start:], '{')
+	if open < 0 {
+		return ""
+	}
+	depth := 0
+	for i := start + open; i < len(body); i++ {
+		switch body[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return body[start+open : i+1]
+			}
+		}
+	}
+	return ""
+}
 
 func mustTemplates(t *testing.T) *templates {
 	t.Helper()
