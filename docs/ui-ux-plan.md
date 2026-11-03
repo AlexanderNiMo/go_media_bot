@@ -1,0 +1,1154 @@
+# UI/UX Project Plan — `mediad`
+
+**Date:** 2026-11-03
+**Status:** proposal — nothing in this document has been implemented
+**Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
+**Author:** Lead UI/UX Engineer / Product Designer (solo)
+
+This plan is written against the code as it stands today. Every finding in §1
+and §2 cites a `file:line` so it can be re-verified or falsified in one step —
+a design decision that rests on a misreading of the code is worse than no
+decision at all.
+
+Two things are **out of scope by construction** and are not revisited anywhere
+below:
+
+- The sidebar's two-state (`open` / `icons`) behaviour and its `icons` default.
+  That decision is recorded in `AGENTS.md` as settled after a real regression.
+- The technology constraint: `html/template` + vendored `htmx.min.js` +
+  vendored `pico.min.css`, no build step. Every recommendation below works
+  inside it.
+
+### Decisions taken (2026-11-03)
+
+| # | Decision | Consequence for this plan |
+|---|---|---|
+| D1 | **Several people use the installation** | The dashboard is a shared wall, not a personal list. Adds a «Все / Мои» scope filter (§3.2), renames «Ждёт вас» → «Ждёт выбора» (§3.2), adds «Запросил» to the request page (§3.3). The operator/asker split is real: `is_admin` marks the operators. |
+| D2 | **`manual` handling stays web-only** | No Telegram work in this plan. The existing Telegram manual notification and candidate buttons (shipped in #6) are left untouched. One consequence is flagged in §8.1 — it is not acted on here. |
+| D3 | **Ship auto / light / dark** | Dark mode comes free from `prefers-color-scheme` as soon as every token maps to a `--pico-*` variable (Phase 0). The tri-state toggle is pulled forward from Phase 4 into Phase 1 (§4.2). |
+| D4 | **Only Phase 0 and Phase 1 now** | §7 is resequenced around Phase 0–1. Phases 2–5 are deferred, not deleted, and §7.2 lists what is being deferred and one item that **cannot** be deferred. |
+
+---
+
+## 1. Executive Summary
+
+**Product.** `mediad` names a film or a season, checks Plex, hunts a Russian-audio
+release on trackers, hands it to qBittorrent, and tells you when it is done. The
+distinguishing claim is **the horizon**: a request lives two years, is re-checked
+on a backoff ladder, and "a proper dub finally appeared" is an event that can
+arrive months later.
+
+**Diagnosis of the current UI.** The web front-end (13 templates, Pico v2.0.6 +
+htmx + an 18.5 KB `style.css`) is a competent *download manager*. It is not yet
+a product that embodies the horizon.
+
+| Finding | Evidence |
+|---|---|
+| The dashboard models the product as "what is downloading right now" — two buckets: «Что качается» and «Недавно» | `internal/web/views/dashboard.html:26`, `:79` |
+| A parked request is a *row in the active table*, indistinguishable from a transfer in progress | `.Active` = `storage.ActiveStates()` — `searching`, `adding`, `manual`, `ongoing` all land in one list (`internal/web/handlers.go:227`) |
+| The product's core promise has **no on-screen representation** | `NextRunAt` is persisted per request (`internal/request/workflow.go:347`) but never rendered; `Deadlines` (`internal/web/views.go:444`) is one opaque string |
+| The entire scoring apparatus is invisible | `AudioTier` (7 levels, `internal/release/audio.go:24`) is never rendered in any template; rejection reasons render as raw snake_case codes (`internal/web/views/request.html:88` — `{{.RejectionReason}}`) |
+| **The download progress bar does not render** | `<div class="bar"><i style="width: X%"></i></div>` (`internal/web/views/fragments.html:9`); `.bar` is defined in neither `pico.min.css` nor `style.css`, and `<i>` is inline so `width` does not apply. Only the adjacent text survives |
+| 3 of 10 request states have no styling | `searching`, `adding`, `manual` fall through to the default gray pill (`internal/web/views/static/style.css:70–80`). `manual` is the one state that *needs a human* |
+| Every candidate offers the same "Скачать это" button, regardless of why it was rejected | `internal/web/views/request.html:90–95` — a `blacklisted` release and a `too_few_seeders` release are presented identically |
+| "Unknown seeders" renders as `-1` | `internal/web/views/request.html:84` — `{{.Seeders}}` with no formatting |
+| Six empty states, five of which are one line of muted text with no way forward | `dashboard.html:123,205`; `notifications.html:30`; `search.html:28`; `requests.html:35`; `seasons.html:24` |
+
+**Design thesis: make waiting legible.** A request that has searched for four
+months must look *patient*, not *stuck*. The UI's job is to answer three
+questions a person actually has: **Is it still looking? What is it looking for?
+Why hasn't it found it yet?** Everything else is secondary.
+
+**Three design moves:**
+
+1. **Waiting becomes a first-class visual state** — split the active table by
+   *time-scale*, not by workflow phase. Transfers (seconds → hours) and parked
+   requests (hours → two years) are different products wearing the same shirt.
+2. **Policy becomes a visible contract** — the release tier, the studio that
+   decided it, and the Russian-language rejection reason, rendered for humans.
+   The machine-readable codes stay in the event log exactly as they are; the UI
+   adds a layer *beside* them, never replacing them.
+3. **Two audiences, one page** — the *asker* sees the story; the *operator* can
+   expand the machine. Workflow ID, infohash, content path and the raw events
+   table move behind one disclosure, not deleted.
+
+**Five principles that decide every later argument:**
+
+1. Waiting is a state, not an absence.
+2. Never show a machine code to a human — translate, don't expose.
+3. One status vocabulary across web and Telegram.
+4. Progressive disclosure: story first, machinery second.
+5. Every irreversible action states its consequence. (Cancelling a request
+   **does not delete already-downloaded files** — season-pack files survive a
+   cancel by design, per `AGENTS.md`. Today's "Отменить" is a bare button that
+   says nothing about this.)
+
+**Non-negotiable constraints (from `AGENTS.md` and the code):** html/template +
+htmx + Pico, no build step; the sidebar default stays `icons`; forms are
+siblings, never nested; `{{path}}` does not interpolate nested `{{…}}`; the UI
+is Russian.
+
+---
+
+## 2. Discovery & Research Plan
+
+A solo designer's research budget is one person-weeks, not one quarter. Every
+method below is chosen for what it can answer that the others cannot.
+
+### 2.1 Instrument-first (Week 1, ~2 days) — before any user contact
+
+**The event log is already a longitudinal dataset.** `request_events` logs every
+state transition, every rejection, every attempt, for the life of every request.
+Mine it before running a single study:
+
+- **Time-to-first-acceptable-candidate** distribution (median, p90). This is the
+  real waiting experience.
+- **Rejection reason histogram** across all requests — the reason distribution
+  tells you which rejection the UI must explain hardest. If 60% of rejections
+  are `no_russian_audio`, the candidate table's audio column is the most
+  important cell in the product; if 80% are `too_few_seeders`, the seeders
+  rendering is.
+- **% of requests that reach `manual`**, and how long they sit there
+  unanswered.
+- **Backoff ladder distribution** — how many requests are on the 24-hour rung,
+  and therefore genuinely "parked".
+- **Abandonment rate**: requests created and never cancelled, never completed. A
+  high rate means the horizon *is* working (people forgot about them) — and the
+  UI currently gives no signal of that success.
+
+> **Deliverable:** one page of numbers. This page becomes the "why the redesign
+> exists" artifact and it costs almost nothing.
+
+### 2.2 Moderated usability testing (Weeks 1–2, ~4 days)
+
+7 participants, 25–40, Russian-speaking, who own or use a Plex/media server and
+have used a torrent client. Remote, 45 minutes, screen-recorded. Screener
+question: *"when you want a film that isn't out yet, what do you do today?"* —
+this filters for people with the actual problem, not people who think they have
+it.
+
+**The five tasks** (each with a written success criterion, so scoring is
+objective rather than vibes):
+
+| # | Task | What it tests | Success = |
+|---|---|---|---|
+| T1 | "Add a film you saw announced but isn't out yet." | The flagship horizon flow | User states that the bot will keep looking without them |
+| T2 | "Add season 2 of a series that's currently airing." | Season-as-unit, partial packs | User picks a season, not the show |
+| T3 | "A request has been searching three weeks and hasn't found anything — explain to me what the bot is doing." | **Legibility of waiting** | User mentions the next check / the age / that it's still trying |
+| T4 | "Find out whether the release the bot picked has Russian audio or just Russian subtitles." | Audio-tier surfacing | User distinguishes dub from subtitles *without reading raw code* |
+| T5 | "Cancel a request and tell me what happened to the files already on disk." | Consequence comprehension | User correctly says files are kept (or asks — partial credit, full credit for the *correct* answer after a confirm dialog) |
+
+T3 and T5 are the two that decide the plan. Everything else is secondary.
+
+### 2.3 Diary study (Weeks 2–4, ~1 day setup, then passive)
+
+The only method that fits a two-year product. 6 participants, 21 days, one
+Telegram message a day: *"Что вы сегодня хотели посмотреть? Нашли что-нибудь?"*
+
+The bot is already the delivery channel (`internal/telegram`), so this costs
+almost nothing and produces the one thing a lab session cannot: evidence about
+**patience**. Does the user re-engage on day 3, or does the request become
+invisible? If requests genuinely get forgotten (which the horizon premise
+assumes), the UI's job is to make *checking back* painless, not to make the
+wait interesting.
+
+> **Deliverable:** a day-3 / day-7 / day-21 re-engagement curve. This directly
+> informs whether the dashboard's default view should be "active" or "waiting".
+
+### 2.4 Comparative audit (Week 1, ~1 day)
+
+Six comparators, examined for one specific thing each — **how do they show "we're
+still looking"?**
+
+| Comparator | What to steal | What to reject |
+|---|---|---|
+| Sonarr / Radarr | The *missing vs. monitored* separation — Sonarr's closest analogue to the horizon, and it works | Its density; Sonarr assumes daily use |
+| Overseerr / Jellyseerr | Search → request → Plex-aware "already have it" logic | Its request-once model; mediad's horizon is the differentiator |
+| ITrack, Autobrr | Manual override affordances | Manual-first workflows — mediad's value is the opposite |
+| Jellyfin "missing episodes" panel | A plain-language framing of absence | Its dismissal of "still looking" |
+| A conventional torrent client | Progress and error clarity | A transfer-centric IA that mediad should *not* copy |
+
+The structural finding to look for: every comparator treats "still searching" as
+a transient spinner that dies after thirty seconds of silence. **mediad's wait
+is measured in months.** That inversion is the design problem — most UI
+conventions for "waiting" assume a wait short enough that a spinner suffices.
+
+### 2.5 Key questions, and which method answers each
+
+| Question | Method |
+|---|---|
+| Does the user understand the two-year promise at request time? | T1 + diary |
+| Is a *month*-long wait legible in a UI built for *minute*-long waits? | T3 |
+| Which rejection reason most needs a human explanation? | Event-log mining |
+| Does the operator/asker split match reality, or is everyone an operator? | T3 + T5 + follow-up interview |
+| Do people re-engage after a long wait, or is the horizon invisible? | Diary |
+| Which state deserves the strongest visual signal? | Mining + T5 |
+| Does "Отменить" cause data loss? | Code + `AGENTS.md` (answer known: files survive) |
+| Does the current search handle Russian vs. original titles? | Code review + T1 (probe) |
+
+---
+
+## 3. Information Architecture & User Flows
+
+### 3.1 Current IA (from `internal/web/module.go:92–154`)
+
+```
+/                         dashboard: «Что качается» + «Недавно»
+/search                   TMDB search → cards
+/add/{kind}/{id}          confirm (film, or series → season picker)
+/add/tv/{id}/{season}     confirm (season)
+/requests                 all requests (table, state filter)
+/requests/{id}            request detail (facts, candidates, manual release, events)
+/notifications            notification inbox
+/settings?tab=… account / telegram / notifications / invites / users
+/help /login /setup /join
+```
+
+### 3.2 Proposed IA — the same four nav items, reframed
+
+The sidebar stays exactly as it is (four items, `icons` default). What changes
+is what "Запросы" contains.
+
+**The central move: split the active table by time-scale.**
+
+| Bucket | States | Timescale | Visual treatment |
+|---|---|---|---|
+| **Качается** | `downloading`, `adding` | seconds → hours | Live progress bar, byte counts, ETA |
+| **Ищет** | `searching`, `pending` | hours → 2 years | Age, next check, attempts count, no progress bar |
+| **Ждёт выбора** | `manual`, `ongoing` | unbounded — needs a human | Distinct callout treatment, "choose a candidate" action |
+
+Today all six live in one table under «Что качается», which is a category error:
+`searching` for four months and `downloading` at 90% are not the same kind of
+thing, and mixing them makes both unreadable.
+
+**Why "Ждёт выбора" and not "Ждёт вас" (D1).** Several people use the
+installation, and a `manual` request is a *shared* queue: `handlePickCandidate`
+is not owner-restricted (`internal/web/handlers.go:1142`), so any user can pick
+a candidate for any request. A label that says "waiting for you" would be
+wrong for everyone except the one person who happens to be looking. The bucket
+names the *state*, not the audience.
+
+**Within "Ищет", a new sort: "По ожиданию"** — longest-waiting first. This is the
+one view that makes the two-year horizon real: a list of things you asked for a
+year ago that are still quietly running.
+
+### 3.2.1 The scope filter: «Все» / «Мои»
+
+A request has no owner column. It is a global object — one media, one workflow —
+and users attach to it through `request_watchers`. The requester is recorded
+only in the event log (`request_events.detail["requested_by"]`,
+`internal/storage/requests.go:371`), never as a column.
+
+The consequence for the UI: **every web user currently sees every request.** The
+storage layer already knows how to filter — `RequestFilter.WatcherUserID`
+(`internal/storage/requests.go:399`) restricts to requests a user is watching —
+but the only caller is the Telegram bot (`internal/telegram/bot.go:340`). The web
+dashboard never sets it.
+
+So the dashboard gains a scope toggle:
+
+| Scope | Meaning | Default |
+|---|---|---|
+| **Все** | Every request in the installation — what the household shares | ✅ default |
+| **Мои** | Requests I watch (`WatcherUserID`) | |
+
+«Все» stays the default because the installation is shared: knowing that the
+household is downloading a season matters to everyone. «Мои» is one click away
+for the person who wants their own list.
+
+The creator is added as a watcher on creation
+(`internal/request/module.go:396`), so "Мои" is a good proxy for "asked for by
+me" — it is not the same thing (anyone can attach to a request), and the copy
+should not claim it is.
+
+**Implementation note.** The dashboard already carries two sibling GET forms
+(the state pills in one, the shared filters in the other) that each mirror the
+other's controls as hidden inputs, because a form cannot nest. A third filter
+means a third mirror set: the scope toggle goes inside one of the two existing
+forms as a radio group, and the other form mirrors it. The existing
+`TestDashboardFilterFormsCarryEveryControl` test enforces exactly this and will
+catch a missed mirror.
+
+### 3.3 Request detail page — proposed hierarchy
+
+Currently: a `<dl class="facts">` of 14 rows mixing story and machinery
+(workflow ID, infohash, content path), then candidates, then a manual-release
+form, then the events table.
+
+Proposed order, with the *first screen* being the story:
+
+**1. Header** — poster, title, state pill, **age** («4 мес. 12 дн.»), and
+**«Запросил»** — the username of whoever asked for it.
+
+«Запросил» is recoverable today but buried: it lives in the create event's
+`requested_by` detail (`internal/storage/requests.go:371`), which the events
+table renders as raw JSON. Promoting it to the header is what makes a shared
+installation legible — «Кто просил» and «Кто смотрит» are different questions,
+and in a household both have answers.
+
+**1a. Watchers** — the existing «Кто смотрит» list, kept. In a shared install it
+is the closest thing the product has to "who cares about this".
+
+**2. Статус** — one plain-Russian sentence generated from state + attempt count +
+`NextRunAt`:
+
+| State | Generated line |
+|---|---|
+| `searching` | «Ищет релиз с русским звуком. Проверено 47 раз за 4 месяца. Следующая проверка через 6 ч.» |
+| `downloading` | «Качает 12,4 ГБ из 14,1 ГБ (88%).» |
+| `manual` | «Индексатор вернул 3 кандидата, авто-подбор не выбрал ни один. Нужен ваш выбор.» |
+| `ongoing` | «Скачано 5 из 8 серий. Ждёт остальные — сезон ещё выходит.» |
+| `failed` | «Поиск остановлен после 3 ошибок индексатора. [Запустить снова]» |
+
+This single element is the highest-value item in the whole plan. It is the
+difference between "the bot is doing something" and "the bot has been doing
+something for four months".
+
+**3. Требования** — the policy *as applied to this request*: resolution floor,
+size range, minimum seeders, required audio tier, excluded sources. The user
+currently cannot see why a release was refused, because they cannot see the rule
+it violated.
+
+**4. Релиз** (when found) — release name, resolution, **audio tier + studio +
+the marker that decided it**, size, seeders, tracker.
+
+**5. Кандидаты** (when `manual`) — the redesigned table (§3.4).
+
+**6. Расширенное** — a `<details>` disclosure, **default collapsed**, holding what
+is operator-facing today: workflow ID, infohash, qBittorrent hash, content path,
+and the raw events table. Never deleted; one click away. Per-user open/closed
+state in `localStorage`, exactly like the sidebar pattern already in
+`layout.html`.
+
+### 3.4 The candidate table — the highest-value component
+
+**Current** (`internal/web/views/request.html:79–99`): `# | Релиз | Размер |
+Сидеры | Отклонён по | [Скачать это]`. Every row offers the same button
+regardless of why the release was refused. A blacklisted release and a perfectly
+good one are indistinguishable, and the button invites the user to re-download
+something the system deliberately refused.
+
+**Proposed:**
+
+```
+Релиз (mono, 2-line clamp) │ Качество │ Аудио │ Размер │ Сидеры │ Причина │ [действие]
+```
+
+- **Качество** — resolution + source (`1080p · BluRay`).
+- **Аудио** — tier badge (многоголосый / двухголосый / закадровый / только
+  субтитры) plus the studio, plus a `title` carrying the deciding marker
+  («решено по слову "LostFilm"»).
+- **Сидеры** — `0` in danger tone; **`—`** in muted tone for unknown. Never `-1`,
+  never a bare `0` for unknown. (The "unknown ≠ zero" rule must be *visible*,
+  not just correct in the model.) *Shipped in Phase 0:* the indexer reports `-1`
+  when it does not know the count (`internal/indexer/prowlarr.go:217`), and the
+  selector treats it as distinct from zero (`internal/release/score.go:313`).
+- **Причина** — the Russian label for the rejection code, in plain words:
+  «только русские субтитры», «ниже 1080p», «в чёрном списке», «это одна серия, а
+  запрошен сезон».
+- **Действие** — **conditional**:
+  - acceptable but not chosen → «Скачать это» (primary)
+  - rejected for a *soft* reason the user may override (too few seeders, too
+    large, unknown quality) → «Скачать всё равно» (secondary), reason shown inline
+  - rejected for a *hard* reason (blacklisted, wrong season, single episode,
+    excluded source) → **no action button**, row de-emphasised
+
+Offering "Скачать это" on a blacklisted release is a defect, not a feature. The
+action set must follow the reason.
+
+> **Phase 1 must include a slice of this — see §7.3.** Phase 1 promotes
+> `manual` requests into a visible bucket, and the current candidate table
+> offers "Скачать это" on every row regardless of why the release was refused.
+> Promoting the bucket without fixing the table would surface a
+> blacklisted release as a one-click download. The minimum slice is: Russian
+> reason labels, and no action button on a hard rejection.
+
+### 3.5 Reason vocabulary — the full mapping
+
+The codes stay in the event log, machine-readable and unchanged. The UI adds a
+translation layer, defined as a Go map *adjacent to the reason constants* so it
+cannot drift.
+
+| Code | UI label (RU) | Tone | Action allowed? |
+|---|---|---|---|
+| `excluded_source` | «источник исключён (CAM/TS/SCR)» | danger | no |
+| `resolution_too_low` | «ниже минимального разрешения» | danger | no |
+| `unknown_quality` | «не удалось определить разрешение» | warn | yes (override) |
+| `too_few_seeders` | «мало сидеров» | warn | yes (override) |
+| `too_small` | «слишком маленький» | warn | yes (override) |
+| `too_large` | «слишком большой» | warn | yes (override) |
+| `implausible_size` | «размер не соответствует качеству» | danger | no |
+| `blacklisted` | «в чёрном списке» | danger | no |
+| `no_russian_audio` | «нет русской дорожки» | danger | no |
+| `subtitles_only` | «только русские субтитры» | danger | no |
+| `wrong_season` | «другой сезон» | danger | no |
+| `single_episode` | «это одна серия, а запрошен сезон» | danger | no |
+| `wrong_year` | «другой год» | danger | no |
+| `no_download_link` | «нет ссылки на загрузку» | warn | no |
+| `not_an_update` | «не обновление текущего пака» | neutral | no |
+
+### 3.6 The five journeys
+
+**J1 — Add a film (happy path).** Search → result cards → confirm page → POST →
+dashboard shows it under «Ищет». The confirm page already carries the two-year
+promise in body copy (`internal/web/views/confirm.html:22`); the redesign moves
+that promise to a first-class element, not a paragraph.
+
+**J2 — Add a not-yet-released film (flagship).** Same path, but the request is
+born parked. The moment after creation must say: *«Ищем. Проверяем каждый день,
+до двух лет. Вы можете забыть — мы напишем.»* The dashboard's «Ищет» bucket
+with age + next check is where this request lives for months.
+
+**J3 — Add a season of an airing series.** Search → season picker
+(`internal/web/views/seasons.html` already marks «ещё не вышел») → confirm →
+request → eventually a partial pack → the request moves to `ongoing` and into
+«Ждёт выбора» with «5 из 8 серий» (episode count read from the *pack's name*, per
+`AGENTS.md` — never from the torrent's file count).
+
+**J4 — Resolve a `manual` request.** «Ждёт выбора» → request → candidate table →
+pick → `downloading`. The candidate table (§3.4) *is* this journey; if it's
+wrong, the journey has no value.
+
+**J5 — Cancel.** Request → cancel → **confirmation stating the consequence** →
+cancelled. The confirmation must say the files stay on disk. Today it is a bare
+button.
+
+**Deliberately not in scope:** a browse/recommendations surface, a Kanban view
+of states, a "similar titles" feature. The brief mentions "random media", but
+the request is a *named* title; discovery is a different product.
+
+---
+
+## 4. Design System & Token Strategy
+
+### 4.1 The constraint that shapes everything
+
+There is **no build step**. Pico is vendored, `style.css` is a hand-written
+override layer, templates are `html/template`. Therefore:
+
+> **There will be no design system in the Figma/Storybook sense.** The design
+> system *is* three layers of code: CSS custom properties → template partials →
+> Go helper functions. Anything requiring npm, a bundler, or a component-demo
+> app is out of reach by design, and a plan that assumes otherwise is fiction.
+
+### 4.2 Layer 1 — Tokens
+
+A single `:root` block in `style.css` that **overrides Pico's variables rather
+than fighting them**. Pico v2.0.6 already exposes `--pico-primary`,
+`--pico-card-background-color`, `--pico-muted-color`, `--pico-ins-color`,
+`--pico-del-color`, `--pico-border-radius`. Today `style.css` hardcodes
+fallbacks (`#2c7a4b`, `#c1272d`, `#c98300`) in eight places — consolidate them.
+
+**Pico has no warning token.** `--pico-contrast-warning` is not defined
+anywhere in `pico.min.css` v2.0.6, which is why the old `.flash.warn` rule
+carried a literal `#c98300` fallback — a colour that never followed the theme.
+The warning colour is therefore the one token this project owns, and it needs a
+value per theme. Both values clear 4.5:1 against their own background.
+
+```css
+:root {
+  /* semantic, not literal — every consumer names the role, not the colour */
+  --m-bg: var(--pico-background-color);
+  --m-surface: var(--pico-card-background-color);
+  --m-border: var(--pico-muted-border-color);
+  --m-text: var(--pico-color);
+  --m-text-muted: var(--pico-muted-color);
+  --m-accent: var(--pico-primary);
+  --m-ok: var(--pico-ins-color);
+  --m-danger: var(--pico-del-color);
+
+  /* ours: Pico has no warning token. The dark value comes next, in both
+     the media query and the [data-theme] rule, mirroring how Pico itself
+     switches. */
+  --m-warn: #8a5a00;
+
+  /* the progress bar that does not currently exist */
+  --m-bar-track: var(--pico-muted-border-color);
+  --m-bar-fill: var(--pico-primary);
+
+  /* spacing — 4px base */
+  --m-space-1: .25rem; --m-space-2: .5rem; --m-space-3: .75rem;
+  --m-space-4: 1rem;   --m-space-5: 1.5rem; --m-space-6: 2rem;
+
+  --m-radius: var(--pico-border-radius);
+  --m-radius-pill: 999px;
+}
+```
+
+**Dark mode is nearly free, and it is free from Phase 0 (D3).** Pico v2.0.6
+already ships `prefers-color-scheme` support *and* a `data-theme` attribute.
+Because every token above maps to a `--pico-*` variable rather than a literal
+colour, the whole interface follows the OS preference the moment the token
+layer lands — no toggle, no extra CSS, no second palette to keep in sync. The
+only new code is the manual override.
+
+The tri-state toggle (auto / light / dark) is **pulled forward from Phase 4 into
+Phase 1**: it is one attribute plus one `localStorage` entry — the same
+persistence pattern the sidebar already uses (`mediad.sidebar` →
+`mediad.theme`) — and the decision to ship all three states has now been taken.
+It lives in Settings, next to the other account preferences.
+
+The consequence for Phase 0: **dark mode is not a later polish pass, it is a
+constraint on the token layer.** A literal hex anywhere in the CSS is a bug that
+ships broken in dark mode, and a component whose colours were only checked in
+light has not been checked at all.
+
+**The state colour map** — completing the missing three.
+
+The principle is **colour marks responsibility, not phase**. Ten states cannot
+each have their own colour without the legend becoming the interface, and phase
+is already carried by the bucket a row sits in (Качается / Ищет / Ждёт выбора)
+and by the pill's label. So there are four tones:
+
+| Tone | Meaning | States |
+|---|---|---|
+| **accent** | the machine is on it | `searching`, `adding`, `downloading`, `ongoing` |
+| **warn** | **a human is required** | `manual` |
+| **ok** | finished | `completed` |
+| **danger** | broken | `failed` |
+| **muted** | closed | `pending`, `canceled`, `skipped` |
+
+```css
+.state.searching   { color: var(--m-accent); border-color: var(--m-accent); }
+.state.adding      { color: var(--m-accent); border-color: var(--m-accent); }
+.state.manual      { color: var(--m-warn);   border-color: var(--m-warn); }
+```
+
+`manual` is the only state that gets the warning tone, and it gets it because it
+is the only one that blocks on a person. `ongoing` keeps the accent (per the
+existing comment at `style.css:77`), `completed` ok, `failed` danger,
+`canceled`/`skipped`/`pending` muted.
+
+**Note on contrast.** Pico v2.0.6 exposes no "info" text colour —
+`--pico-secondary-background` is a *background* token (#525f7a light, #5d6b89
+dark), and used as a text colour it reaches only ≈3.3:1 against Pico's dark
+background, below the 4.5:1 floor. Every state tone above is therefore drawn
+from a token that is already a foreground colour.
+
+### 4.3 Layer 2 — Template partials
+
+`internal/web/views/fragments.html` already exists for shared templates (that's
+how `{{template "progress"}}` resolves across pages). Extend it:
+
+| Partial | Contract |
+|---|---|
+| `{{template "state_pill" .}}` | state → class + Russian label + `title` with the raw code (operator detail) |
+| `{{template "progress" .}}` | exists — add `role="progressbar"`, `aria-valuenow/min/max`, and **the missing CSS** |
+| `{{template "reason" .}}` | reason code → Russian label + tone class |
+| `{{template "audio_badge" .}}` | tier → badge + studio + marker tooltip |
+| `{{template "empty" .}}` | one empty-state component: title, explanation, primary action, optional secondary. Replaces six ad-hoc `<p class="muted">` |
+| `{{template "request_row" .}}` | shared by the desktop table and the mobile card — so the two cannot diverge |
+| `{{template "age" .}}` / `{{template "next_check" .}}` | duration rendering, Russian plurals |
+
+**Every new component ships with its CSS in the same commit.** The `.bar`
+episode — a template emitting markup that no stylesheet defines — is exactly
+the failure mode that a component contract prevents.
+
+### 4.4 Layer 3 — Go helpers (`internal/web/vocab.go`)
+
+Shipped as a dedicated file rather than inside `views.go`: the vocabulary is a
+distinct concern from the view models, and a file of its own is the thing a
+person opens when a word on a page is wrong.
+
+```go
+stateLabel(s storage.State) string        // "ищет", "качает", "ждёт выбора"
+stateClass(s storage.State) string        // "searching", "manual", …
+reasonLabel(stored string) string         // "только русские субтитры"
+reasonTone(stored string) string          // "danger" | "warn" | "neutral"
+reasonAllowsOverride(stored string) bool  // false for a refusal on principle
+audioLabel(t release.AudioTier) string    // "многоголосый", "закадровый", …
+seeders(n int) string                     // "—", "0", "12"
+seedersUnknown(n int) bool                // true when the count is missing
+durationHuman(d time.Duration) string     // "4 месяца 12 дней"
+relativeTime(t time.Time) string          // "через 6 часов", "2 часа назад"
+pluralForm(n int) int                     // which of the three Russian forms
+```
+
+The reason helpers take the **stored** string rather than a `release.Reason`,
+because what is stored is `code + ": " + detail` and the code is recovered by
+splitting on the first `": "`. A map keyed on the codes themselves is what
+keeps the translation from drifting.
+
+**Russian pluralisation is not a detail — it's a correctness issue.**
+`1 час`, `2 часа`, `5 часов`; `1 минута`, `2 минуты`, `5 минут`. A naive
+`fmt.Sprintf("%d ч", n)` is wrong and a Russian reader notices immediately. The
+implementation splits the *form* from the *noun*: `pluralForm` picks one of
+three, and a small table of nouns carries each one's nominative and
+accusative singular — because "осталось 1 минуту" and "1 минута" are different
+words and the copy needs both. Unit-tested against a table of cases (1, 2, 5,
+11, 12, 14, 21, 22, 25, 101, 111).
+
+### 4.5 Typography
+
+Keep Pico's system stack; define only the sizes the app actually uses:
+
+```
+--m-text-xs: .75rem    table micro-labels, reason column
+--m-text-sm: .85rem    secondary metadata
+--m-text-base: 1rem
+--m-text-lg: 1.15rem  h2
+--m-text-xl: 1.5rem   h1
+--m-text-2xl: 2rem    page title (mobile)
+```
+
+**Cyrillic-specific rule:** Russian release names are long and inflect freely —
+«Многоголосый закадровый релиз» is ~33 characters where English would be ~22.
+Release names get `--m-text-xs`, `line-clamp: 2`, `word-break: break-word`, and
+**never** `white-space: nowrap`. A real multi-voice release name runs to ~120
+characters; the table must survive it.
+
+### 4.6 Token strategy rules
+
+1. No hardcoded hex in a template or a Go file — ever. (Eight currently exist in
+   `style.css` fallbacks.)
+2. A token is added **only with a consuming component**. No speculative token
+   layer.
+3. Every token has a dark-mode counterpart, verified by toggling `data-theme` —
+   not by reading the CSS.
+
+---
+
+## 5. Responsive & Mobile-First Strategy
+
+### 5.1 Breakpoints
+
+```
+xs   0–479 phone
+sm   480–767   large phone / small tablet
+md   768–1023  tablet — sidebar becomes a column
+lg   1024–1439 laptop
+xl   1440+     desktop
+```
+
+**768px stays exactly where it is.** It's the sidebar drawer threshold
+(`internal/web/views/layout.html` JS + `style.css:440+`), and moving it would
+desynchronise the CSS and the JS that toggles `aria-hidden` against
+`matchMedia('(max-width: 768px)')`. The new breakpoints are additive.
+
+### 5.2 The table problem
+
+The dashboard's five-column table on a 375 px viewport is the worst surface in
+the product. But **horizontally-scrolling tables are not the fix** — they hide
+the state column, which is the thing the user came for.
+
+**Recommended approach: the `data-label` responsive-table pattern.** One DOM,
+CSS-only transformation:
+
+```html
+<td data-label="Состояние"><span class="state searching">ищет</span></td>
+```
+
+```css
+@media (max-width: 767px) {
+  table, tbody, tr, td { display: block; width: 100%; }
+  tr { padding: var(--m-space-3) 0; border-bottom: 1px solid var(--m-border); }
+  td { display: grid; grid-template-columns: 7rem 1fr; gap: var(--m-space-2); }
+  td::before { content: attr(data-label); color: var(--m-text-muted); font-size: var(--m-text-xs); }
+}
+```
+
+**Why not Pico's `role="table"` pattern:** it relies on `display: block` on table
+elements, which removes table semantics in Safari/VoiceOver. The mitigation is
+to add explicit `role="table"` / `role="row"` / `role="cell"` to the elements —
+but that means hand-writing ARIA that must then be kept in sync. **Decision to
+make explicit:** either accept degraded table semantics on mobile, or add the
+roles. Recommended: add the roles; the DOM order is unchanged, so the reading
+order is still correct — only the *visual* order changes, which is safe because
+the DOM order is already the logical order.
+
+**Why not render both a table and a card list server-side:** it duplicates the
+data in the DOM, doubles the template work, and duplicates every screen-reader
+announcement. One DOM, one rendering mode, chosen by CSS.
+
+### 5.3 Per-surface adaptation rules
+
+| Surface | ≥768px | <768px |
+|---|---|---|
+| Dashboard request rows | 5-column table | Card: 48×72 poster, title, state pill, one line of status, 44px action |
+| Candidate table | 7 columns | Card: release name (2-line clamp), quality + audio badges, reason, action |
+| Events table | 4 columns | Vertical timeline — the `detail` field is free text and belongs in a timeline, not a table |
+| Filter pills | Wrapped row | Horizontally scrollable row, `scroll-snap`, edge fade |
+| Filter selects | Inline | Full-width stacked |
+| Request header | Poster 9rem beside title | Poster above title, title at `--m-text-2xl` |
+| Poster source | `w342` | `w185` (the poster endpoint already takes a `{size}`) |
+
+### 5.4 Touch targets
+
+`button.link.small` — the dashboard's "отменить" — is `0.75em` text in a
+link-styled button: roughly 24 px tall. **Below the 44×44 minimum.** Fix:
+`min-height: 32px` on desktop, `44px` under 768 px; on mobile the cancel action
+becomes a full-width 44 px button, or a 44 px icon button with an `aria-label`.
+
+The state pills are `<label>` wrappers around checkboxes — the pill is the touch
+target and it is large enough. But the hidden checkbox means the **native focus
+ring is invisible**: the pill needs its own `:focus-within` ring.
+
+### 5.5 The sidebar (unchanged, deliberately)
+
+Keep: two states (`open` / `icons`), `icons` default, `localStorage` under
+`mediad.sidebar`, mobile drawer at ≤768 px, the sub-nav hidden in `icons` mode,
+`aria-hidden` following visual availability.
+
+This decision is recorded in `AGENTS.md` as settled and was the subject of a real
+regression. **No proposal in this plan touches it.**
+
+### 5.6 Polling on mobile
+
+The dashboard polls every 3 s and replaces the table's `innerHTML`. On a phone,
+where the user is scrolling that table, a full replacement three times a second
+is worse than on a desktop. Two changes in Phase 5: pause polling when
+`document.hidden`, and slow it when the pointer is over the table.
+
+---
+
+## 6. Accessibility & Edge-Case Plan
+
+**Target: WCAG 2.2 AA.** Below, each item is either a verified defect in the
+current code or a concrete requirement.
+
+### 6.1 Perceivable
+
+- [ ] **Contrast** — verify ≥4.5:1 for state-pill text in all 10 states, in
+  light and dark. The muted color at `0.85em` on small text is the likeliest
+  failure.
+- [ ] **Never colour alone** — every state pill carries its label as text.
+  (Today it carries the English code — legible, but it leaks jargon into a
+  Russian UI.)
+- [ ] `prefers-reduced-motion` — the only motion today is the htmx swap; any
+  skeleton shimmer or bar animation must respect it.
+- [ ] `prefers-color-scheme` — Pico already supports it; Phase 0's token layer
+  makes it work, and Phase 1c adds the explicit auto/light/dark toggle (D3).
+
+### 6.2 Operable
+
+- [ ] **Focus visible** on every interactive element, including `.pill` labels
+  and `.link` buttons. Add a global `:focus-visible` ring on the accent token.
+  *(Corrected: the pills do **not** hide their checkbox — `.pill
+  input[type="checkbox"]` only sets a margin — so the native ring survives
+  there and needs no replacement.)*
+- [ ] **Touch targets ≥44×44** — the `.link.small` cancel button violates this
+  today.
+- [ ] **The sidebar's `aria-hidden="true"` is hard-coded in the HTML**
+  (`internal/web/views/layout.html:34`). Before JS runs — and permanently, for
+  any user with JS disabled — the entire navigation is hidden from assistive tech
+  **and removed from the tab order**, on desktop. Fix: don't render
+  `aria-hidden="true"` in the HTML at all; let JS manage it, and use `inert` for
+  the off-screen mobile drawer only.
+- [ ] **Focus destruction on poll.** `hx-swap="innerHTML"` on the table body
+  replaces the focused element every 3 s. If the user has tabbed to "отменить",
+  focus is destroyed and jumps to `<body>` — the user loses their place and
+  their next keystroke goes nowhere. This is a WCAG 2.4.3 (Focus Order) failure
+  and a genuine usability bug. Fix: row-level `hx-swap="outerHTML"` with
+  `hx-target="closest tr"`, so only changed rows are replaced.
+- [ ] Escape closes the mobile drawer; the drawer traps focus while open.
+- [ ] The notification page's «Выбрать все» / «Снять выбор» are `onclick`-only —
+  no-JS users get dead buttons. Make them `<label for>`-driven or add a
+  `<noscript>` path (the repo already does this correctly in
+  `internal/web/views/requests.html:13`).
+
+### 6.3 Understandable
+
+- [ ] `lang="ru"` — present (`internal/web/views/layout.html:2`). ✓
+- [ ] **State pills show English codes in a Russian UI.** Replace with Russian
+  labels; keep the code in a `title` for the operator.
+- [ ] **Every destructive action states its consequence.** Cancelling does **not**
+  delete downloaded files (season packs survive by design, `AGENTS.md`). The
+  confirm dialog must say so.
+
+### 6.4 Robust
+
+- [ ] **Status messages (4.1.3).** On a state transition, announce it in an
+  `aria-live="polite"` region — but not the whole table. Debounce, and announce
+  only meaningful transitions («Загрузка завершена: …»).
+- [ ] **`role="progressbar"`** with `aria-valuenow` / `aria-valuemin` /
+  `aria-valuemax` and an accessible name on the progress element.
+- [ ] The `role="table"` decision (see §5.2) made explicitly.
+- [ ] **Automated regression guard.** The repo already proves that a rendered
+  page can be correct to the eye and wrong to the parser
+  (`TestNoPageNestsAForm`). Extend that pattern: a Go test that renders every
+  page and asserts, using `golang.org/x/net/html`:
+  - every `<img>` has an `alt` attribute
+  - every `<button>` and `<a>` has an accessible name
+  - every `<input>` has a label
+  - every `<table>` has a `<th>` or `<caption>`
+  - no focusable element has an `aria-hidden` ancestor
+  - every `role="progressbar"` carries `aria-valuenow`
+
+  This runs in `make test` and is a **hard gate**. It catches the structural 80%
+  of accessibility defects, which is the only way a solo designer keeps a11y from
+  regressing between phases. It is also the *only* handoff artifact a designer
+  can guarantee lands.
+
+### 6.5 Edge cases and empty states
+
+The current six empty states (`dashboard.html:123,205`;
+`notifications.html:30`; `search.html:28`; `requests.html:35`;
+`seasons.html:24`) are one line of muted text with no way forward. Required
+replacements:
+
+| Situation | Content |
+|---|---|
+| No requests at all | One sentence on what the product does + a search field + «как это работает» |
+| No requests match a filter | «Под фильтр ничего не подошло» + «сбросить фильтр» — the current copy implies there are no requests at all |
+| Search returns nothing | Offer the original title, a shorter query, and a link to search TMDB manually |
+| `manual`, zero candidates | «Индексатор ничего не вернул» + the manual magnet/.torrent form inline |
+| `manual`, with candidates | The redesigned candidate table (§3.4) |
+| Download stalled | A named state with last progress + retry — not a generic error |
+| Indexer down | **Not an error.** «Индексатор недоступен, поиск продолжится» — the request is healthy, the dependency is not |
+| Poster missing | Keep «постер недоступен», use a consistent silhouette |
+| Long release name | 2-line clamp + full name in `title` |
+| Seeders unknown vs zero | «—» muted vs «0» danger — **the rule made visible** |
+| Two-year expiry | «Истёк срок поиска» + «начать заново» |
+| Partial season pack | «5 из 8 серий», counted from the *pack's name* per `AGENTS.md` |
+| Plex already has it | Shouldn't happen — but if it does: «уже есть в Plex» + close the request |
+
+### 6.6 Error recovery rules
+
+1. Every message states **what failed**, **why**, and **what to do**. Not
+   «ошибка».
+2. **Transient, self-healing failures are statuses, not errors.** An indexer
+   being down is not a broken request. Distinguishing these is the difference
+   between "your request failed" and "we're still looking" — and the whole
+   product thesis lives in that distinction.
+3. **Destructive actions confirm with their consequence.** «Отменить запрос?
+   Уже скачанные файлы останутся на диске.» (Per `AGENTS.md`, a season pack's
+   files are not deleted on cancel or stall.)
+
+---
+
+## 7. Phased Rollout & Handoff Milestones
+
+**Current window: Phase 0 and Phase 1 only (D4)** — four weeks. Everything
+below Phase 1 is deferred to §7.2, not deleted.
+
+**Every phase ships.** Each ends with something testable in the running app and
+gated by `make test` / `make check-ci`.
+
+The organising principle for this window is **Phase 1 must not ship a
+regression**. Two of the three slices pulled forward from later phases (§7.3)
+are there for exactly that reason: Phase 1 promotes things to prominence, and
+promoting a broken thing is worse than not promoting it.
+
+---
+
+### Phase 0 — Foundation (Week 1) — **shipped**
+
+The foundation phase. Nothing here changes what a user *sees* — except the
+state pills, which get both new colours and Russian labels.
+
+**Tokens**
+
+- `:root` token block built **entirely on `--pico-*` variables** — no literal
+  hex anywhere. Consolidate the eight hardcoded fallbacks currently in
+  `style.css` (`#2c7a4b`, `#c1272d`, `#c98300`).
+- The state colour map completing `searching`, `adding` and `manual` (§4.2).
+- The `--m-bar-track` / `--m-bar-fill` pair for the progress bar that does not
+  currently exist.
+- **Verify the dark theme after this commit, not later.** `prefers-color-scheme`
+  must flip the whole interface. A token that was checked only in light has not
+  been checked at all (D3).
+
+**Vocabulary (Go, `internal/web/vocab.go`)**
+
+- `stateLabel` / `stateClass` — Russian label per state, plus the CSS class.
+- `reasonLabel` / `reasonTone` / `reasonAllowsOverride` — Russian label and
+  tone per reason code, from the §3.5 table.
+- `audioLabel` — the tier names the user actually cares about («многоголосый»,
+  «закадровый», «только субтитры»).
+- `pluralForm` — Russian pluralisation. Table-tested against 1, 2, 5, 11, 21,
+  22, 25, 101. **No `fmt.Sprintf("%d ч", n)` anywhere.**
+- `durationHuman`, `relativeTime` — «4 месяца 12 дней», «через 6 часов».
+
+**The guard**
+
+- The a11y-lint Go test, added **failing first** (§6.4), so the guard exists
+  before the changes it guards. It runs in `make test` as a hard gate.
+
+> **Ship:** state pills in Russian with four tones; a token layer that follows
+> the OS dark-mode preference; a vocabulary map; a test that fails.
+
+#### What Phase 0 actually shipped
+
+The list above is what was intended. What happened differs in a few places, and
+the differences matter because they change what Phase 1 owes.
+
+| Planned | Shipped | Why it differs |
+|---|---|---|
+| Token layer on `--pico-*` only | Same, plus `--m-warn` with an explicit light and dark value | **Pico v2.0.6 has no warning token at all** — `--pico-contrast-warning` is not in the file, so the old `.flash.warn` was always falling back to a fixed `#c98300`, a colour that did not follow the theme. The warning colour is now ours, with a value per theme |
+| The progress-bar CSS in Phase 1a | Shipped in Phase 0 | A token with no consumer is a token nobody keeps. The bar and its tokens landed together — and the bar is fixed: it rendered as nothing, because `<i>` is inline and an inline element ignores a width |
+| `plural` as one helper | `pluralForm` plus a `ruNoun` table | The accusative singular differs from the nominative in one form only, and the difference is exactly where the copy needs it: "осталось 1 минуту", "1 минуту назад" |
+| The a11y-lint test added failing-first | It failed on three real defects within one run | The dashboard's filter search box, the search page's search box and the notifications' row checkboxes had no accessible name. All three are fixed with `aria-label` |
+| — | A second guard: `TestColoursLiveInTheTokenLayer` | The token layer is only worth having if it stays the only place a literal colour lives. The test scans `style.css` and the templates and fails on a colour outside a custom property |
+| — | `internal/release.AllReasons()` | The completeness test needs the closed set enumerated. A package that defines a closed set of codes should expose it |
+| — | The next-check time no longer reads "только что" | `whenText` called `since()` on a *future* moment, and `since` renders anything under a minute as "только что". A request due to look again in six hours was showing a last-run time. This was the plan's headline datum, and it was wrong on screen |
+
+**Two corrections to this document**, both found by reading the code rather
+than the plan:
+
+- §6.2 said the state pills hide their checkbox and lose the native focus
+  ring. They do not — `.pill input[type="checkbox"]` only sets a margin, and
+  the checkbox is visible inside the pill. No fix is needed there.
+- §3.5 said the rejection reason renders as a raw code. It renders as
+  `code: english-detail` — `too_few_seeders: 2 seeders, minimum is 3`. The
+  label map splits on the first `": "`, and the detail is preserved whole in
+  the cell's tooltip. **The numbers are not yet visible in the cell**, which
+  is a Phase 1b item: doing it properly means carrying the reason's parameters
+  separately from its prose, which is a storage change.
+> Commit: `design: tokens and vocabulary`.
+
+---
+
+### Phase 1 — MVP: make the horizon visible (Weeks 2–4)
+
+*The highest-value phase; it ships on its own if the rest never happens.* Split
+into three sub-phases so it can be cut at a week boundary if it runs long.
+
+#### Phase 1a — The horizon (Week 2)
+
+- Dashboard restructured into **Качается / Ищет / Ждёт выбора** (§3.2).
+- New row fields: **age**, **next check** (`NextRunAt`), attempt count.
+- The generated «Статус» one-liner on the request page (§3.3).
+- The **progress bar CSS** — the thing that currently does not exist. This is
+  also a bug fix: today the bar renders nothing at all.
+
+> **Success metric:** in a follow-up session, ≥80% of participants correctly
+> state what the bot is doing right now (T3).
+
+#### Phase 1b — Safety slices (Week 3)
+
+Everything here exists because **Phase 1a would otherwise make things worse**.
+None of it is additive; each one removes a risk that 1a introduces.
+
+- **Candidate table, minimum slice** (§7.3): Russian reason labels, and no
+  action button on a hard rejection. Without this, promoting `manual` requests
+  into a visible bucket surfaces a blacklisted release as a one-click download.
+- **Dashboard table → card on mobile** (§5.2): the `data-label` transformation
+  for the dashboard table only, with explicit `role="table"` / `role="row"` /
+  `role="cell"`. Phase 1a adds columns; on a 375 px screen the table is already
+  the worst surface in the product and would get worse.
+- **Cancel confirmation** (§6.6): a small confirm page stating that already
+  downloaded files stay on disk. Implemented as a GET → POST pair, which also
+  sidesteps the form-in-form constraint entirely — the cancel form currently
+  lives inside the dashboard table.
+
+#### Phase 1c — Shared installation and theme (Week 4)
+
+Everything in this sub-phase follows from D1 (several people) and D3 (theme).
+
+- **Scope filter «Все / Мои»** (§3.2.1) — `RequestFilter.WatcherUserID` already
+  exists in storage and is used only by Telegram; the web just has to set it.
+  The scope control goes into one of the dashboard's two existing GET forms as
+  a radio group, and the other form mirrors it — the
+  `TestDashboardFilterFormsCarryEveryControl` test enforces the mirroring.
+- **«Запросил»** on the request page — the requester's username, promoted out
+  of the create event's raw JSON detail (§3.3).
+- **«Расширенное» disclosure** — workflow ID, infohash, content path and the
+  events table move behind one collapsed `<details>`, state remembered per user
+  in `localStorage` like the sidebar. Admin-only operator surfaces stay
+  admin-gated at the page level.
+- **«Требования» panel** — the policy as applied to this request: resolution
+  floor, size range, minimum seeders, required audio tier.
+- **Theme toggle** (auto / light / dark) in Settings, reusing the sidebar's
+  persistence pattern (§4.2).
+
+---
+
+### 7.2 Deferred — the backlog, explicitly not cancelled
+
+| Deferred | From | Why it can wait |
+|---|---|---|
+| Full candidate table redesign — audio badge, quality column, soft-override actions | Phase 2 | Phase 1b already removes the harmful part (raw codes, action on hard rejections) |
+| Responsive work beyond the dashboard table — candidate table, events table, touch targets, poster sizes | Phase 3 | Only the dashboard got worse; the rest is unchanged |
+| Empty-state system — the six "Пусто." / "Ничего нет." replacements | Phase 4 | No new empty states are introduced by Phase 1 |
+| Voice consistency across web and Telegram | Phase 4 | D2 puts `manual` in the web; no Telegram copy changes now |
+| Poll robustness — pause on hidden tab, row-level swaps, focus preservation, `aria-live` | Phase 5 | Phase 1a does add rows to the polled table, so focus destruction becomes slightly more likely — worth watching, not worth fixing now |
+| Performance — poster sizes, smaller poll payload | Phase 5 | The payload grows only by the new row fields |
+| Second usability round and before/after metrics | Phase 5 | The diary study in §2.3 runs in parallel and gives signal sooner |
+
+### 7.3 The one slice that cannot be deferred
+
+**The candidate table's minimum slice belongs in Phase 1b**, and the reasoning
+is short enough to state:
+
+> Today every candidate row offers «Скачать это», whatever the rejection
+> reason. Phase 1a promotes `manual` requests from a row buried in a mixed
+> table to a named bucket with its own treatment — which makes that button more
+> visible and more tempting. A user who trusts the bucket will press it on a
+> `blacklisted` release, because the table gives them no reason not to.
+
+So Phase 1b must deliver: **Russian reason labels** (from the §3.5 map, already
+built in Phase 0) and **no action button on a hard rejection**. Everything else
+about the redesigned table can wait for Phase 2.
+
+---
+
+### Handoff model
+
+There is no design-file handoff — the designer is the implementer, and the
+artifacts *are* code:
+
+| Artifact | Location | Contract |
+|---|---|---|
+| Tokens | `style.css` `:root` | Names roles, never literal colours |
+| Components | `internal/web/views/fragments.html` | One partial per component; a comment stating the props in / markup out |
+| Copy | Go string maps in `internal/web/views.go` | Russian user-facing copy, not debug strings — **this is also the seam a future i18n layer would attach to** |
+| Patterns | `docs/ui-patterns.md` | A screenshot per pattern, written *after* implementation |
+| Guard | Go a11y-lint test + the existing template test suite | Any new template must pass |
+
+**Definition of done, per component:**
+
+- [ ] Renders at 320 / 375 / 768 / 1440
+- [ ] Renders correctly in light and dark
+- [ ] Passes the a11y-lint test
+- [ ] Keyboard-reachable, visible focus ring
+- [ ] Empty / loading / error states defined
+- [ ] No hardcoded hex — tokens only
+- [ ] Copy is Russian and lives in the label map
+- [ ] Screenshot appended to `docs/ui-patterns.md`
+
+---
+
+## 8. Risks & Mitigation
+
+| # | Risk | Early signal | Mitigation |
+|---|---|---|---|
+| **R1** | **Scope creep** — a redesign brief on a self-hosted tool with ~5 real users | A ticket that isn't about a state the user can reach | Every item maps to a reachable state. **No feature without a state-machine entry and a user-visible moment.** |
+| **R2** | **The plan becomes a wishlist nobody implements** | Phase 1 slips past week 4 | Phase 1 is 3 weeks and ships alone. Later phases are additive, never prerequisites. |
+| **R3** | **Design/impl divergence** — the "design system" is CSS + templates, so every token change is a code change | A token with no consumer | Tokens are added only with a consuming component. No speculative layer. |
+| **R4** | **Accessibility regresses** — no a11y tooling, no screen-reader pass on every change | The lint test gets skipped | The Go a11y-lint test runs in `make test` as a hard gate; one manual screen-reader pass per phase. |
+| **R5** | **Russian plural/grammar bugs** — «2 ч», «1 мес.», «5 мес.» | Wrong forms appearing in the UI | One `plural()` helper, table-tested. No `fmt.Sprintf("%d ч", n)` anywhere. |
+| **R6** | **The form-in-form constraint bites again** | A new page needs a filter *and* a row action | Forms are siblings by default; `TestNoPageNestsAForm` enforces it. Document the rule in the layout comment. |
+| **R7** | **htmx polling fights the redesign** — the whole table is replaced every 3 s | Rows lose hover/focus; scroll jumps | Move to row-level `hx-swap="outerHTML"` **before** adding any interactive row content. Interactive rows are incompatible with a whole-table swap. |
+| **R8** | **Long release names break the layout** | Horizontal scroll on a table | 2-line clamp + `word-break` from day one; test with a real 120-character multi-voice name. |
+| **R9** | **The operator/asker split is wrong** — with several people, maybe everyone *is* an operator | Operators complain the machine data is now buried | The «Расширенное» disclosure is one click away and remembers its state. **Never delete the machine view — hide it behind one click.** D1 confirms the split is real: `is_admin` marks the operators, and the rest are askers. |
+| **R10** | **Two channels drift** — web says «ждёт вас», Telegram says `manual` | A notification using different words | One shared vocabulary map imported by both `internal/web` and `internal/telegram`. |
+| **R11** | **Dark mode breaks** — Pico's dark theme is barely used today | Contrast failures in dark | Phase 4, *after* the token layer exists, with a contrast pass in both themes. Not before. |
+| **R12** | **A two-year promise can't be validated in a short study** | Usability tests say "looks fine" | The 3-week diary and the event-log mining are the only honest validation. Treat the 45-minute test as testing the *representation*, not the *patience*. |
+| **R13** | **Performance** — the 3 s poll ships the whole active table every time | Load time grows with request count | Ship only changed rows (R7); cap the active list. |
+| **R14** | **i18n pressure** — every string is hardcoded Russian in templates | Someone asks for English | Out of scope. But keep user-facing strings in Go maps, not inline in templates — that one structural decision makes a future i18n layer near-free. |
+
+### 8.1 A consequence of D1 + D2 that this plan does not act on
+
+D1 (several people) and D2 (`manual` stays web-only) interact with a piece of
+existing behaviour that the plan deliberately leaves alone.
+
+`AddWatcher` inserts every watcher with `notify_mask = 31`
+(`internal/storage/people.go:62`) — every bit set, including the `manual` bit.
+But the `NotificationManual` doc comment directly above it
+(`internal/storage/people.go:145`) still describes the *original* design:
+
+> "Bit 8 of the watcher notify_mask; the default of 7 (started/completed/failed)
+> leaves manual off, which is what a user who is not the request owner probably
+> wants — they would see someone else's manual list and have nothing to pick."
+
+Migrations `00008_watcher_manual_mask.sql` and `00011_season_notification.sql`
+bumped every existing watcher to the full mask, so the comment no longer
+describes the behaviour.
+
+The consequence for a shared installation: **every watcher currently receives
+the Telegram "pick a release" message for requests they did not ask for** —
+which is the exact situation the comment says should not happen. With N people
+and M requests in `manual`, that is N×M messages about other people's release
+lists.
+
+**This plan does not change it.** It is a shipped feature (#6), D2 says the
+`manual` flow is web-only, and changing the notification mask is outside the
+Phase 0–1 window. But it is recorded here because D1 makes it visible, and
+because the fix is small and already implied by the code's own intent: a
+per-user notification mask in Settings, where a user can turn the `manual` kind
+off. The stale comment at `people.go:145` should be corrected at the same time.
+
+### What I would deliberately *not* do
+
+- **Rebuild the navigation.** The sidebar decision is recorded and settled.
+- **Add a JS framework or a build step.** Pico + htmx + `html/template` is the
+  constraint, and it is sufficient for everything in this plan.
+- **Add a Kanban view of the states.** Three time-scale buckets beat eleven
+  columns.
+- **Add browse/recommendations.** Different product.
+- **Replace tables with a client-side grid library.** `data-label` + CSS is
+  enough.
+- **Rebuild the events table into something prettier** before the a11y-lint
+  test exists.
+
+---
+
+## Appendix A — Decisions, resolved
+
+Taken 2026-11-03. Each answer changed something specific in this document.
+
+| # | Question | Answer | What it changed |
+|---|---|---|---|
+| D1 | Operator / asker split — one person, or a household where someone configures and others just request? | **Several people** | The dashboard becomes a shared wall with a «Все / Мои» scope filter (§3.2.1); the bucket is renamed «Ждёт выбора» because picking is not owner-restricted (§3.2); «Запросил» is promoted to the request header (§3.3); «Расширенное» stays a disclosure, with admin surfaces admin-gated (§7, Phase 1c). |
+| D2 | Should `manual` get a Telegram prompt, or stay web-only? | **Web-only** | No Telegram work in this plan; the existing manual notification and candidate buttons (#6) are untouched. One consequence recorded in §8.1 and deliberately not acted on. |
+| D3 | Theme — auto/light/dark, or dark only? | **auto / light / dark** | Dark mode becomes a Phase 0 constraint rather than a Phase 4 polish item (§4.2): the token layer must be built entirely on `--pico-*` variables so `prefers-color-scheme` works for free. The tri-state toggle is pulled forward into Phase 1c. |
+| D4 | Phase 1 only, or the whole roadmap? | **Phase 0 and Phase 1 only** | §7 is resequenced around four weeks, split 1a / 1b / 1c so it can be cut at a week boundary. Phases 2–5 move to the §7.2 backlog. Two protective slices are pulled forward (§7.3) because Phase 1 would otherwise make things worse. |
+
+**Open, and deliberately not blocking:** whether the §8.1 notification-mask
+issue should be scheduled, and whether the diary study (§2.3) is worth
+recruiting 6 people for — both are answerable later without changing Phase 0–1.
+
+## Appendix B — Verification notes
+
+Claims in this plan that were checked against the code rather than assumed:
+
+- `.bar` is defined in neither `pico.min.css` (v2.0.6) nor `style.css`; the
+  progress bar renders nothing.
+- `.state` CSS covers 7 of 10 states; `searching`, `adding`, `manual` have no
+  rule.
+- Six empty states exist across the templates; five are one line of muted text.
+- `internal/web/views/layout.html` hard-codes `aria-hidden="true"` on the
+  sidebar.
+- The candidate table renders `{{.Seeders}}` raw, so `-1` (unknown) is visible.
+- `NextRunAt` is written by the workflow and read by no template.
+- `AudioTier` appears in no template.
+- The backoff ladder's longest rung is 24 h (`internal/config/config.go:395`),
+  so a parked request is checked at most once a day.
+
+Claims added by the D1–D4 revision:
+
+- `RequestFilter.WatcherUserID` (`internal/storage/requests.go:399`) restricts to
+  requests a user is watching. Its only caller is the Telegram bot
+  (`internal/telegram/bot.go:340`) — **the web dashboard never filters by
+  watcher**, so every web user sees every request.
+- `handlePickCandidate` (`internal/web/handlers.go:1142`) is **not
+  owner-restricted** — any authenticated user can pick a candidate for any
+  request. This is why the `manual` bucket is a shared queue and not "Ждёт вас".
+- `requests` has **no owner column**; the requester is recorded only in the
+  event detail (`internal/storage/requests.go:371`), which the events table
+  renders as raw JSON.
+- `AddWatcher` inserts `notify_mask = 31` (`internal/storage/people.go:62`) —
+  every kind, `manual` included — while the `NotificationManual` comment two
+  paragraphs above still describes the old default of 7 and the old reasoning
+  (see §8.1).
+- Pico v2.0.6 exposes `--pico-secondary-background` (#525f7a light, #5d6b89
+  dark) but no foreground "info" token; the secondary background reaches only
+  ≈3.3:1 as text on Pico's dark background, below the 4.5:1 floor.
+- The creator is added as a watcher on creation
+  (`internal/request/module.go:396`), so "Мои" is a proxy for "asked for by me"
+  — not the same thing, and the copy must not claim it is.
+
+Added while implementing Phase 0:
+
+- **`--pico-contrast-warning` does not exist in `pico.min.css` v2.0.6.** The
+  old `.flash.warn` rule was therefore always falling back to its literal
+  `#c98300`, which does not follow the dark theme. The warning colour is now
+  the project's own token, with a light and a dark value.
+- Pico's dark theme is `:root:not([data-theme])` inside
+  `@media only screen and (prefers-color-scheme: dark)`, and Pico also ships
+  `[data-theme=dark]` and `[data-theme=light]` blocks. A project token that
+  needs a dark value has to be declared in both places, or the two themes
+  disagree about which is in force.
+- `--pico-secondary-background` (#525f7a light, #5d6b89 dark) is a *background*
+  token; used as a text colour it reaches only ≈3.3:1 on Pico's dark
+  background. There is no usable foreground "info" colour in Pico v2.0.6.
+- The stored rejection reason is `code + ": " + detail`
+  (`internal/request/activities.go:451`), e.g.
+  `too_few_seeders: 2 seeders, minimum is 3` — a hybrid, not a bare code. The
+  detail is English prose generated in `internal/release/score.go`.
+- `whenText` called `since()` on a **future** `NextRunAt`, and `since` renders
+  anything under a minute as "только что" — so a request due to look again in
+  six hours showed "только что" in the column that says when it will look
+  again.
+- `.pill input[type="checkbox"]` sets only a margin; the checkbox is visible
+  inside the pill, so the native focus ring survives there.
