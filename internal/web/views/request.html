@@ -5,7 +5,7 @@
 <div class="confirm">
   {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
   <div>
-    <h1>{{.Title}} <span class="state {{.State}}">{{.State}}</span></h1>
+    <h1>{{.Title}} <span class="state {{stateClass .State}}">{{stateLabel .State}}</span></h1>
   </div>
 </div>
 
@@ -66,8 +66,10 @@
         <div class="muted small">[{{.Indexer}}] {{.InfoHash}}</div>
       </td>
       <td class="muted mono">{{bytes .SizeBytes}}</td>
-      <td class="muted mono">{{.Seeders}}</td>
-      <td class="muted small">{{.RejectionReason}}</td>
+      <td class="muted mono"{{if seedersUnknown .Seeders}} title="сидеры неизвестны"{{end}}>{{seeders .Seeders}}</td>
+      <td class="muted small" title="{{.RejectionReason}}">
+        <span class="reason {{reasonTone .RejectionReason}}">{{reasonLabel .RejectionReason}}</span>
+      </td>
       <td>
         <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">

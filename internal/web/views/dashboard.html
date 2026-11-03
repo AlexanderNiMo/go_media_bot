@@ -33,7 +33,7 @@
           <input type="checkbox" name="state" value="{{.}}"
                  {{if or (not $.Filter.ActiveSubs) (hasString $.Filter.ActiveSubs .)}}checked{{end}}
                  onchange="this.form.submit()">
-          <span>{{.}}</span>
+          <span>{{stateLabel .}}</span>
         </label>
       {{end}}
     </div>
@@ -72,7 +72,7 @@
 
   <form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
     <div class="filter-row shared-filters">
-      <input type="text" name="q" value="{{.Filter.Q}}" placeholder="поиск" autocomplete="off" class="js-auto pill-input">
+      <input type="text" name="q" value="{{.Filter.Q}}" placeholder="поиск" autocomplete="off" class="js-auto pill-input" aria-label="поиск по запросам">
       <label class="muted">тип
         <select name="type" onchange="this.form.submit()">
           <option value="" {{if eq .Filter.Type ""}}selected{{end}}>все</option>
@@ -113,7 +113,7 @@
             {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
           </td>
           <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
-          <td><span class="state {{.State}}">{{.State}}</span></td>
+          <td><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
           <td class="muted">{{.Detail}}</td>
         </tr>
       {{end}}
@@ -187,7 +187,7 @@
         <a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a>
         {{if .Watchers}}<span class="muted"> · {{.Watchers}}</span>{{end}}
       </td>
-      <td><span class="state {{.State}}">{{.State}}</span></td>
+      <td><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
       <td>{{template "progress" .}}</td>
       <td class="actions">
         <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">

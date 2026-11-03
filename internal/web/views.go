@@ -19,9 +19,12 @@ import (
 
 // requestRow is one request as a table row.
 type requestRow struct {
-	ID        int64
-	Title     string
-	State     string
+	ID    int64
+	Title string
+	// State is the machine-readable state, and the templates turn it into
+	// a word with the vocabulary helpers. The code is kept rather than the
+	// label because the code is what the filter and the stylesheet agree on.
+	State     storage.State
 	Detail    string
 	Watchers  string
 	When      string
@@ -29,6 +32,9 @@ type requestRow struct {
 
 	IsDownloading bool
 	ProgressPct   string
+	// ProgressValue is the same progress as a number, for the progress bar's
+	// aria-valuenow. The percentage string is for the style attribute.
+	ProgressValue int
 	ProgressText  string
 	SearchText    string
 
@@ -154,8 +160,11 @@ type confirmView struct {
 
 type requestsView struct {
 	page
-	State    string
-	States   []string
+	State string
+	// States is every state the request can be in, for the filter. The
+	// codes are what the query carries; the template asks the vocabulary
+	// for the word.
+	States   []storage.State
 	Requests []requestRow
 }
 
@@ -275,7 +284,7 @@ func rowFor(r *storage.Request, watchers []storage.Watcher, now time.Time) reque
 	row := requestRow{
 		ID:        r.ID,
 		Title:     titleOf(r),
-		State:     string(r.State),
+		State:     r.State,
 		CreatedAt: r.CreatedAt,
 		When:      whenText(r, now),
 	}
@@ -292,6 +301,7 @@ func rowFor(r *storage.Request, watchers []storage.Watcher, now time.Time) reque
 
 	row.IsDownloading = r.State == storage.StateDownloading
 	row.ProgressPct = percent(r.Progress)
+	row.ProgressValue = progressValue(r)
 	row.ProgressText = progressText(r)
 	row.SearchText = searchText(r, now)
 	row.PosterURL = posterPath(r.PosterPath, "w185")
@@ -322,7 +332,11 @@ func whenText(r *storage.Request, now time.Time) string {
 		if r.NextRunAt == nil || !r.NextRunAt.After(now) {
 			return "вот-вот"
 		}
-		return since(*r.NextRunAt) // negative durations render as "только что"
+		// When the request will look again, not how long ago something
+		// happened. The old helper rendered a future moment as "только что",
+		// which said the opposite of the truth: a request that checks in six
+		// hours was showing a last-run time.
+		return relativeTime(*r.NextRunAt)
 	case storage.StateSkipped:
 		if r.PlexTitle != "" {
 			return "уже в Plex: " + r.PlexTitle
@@ -380,6 +394,25 @@ func progressText(r *storage.Request) string {
 	return out
 }
 
+// progressValue is the download progress as a whole percentage.
+//
+// It is a number rather than the string the style attribute wants, because
+// the progress bar's aria-valuenow has to be a number: a screen reader
+// announces "45" and not "45%".
+func progressValue(r *storage.Request) int {
+	if r.State != storage.StateDownloading {
+		return 0
+	}
+	v := int(r.Progress * 100)
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
 // searchText describes where a request is in the search loop.
 func searchText(r *storage.Request, now time.Time) string {
 	switch {
@@ -390,9 +423,9 @@ func searchText(r *storage.Request, now time.Time) string {
 	case r.State == storage.StatePending:
 		next := "вот-вот"
 		if r.NextRunAt != nil && r.NextRunAt.After(now) {
-			next = "через " + humanDuration(r.NextRunAt.Sub(now))
+			next = relativeTime(*r.NextRunAt)
 		}
-		return fmt.Sprintf("попыток: %d, следующая %s", r.AttemptCount, next)
+		return fmt.Sprintf("попыток: %d, следующая проверка %s", r.AttemptCount, next)
 	default:
 		return fmt.Sprintf("попыток: %d", r.AttemptCount)
 	}
@@ -497,6 +530,11 @@ func humanBytes(n int64) string {
 }
 
 // humanDuration renders an interval at the resolution somebody cares about.
+//
+// A single unit is spelled out, because Russian pluralises it and an
+// abbreviation cannot: "1 минуту" and "5 минут" are different words. Two
+// units keep the count in front of each, so the sentence still reads as a
+// countdown rather than as a list.
 func humanDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -504,13 +542,13 @@ func humanDuration(d time.Duration) string {
 
 	switch {
 	case d < time.Minute:
-		return fmt.Sprintf("%d с", int(d.Seconds()))
+		return nounSecond.countA(int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%d мин", int(d.Minutes()))
+		return nounMinute.countA(int(d.Minutes()))
 	case d < 48*time.Hour:
-		return fmt.Sprintf("%d ч %d мин", int(d.Hours()), int(d.Minutes())%60)
+		return nounHour.count(int(d.Hours())) + " " + nounMinute.countA(int(d.Minutes())%60)
 	default:
-		return fmt.Sprintf("%d дн", int(d.Hours()/24))
+		return nounDay.count(int(d.Hours() / 24))
 	}
 }
 

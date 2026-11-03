@@ -14,7 +14,7 @@
       <tbody>
       {{range .Items}}
         <tr class="{{if .Unread}}unread{{end}}">
-          <td><input type="checkbox" class="notif-check" name="id" value="{{.ID}}"></td>
+          <td><input type="checkbox" class="notif-check" name="id" value="{{.ID}}" aria-label="выбрать уведомление «{{.Title}}»"></td>
           <td class="thumb">
             {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
           </td>

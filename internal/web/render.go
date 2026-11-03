@@ -72,6 +72,19 @@ func newTemplates() (*templates, error) {
 		// byte count is what the database holds and what a script wants;
 		// the page is read by people.
 		"bytes": humanBytes,
+		// The vocabulary. Machine-readable codes — a state, a rejection
+		// reason, an audio tier — reach the page through these, so that
+		// the interface speaks the reader's language and the codes stay
+		// in the log where they belong.
+		"stateLabel":  stateLabel,
+		"stateClass":  stateClass,
+		"reasonLabel": reasonLabel,
+		"reasonTone":  reasonTone,
+		"audioLabel":  audioLabel,
+		"seeders":     seeders,
+		// seedersUnknown is separate from seeders because the tooltip needs
+		// to say why the count is missing, and the count itself is a dash.
+		"seedersUnknown": seedersUnknown,
 	}
 
 	t := &templates{set: make(map[string]*template.Template, len(pageNames))}
@@ -212,19 +225,25 @@ func percent(f float64) string {
 // since renders a timestamp as how long ago it was.
 //
 // Relative rather than absolute for anything recent, because the question a
-// list answers is "is this moving", and "3m ago" answers it at a glance where
-// "01:42:17" needs arithmetic against the clock.
+// list answers is "is this moving", and "3 мин назад" answers it at a glance
+// where "01:42:17" needs arithmetic against the clock.
+//
+// The unit is spelled out rather than abbreviated, because Russian pluralises
+// it: "1 минуту назад" and "5 минут назад" are different words, and an
+// abbreviation cannot carry that.
 func since(t time.Time) string {
 	d := time.Since(t)
 	switch {
+	case d < 0:
+		return "сейчас"
 	case d < time.Minute:
 		return "только что"
 	case d < time.Hour:
-		return fmt.Sprintf("%d мин назад", int(d.Minutes()))
+		return nounMinute.countA(int(d.Minutes())) + " назад"
 	case d < 48*time.Hour:
-		return fmt.Sprintf("%d ч назад", int(d.Hours()))
+		return nounHour.countA(int(d.Hours())) + " назад"
 	default:
-		return fmt.Sprintf("%d дн назад", int(d.Hours()/24))
+		return nounDay.countA(int(d.Hours()/24)) + " назад"
 	}
 }
 
