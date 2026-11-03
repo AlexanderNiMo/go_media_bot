@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/alex/mediad/internal/config"
+	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
 )
@@ -327,7 +328,7 @@ func TestSetupCreatesAnAdminAndSignsIn(t *testing.T) {
 	c := signedIn(t, s)
 
 	// Signed in, so the dashboard renders rather than redirecting.
-	if body := c.body("/"); !strings.Contains(body, "Что качается") {
+	if body := c.body("/"); !strings.Contains(body, "Качается") {
 		t.Errorf("the dashboard did not render: %s", truncateForTest(body, 200))
 	}
 
@@ -592,7 +593,9 @@ func TestDashboardShowsARequest(t *testing.T) {
 
 	body := c.body("/")
 
-	for _, want := range []string{"Матрица (1999)", "downloading", "43.0%", "12.0 МиБ/s"} {
+	// The decimal separator is a comma: the interface is Russian, and a dot
+	// is the machine's separator rather than the reader's.
+	for _, want := range []string{"Матрица (1999)", "downloading", "43,0%", "12,0 МиБ/s"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the dashboard does not show %q", want)
 		}
@@ -867,7 +870,7 @@ func TestInviteFlow(t *testing.T) {
 	})
 	body := readBody(t, resp)
 
-	if !strings.Contains(body, "Что качается") {
+	if !strings.Contains(body, "Качается") {
 		t.Errorf("registration did not sign the new user in: %s", truncateForTest(body, 300))
 	}
 
@@ -1208,6 +1211,166 @@ func TestRequestPickCandidate(t *testing.T) {
 			t.Errorf("status = %d, want 400", resp.StatusCode)
 		}
 	})
+
+	t.Run("a release refused on principle cannot be picked", func(t *testing.T) {
+		// The page offers no button on such a release, and the endpoint
+		// agrees. A rule that lives only in the markup is a rule with no
+		// teeth: one POST would download the camrip the selector refused.
+		other := seedRequest(t, store, storage.StateManual)
+		if err := store.StoreCandidates(ctx, other, []storage.Candidate{
+			{Rank: 1, Title: "camrip", Indexer: "rutor", InfoHash: "h9",
+				MagnetLink: "magnet:?xt=9", RejectionReason: "excluded_source: camrip"},
+		}); err != nil {
+			t.Fatalf("store candidates: %v", err)
+		}
+
+		resp := c.post("/requests/"+strconv.FormatInt(other, 10)+"/pick",
+			url.Values{"rank": {"1"}})
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", resp.StatusCode)
+		}
+
+		list, err := store.ListCandidates(ctx, other)
+		if err != nil {
+			t.Fatalf("list candidates: %v", err)
+		}
+		for _, cand := range list {
+			if cand.PickedAt != nil {
+				t.Error("the refused release was marked as picked")
+			}
+		}
+	})
+}
+
+// TestCancelAsksBeforeItCancels — the cancellation is a GET that states the
+// consequence and a POST that does it.
+//
+// The consequence is the part that matters: a cancelled download takes its
+// files off the disk, and the person who finds that out is the one who paid.
+func TestCancelAsksBeforeItCancels(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+
+	id := seedRequest(t, store, storage.StateDownloading)
+
+	body := c.body("/requests/" + strconv.FormatInt(id, 10) + "/cancel")
+	if !strings.Contains(body, "Отменить запрос?") {
+		t.Errorf("the confirmation page does not ask: %s", truncateForTest(body, 300))
+	}
+	if !strings.Contains(body, "будут удалены") {
+		t.Errorf("the confirmation page does not say what happens to the files: %s",
+			truncateForTest(body, 300))
+	}
+}
+
+// TestTheScopeDependsOnTheRole checks whose requests the dashboard shows.
+//
+// The administrator's scope is "all" and cannot be narrowed: the requests
+// nobody is watching are exactly the ones an operator has to notice, and a
+// control that could hide them is a control somebody would eventually leave
+// narrowed.
+//
+// Everybody else gets their own requests, and can widen the view in one
+// click — the installation is shared, and that is exactly the case where
+// the wider view is useful.
+func TestTheScopeDependsOnTheRole(t *testing.T) {
+	admin := &storage.User{ID: 1, Username: "alex", IsAdmin: true}
+	reader := &storage.User{ID: 2, Username: "bob"}
+
+	for _, tc := range []struct {
+		name        string
+		user        *storage.User
+		query       string
+		wantScope   string
+		wantShown   bool
+		wantWatcher int64
+	}{
+		{"the admin sees everything", admin, "", scopeAll, false, 0},
+		{"the admin cannot narrow it", admin, "?scope=mine", scopeAll, false, 0},
+		{"a reader sees their own", reader, "", scopeMine, true, reader.ID},
+		{"a reader can widen it", reader, "?scope=all", scopeAll, true, 0},
+		{"an unknown scope is the default", reader, "?scope=nonsense", scopeMine, true, reader.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/"+tc.query, nil)
+			r = r.WithContext(context.WithValue(r.Context(), ctxUser, tc.user))
+
+			f := parseDashboardFilter(r)
+
+			if f.Scope != tc.wantScope {
+				t.Errorf("scope = %q, want %q", f.Scope, tc.wantScope)
+			}
+			if f.ShowScope != tc.wantShown {
+				t.Errorf("the scope is offered as a choice = %v, want %v", f.ShowScope, tc.wantShown)
+			}
+			if f.WatcherUserID != tc.wantWatcher {
+				t.Errorf("the watcher filter = %d, want %d", f.WatcherUserID, tc.wantWatcher)
+			}
+		})
+	}
+}
+
+// TestThePolledFragmentKeepsTheScope — the dashboard polls its table every
+// three seconds, and the polled fragment has to follow the same scope as
+// the page it sits in. Without the scope in the query, the fragment would
+// fall back to the reader's default and quietly narrow the table back.
+func TestThePolledFragmentKeepsTheScope(t *testing.T) {
+	f := dashboardFilter{Scope: scopeMine, Q: "матрица"}
+
+	qs := f.ActiveFragmentQS()
+	if !strings.Contains(qs, "scope=mine") {
+		t.Errorf("the fragment query %q does not carry the scope", qs)
+	}
+}
+
+// TestTheRequestPageSaysWhoAsked — "who asked for this" and "who watches
+// it" are different questions, and only the second had an answer.
+//
+// The requester's name comes from the request itself, so the page shows it
+// even when somebody else is watching.
+func TestTheRequestPageSaysWhoAsked(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+	ctx := context.Background()
+
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) == 0 {
+		t.Fatal("the setup created no account")
+	}
+
+	var mediaID int64
+	err = store.Pool().QueryRow(ctx,
+		`INSERT INTO media (media_type, tmdb_id, title, title_ru, year)
+		 VALUES ('movie', 603, 'The Matrix', 'Матрица', 1999)
+		 RETURNING id`).Scan(&mediaID)
+	if err != nil {
+		t.Fatalf("insert media: %v", err)
+	}
+
+	req, err := store.CreateRequest(ctx, storage.CreateRequestInput{
+		WorkflowID:     "movie-603",
+		SearchDeadline: time.Now().Add(48 * time.Hour),
+		NextRunAt:      time.Now().Add(time.Minute),
+		RequestedBy:    users[0].ID,
+		Spec: domain.MediaSpec{
+			Ref:   domain.MediaRef{Type: domain.MediaTypeMovie, TMDBID: 603},
+			Title: "The Matrix",
+			Year:  1999,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+
+	body := c.body("/requests/" + strconv.FormatInt(req.ID, 10))
+	if !strings.Contains(body, "Запросил: alex") {
+		t.Errorf("the request page does not say who asked: %s", truncateForTest(body, 400))
+	}
 }
 
 // ---------------------------------------------------------------------------

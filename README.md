@@ -634,12 +634,60 @@ closed and accounts exist only by invite.
 
 | Page | What it is for |
 |---|---|
-| Dashboard | what is being downloaded right now, with a progress bar that updates every three seconds |
+| Dashboard | three buckets — what is downloading, what is still looking, and what is waiting for a person |
 | Search | TMDB search, then a season picker for a series, then a confirmation |
 | Requests | everything, filterable by state |
-| One request | the release, the torrent, the deadlines, the audit trail, and a release you attach by hand |
+| One request | one sentence saying what the bot is doing, then the release, the torrent, the deadlines, the audit trail, and a release you attach by hand |
 | Notifications | the same rows the Telegram bot delivers from |
 | Settings | password change; invites and users for an administrator |
+
+**The dashboard is split by how long a thing takes, not by what phase it is
+in.** «Качается» holds the transfers, with a progress bar that updates every
+three seconds. «Ищет» holds the parked ones — the age, the next check and the
+attempt count, because a request that has been looking for four months has to
+*look* like it. «Ждёт выбора» holds the ones that need a person, and they get
+the action that unblocks them. Sorting by «по ожиданию» puts the longest wait
+first, which is the list that makes the two-year horizon real.
+
+**Who sees what.** A request has no owner — it is one global object that
+people attach themselves to — so the dashboard carries a scope: «все», every
+request in the installation, and «мои», the ones this person is watching.
+The administrator's scope is «все» and cannot be narrowed: the requests
+nobody is watching are exactly the ones an operator has to notice. Everybody
+else starts on «мои» and widens it in one click, because a shared
+installation is exactly the case where the wider view is useful.
+
+**Cancelling asks first.** A cancellation is not only a matter of stopping a
+search: the workflow removes the torrent from the client and deletes the
+files of a download that has not been filed into the library yet. The button
+therefore leads to a page that says what will happen — including the
+exception, a request waiting for the rest of a season, whose episodes are
+already in Plex and stay on the disk.
+
+**One request tells the whole story, and keeps the machinery behind a
+disclosure.** Who asked for it, how long it has been alive, one sentence
+saying what the bot is doing right now, and the rules the release is looked
+for under — the resolution floor, the size range, the number of seeders, the
+excluded sources. The workflow id, the torrent hash, the path on disk and
+the raw event log are one click away, in «Расширенное», because an operator
+needs them and a reader does not.
+
+**The theme is a preference of the browser, not of the account.** «Как в
+системе», «Светлая» and «Тёмная» live in the settings and are kept in
+localStorage, so two people sharing a machine may read the same instance in
+different themes. The choice is applied before the first paint: a
+dark-theme reader never sees a light page first.
+
+**A refused release is not offered.** When the selector refuses a release on
+principle — a camrip, a blacklisted hash, a release with Russian subtitles
+and no Russian audio — the candidate row carries no button, and the endpoint
+refuses the pick too. A release refused only on quality (too few seeders,
+too large) still has one, and it says out loud that it is an overrule.
+
+**On a phone the tables are cards.** Below 768 px the dashboard's tables
+become one block per request, with the column names as the labels of the
+fields. It is the same DOM either way — the stylesheet chooses the rendering
+— so the data is in the page once and a screen reader announces it once.
 
 **Nothing on a render path talks to Temporal.** Every page reads the
 projection. That is not an optimisation: SQL-backed visibility has no
@@ -649,7 +697,10 @@ polling the queue. An interface built on it shows an empty page whenever the
 worker is restarting, which is exactly when somebody is looking.
 
 **One piece of live behaviour, and it is HTMX.** The dashboard polls
-`/fragments/active` every three seconds and swaps the table. Everything else is
+`/fragments/active` every three seconds. The response carries the three
+tables and their counts as out-of-band swaps, so the blocks themselves are
+never replaced — a reader who has collapsed one keeps it collapsed, and a
+reader typing in the search box keeps what they typed. Everything else is
 a plain form post and a redirect, so the interface works with JavaScript
 disabled except for the progress bar. `htmx.min.js` is vendored into
 `internal/web/views/static` rather than loaded from a CDN — a self-hosted

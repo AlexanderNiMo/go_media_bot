@@ -296,7 +296,8 @@ dl.facts dd { margin: 0; }
 form.stack { display: flex; flex-direction: column; gap: 0.75rem; max-width: 32rem; }
 form.stack label { display: flex; flex-direction: column; gap: 0.25rem; }
 
-button.link {
+button.link,
+a.link {
   background: none;
   border: 0;
   padding: 0;
@@ -304,9 +305,11 @@ button.link {
   color: var(--pico-primary);
   cursor: pointer;
   font: inherit;
+  text-decoration: none;
 }
 button.link.warn { color: var(--m-danger); }
-button.link:hover { text-decoration: underline; }
+button.link:hover,
+a.link:hover { text-decoration: underline; }
 
 /* Logout control: the same look as button.link (no chrome) holding a
    20×20 svg. The override makes the button square at the icon's size,
@@ -335,7 +338,8 @@ form.narrow {
    variant used inline (cancel, unlink, refresh) keeps the action
    available without dominating the row. */
 button.small,
-a.button.small,
+a[role="button"].small,
+a.link.small,
 input[type="submit"].small,
 input[type="button"].small {
   padding: 0.35rem 0.7rem;
@@ -518,7 +522,8 @@ table td > input.notif-check {
   user-select: none;
   margin: 0;
 }
-.pill input[type="checkbox"] { margin: 0; }
+.pill input[type="checkbox"],
+.pill input[type="radio"] { margin: 0; }
 .pill.off { opacity: 0.45; }
 .pill:has(input:checked) { background: var(--pico-primary); color: var(--pico-primary-inverse); border-color: var(--pico-primary); }
 .pill.off:has(input:checked) { background: transparent; color: inherit; }
@@ -652,4 +657,133 @@ html[data-sidebar="open"] .hamburger::before { content: '✕'; }
   }
   html[data-sidebar="open"]  .layout { grid-template-columns: 16rem 1fr; }
   html[data-sidebar="icons"] .layout { grid-template-columns: 3.5rem 1fr; }
+}
+
+/* --- the request table on a phone -------------------------------------- */
+
+/* Below 768 px a five-column table is the worst surface in the product: the
+   state — the thing the user came for — is off the screen, and the poster
+   column takes the room the title needs.
+
+   The table becomes a card: one block per request, with the column names
+   becoming the labels of the fields. The DOM does not change, only its
+   rendering, so the data is in the page once and a screen reader announces
+   it once.
+
+   The roles are written out in the markup because `display: block` on table
+   elements takes the table semantics away in Safari and VoiceOver: the cells
+   would be read as a stream of unrelated text. The DOM order is unchanged,
+   so the reading order is still the logical one — only the visual order
+   changes, which is safe because it already was. */
+@media (max-width: 767px) {
+  table.table-cards,
+  table.table-cards tbody { display: block; width: 100%; }
+  table.table-cards thead { display: none; }
+
+  table.table-cards tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--m-border);
+  }
+
+  table.table-cards td {
+    display: block;
+    flex: 1 1 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  /* The poster and the title share the first line; every other cell takes a
+     line of its own. Flex rather than a grid, because the buckets have
+     different columns and a grid would have to be told how many rows the
+     poster spans. */
+  table.table-cards td.thumb { flex: 0 0 3rem; }
+  table.table-cards td.what { flex: 1 1 calc(100% - 3.75rem); }
+
+  /* The label of a field is the name of the column it came from. Two cells
+     carry no label: the poster and the title are the card's heading. */
+  table.table-cards td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--m-text-muted);
+    font-size: 0.75rem;
+  }
+  table.table-cards td.thumb::before,
+  table.table-cards td.what::before { content: none; }
+
+  /* The cancel action is the thing a finger reaches for, and a 24 px link
+     is below the 44 px minimum a thumb needs. */
+  table.table-cards td.actions a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+
+/* The generated status line: one sentence that says what the bot is doing.
+   It is the answer to "is it still looking, and what is it looking for",
+   and it gets a frame because it is the first thing on the page. */
+.status {
+  font-size: 1.05rem;
+  margin: 0 0 1.25rem;
+  padding: 0.65rem 0.9rem;
+  border-left: 3px solid var(--m-accent);
+  background: var(--m-surface);
+  border-radius: var(--m-radius);
+}
+
+/* The bucket that waits for a person. It is the one bucket whose rows are
+   not waiting for a moment but for a human, so the block says so before
+   the word does. */
+#block-waiting { border-left: 3px solid var(--m-warn); }
+
+/* A candidate row that was refused on principle. It carries no action, so
+   it is dimmed: the eye should pass over it to the row that can be picked. */
+tr.refused td { opacity: 0.6; }
+
+/* The lines that say what a cancellation will do. */
+ul.consequences {
+  max-width: 40rem;
+  margin: 0 0 1.5rem;
+  padding-left: 1.25rem;
+}
+ul.consequences li { margin-bottom: 0.35rem; }
+
+/* The disclosure that holds the machine's view of a request: the workflow
+   id, the torrent hash, the path on disk and the raw event log. It is at the
+   bottom of the page because it is for the operator, not for the reader. */
+details.advanced {
+  margin: 2rem 0 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--m-border);
+}
+details.advanced > summary {
+  cursor: pointer;
+  color: var(--m-text-muted);
+  font-size: 0.9em;
+}
+details.advanced h3 { margin-top: 1.25rem; }
+
+/* The theme picker in the settings. Not a form: the choice is written to
+   this browser and applied at once. */
+.theme-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0 0 0.5rem;
+}
+.theme-picker label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+.theme-picker input[type="radio"] {
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0;
 }

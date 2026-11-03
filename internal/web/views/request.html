@@ -1,38 +1,60 @@
 {{define "content"}}
 {{/* $.CSRF rather than .CSRF: inside this block "." is the request, and the
-     token belongs to the page one level out. */}}
+     token belongs to the page one level out.
+
+     The page is in the order the plan puts it: who asked, what the bot is
+     doing, what it is looking for, and then — behind one disclosure — the
+     machine's own view of the request. */}}
 {{with .Request}}
 <div class="confirm">
-  {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
+  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
   <div>
     <h1>{{.Title}} <span class="state {{stateClass .State}}">{{stateLabel .State}}</span></h1>
+    {{/* The age is the product's claim made visible: this request has been
+         alive for this long, and it is still here. */}}
+    {{if .Age}}<p class="muted">Запрошено {{.Age}} назад</p>{{end}}
+    {{/* Who asked is not the same question as who watches: anybody may
+         attach themselves to a request. */}}
+    {{if .RequestedBy}}<p class="muted">Запросил: {{.RequestedBy}}</p>{{end}}
   </div>
 </div>
 
+{{/* One sentence that says what the bot is doing. It is the difference
+     between "the bot is doing something" and "the bot has been doing
+     something for four months". */}}
+{{if .Status}}<p class="status">{{.Status}}</p>{{end}}
+
+{{/* The rules the release is looked for under. The user cannot see why a
+     release was refused without seeing the rule it violated. */}}
+{{if .Requirements}}
+<h3>Требования</h3>
+<dl class="facts">
+  {{range .Requirements}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}
+</dl>
+{{end}}
+
 <dl class="facts">
   <dt>Plex</dt><dd>{{.PlexText}}</dd>
-  <dt>Поиск</dt><dd>{{.SearchText}}</dd>
   {{if .ReleaseText}}<dt>Релиз</dt><dd>{{.ReleaseText}}</dd>{{end}}
   {{if .SeasonText}}<dt>Сезон</dt><dd>{{.SeasonText}}</dd>{{end}}
   {{if .IsDownloading}}<dt>Прогресс</dt><dd>{{template "progress" .}}</dd>{{end}}
-  {{if .QbitHash}}<dt>Торрент</dt><dd class="mono">{{.QbitHash}}</dd>{{end}}
-  {{if .ContentPath}}<dt>Путь</dt><dd class="mono">{{.ContentPath}}</dd>{{end}}
   <dt>Сроки</dt><dd>{{.Deadlines}}</dd>
   {{if .LastError}}<dt>Ошибка</dt><dd class="warn">{{.LastError}}</dd>{{end}}
-  {{if .Abandoned}}<dt>Бракованных</dt><dd>{{.Abandoned}}</dd>{{end}}
   <dt>Создан</dt><dd>{{.Created}}</dd>
   {{if .CompletedAt}}<dt>Завершён</dt><dd>{{.CompletedAt}}</dd>{{end}}
-  <dt>Workflow</dt><dd class="mono">{{.WorkflowID}}</dd>
 </dl>
 
 <div class="actions">
   {{if .Active}}
-    <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">
-      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-      <button type="submit" class="small">Отменить</button>
-    </form>
+    {{/*
+      Cancelling asks first: it can take a half-downloaded file off the
+      disk, and a button that says "Отменить" and nothing else hides that.
+      A link, because the page that follows is a GET that states the
+      consequence — and because the table on the dashboard holds no form.
+    */}}
+    <a role="button" class="small" href="{{.CancelHref}}">Отменить</a>
   {{else}}
-    <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/retry">
+    <form method="post" action="{{.RetryHref}}">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
       <button type="submit" class="small">Запустить снова</button>
     </form>
@@ -59,7 +81,11 @@
   <thead><tr><th>#</th><th>Релиз</th><th>Размер</th><th>Сидеры</th><th>Отклонён по</th><th></th></tr></thead>
   <tbody>
   {{range $.Candidates}}
-    <tr>
+    {{/* The action follows the reason: a release refused on principle gets
+         no button at all, and the row is dimmed to say so. A release refused
+         on quality gets a button that says it is an overrule. */}}
+    {{$pick := candidatePick .RejectionReason}}
+    <tr{{if eq (reasonTone .RejectionReason) "danger"}} class="refused"{{end}}>
       <td class="mono">{{.Rank}}</td>
       <td>
         <div class="mono">{{.Title}}</div>
@@ -71,11 +97,15 @@
         <span class="reason {{reasonTone .RejectionReason}}">{{reasonLabel .RejectionReason}}</span>
       </td>
       <td>
-        <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
-          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-          <input type="hidden" name="rank" value="{{.Rank}}">
-          <button type="submit" class="small">Скачать это</button>
-        </form>
+        {{if $pick.Label}}
+          <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="rank" value="{{.Rank}}">
+            <button type="submit" class="small{{if $pick.Secondary}} secondary{{end}}">{{$pick.Label}}</button>
+          </form>
+        {{else}}
+          <span class="muted" aria-hidden="true">—</span>
+        {{end}}
       </td>
     </tr>
   {{end}}
@@ -104,21 +134,58 @@
   <p class="muted">Текущая ссылка: <span class="mono">{{.SelectedLink}}</span></p>
 {{end}}
 
-{{if .Events}}
-  <h2>Что происходило</h2>
-  <table class="events">
-    <thead><tr><th>Когда</th><th>Событие</th><th>Кто</th><th>Подробности</th></tr></thead>
-    <tbody>
-    {{range .Events}}
-      <tr>
-        <td class="muted mono">{{.At}}</td>
-        <td class="mono">{{.Event}}</td>
-        <td class="muted">{{.Actor}}</td>
-        <td class="muted">{{.Detail}}</td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-{{end}}
+{{/*
+  The machine's own view of the request: the workflow id, the torrent hash,
+  the path on disk and the raw event log. It is here rather than deleted,
+  one click away — an operator needs it, and the reader does not.
+*/}}
+<details class="advanced" id="request-advanced">
+  <summary>Расширенное</summary>
+
+  <dl class="facts">
+    <dt>Workflow</dt><dd class="mono">{{.WorkflowID}}</dd>
+    {{if .QbitHash}}<dt>Торрент</dt><dd class="mono">{{.QbitHash}}</dd>{{end}}
+    {{if .ContentPath}}<dt>Путь</dt><dd class="mono">{{.ContentPath}}</dd>{{end}}
+    {{if .Abandoned}}<dt>Бракованных</dt><dd>{{.Abandoned}}</dd>{{end}}
+  </dl>
+
+  {{if .Events}}
+    <h3>Что происходило</h3>
+    <table class="events">
+      <thead><tr><th>Когда</th><th>Событие</th><th>Кто</th><th>Подробности</th></tr></thead>
+      <tbody>
+      {{range .Events}}
+        <tr>
+          <td class="muted mono">{{.At}}</td>
+          <td class="mono">{{.Event}}</td>
+          <td class="muted">{{.Actor}}</td>
+          <td class="muted">{{.Detail}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{end}}
+</details>
+
+<script>
+  // The disclosure remembers whether it was open, the way the sidebar does.
+  // Read here — inline, before the first paint — so the page does not flash
+  // open for a reader who closed it last time.
+  (function () {
+    var el = document.getElementById("request-advanced");
+    if (!el) return;
+    var key = "mediad.advanced";
+    try {
+      var saved = localStorage.getItem(key);
+      if (saved === "open") el.open = true;
+      if (saved === "closed") el.open = false;
+    } catch (e) {}
+    el.addEventListener("toggle", function () {
+      try {
+        localStorage.setItem(key, el.open ? "open" : "closed");
+      } catch (e) {}
+    });
+  })();
+</script>
 {{end}}
 {{end}}

@@ -37,6 +37,7 @@ var pageNames = []string{
 	"confirm",
 	"requests",
 	"request",
+	"cancel",
 	"notifications",
 	"settings",
 	"help",
@@ -85,6 +86,12 @@ func newTemplates() (*templates, error) {
 		// seedersUnknown is separate from seeders because the tooltip needs
 		// to say why the count is missing, and the count itself is a dash.
 		"seedersUnknown": seedersUnknown,
+		// candidatePick decides what a candidate row offers. The same
+		// decision the endpoint makes when a pick arrives, so a row with no
+		// button is a row that cannot be picked.
+		"candidatePick": candidatePick,
+		// scopeLabel names the scope of the request list.
+		"scopeLabel": scopeLabel,
 	}
 
 	t := &templates{set: make(map[string]*template.Template, len(pageNames))}

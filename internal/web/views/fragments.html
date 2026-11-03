@@ -18,3 +18,79 @@
   <span class="muted">{{.SearchText}}</span>
 {{end}}
 {{end}}
+
+{{define "bucket_table"}}
+{{/*
+  The table of one bucket.
+
+  One template for three buckets: the columns that only some of them have
+  are switched on the bucket, so a table and its columns cannot drift apart
+  the way three hand-written tables would.
+
+  The cells carry the name of the column they came from, because below 768 px
+  the table is rendered as a card and the name becomes the field's label. The
+  roles are written out because `display: block` takes the table semantics
+  away in Safari and VoiceOver.
+
+  The input is a bucket: .Rows is what it holds, and .ShowAge and its
+  siblings say which columns it has.
+*/}}
+{{if .Rows}}
+<table role="table" class="table-cards">
+  <thead>
+    <tr role="row">
+      <th role="columnheader" colspan="2">Что</th>
+      <th role="columnheader">Состояние</th>
+      {{if .ShowProgress}}<th role="columnheader">Прогресс</th>{{end}}
+      {{if .ShowAge}}<th role="columnheader">Возраст</th>{{end}}
+      {{if .ShowAttempts}}<th role="columnheader">Попыток</th>{{end}}
+      {{if .ShowNext}}<th role="columnheader">След. проверка</th>{{end}}
+      <th role="columnheader"></th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Rows}}
+    <tr role="row">
+      <td role="cell" class="thumb" data-label="">
+        {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+      </td>
+      <td role="cell" class="what" data-label="">
+        <a href="{{.Href}}">{{.Title}}</a>
+        {{if .Watchers}}<span class="muted"> · {{.Watchers}}</span>{{end}}
+      </td>
+      <td role="cell" data-label="Состояние"><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
+      {{if $.ShowProgress}}<td role="cell" data-label="Прогресс">{{template "progress" .}}</td>{{end}}
+      {{if $.ShowAge}}<td role="cell" data-label="Возраст" class="muted">{{.Age}}</td>{{end}}
+      {{if $.ShowAttempts}}<td role="cell" data-label="Попыток" class="muted mono">{{.Attempts}}</td>{{end}}
+      {{if $.ShowNext}}<td role="cell" data-label="След. проверка" class="muted">{{.NextCheck}}</td>{{end}}
+      <td role="cell" class="actions" data-label="Действие">
+        {{/* The one state that blocks on a person gets the action that
+             unblocks it. The rest get the one that stops it. */}}
+        {{if .NeedsPick}}
+          <a class="link small" href="{{.Href}}">выбрать</a>
+        {{end}}
+        <a class="link small" href="{{.CancelHref}}">отменить</a>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">{{.Empty}}</p>
+{{end}}
+{{end}}
+
+{{define "active_fragment"}}
+{{/*
+  What the dashboard polls.
+
+  Every element here is an out-of-band swap: the tables and the counts are
+  replaced in place, and the blocks they live in are left alone. A poll that
+  replaced the blocks would throw away whether the reader has them open, and
+  a poll that replaced the filter forms would undo what somebody is typing.
+*/}}
+{{range .List}}
+<div id="table-{{.Key}}" hx-swap-oob="true">{{template "bucket_table" .}}</div>
+<span id="count-{{.Key}}" class="muted count" hx-swap-oob="true">{{len .Rows}}</span>
+{{end}}
+{{end}}

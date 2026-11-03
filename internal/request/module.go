@@ -358,6 +358,10 @@ func (s *Service) StartRequest(ctx context.Context, in StartInput) (*StartResult
 	req, err := s.store.CreateRequest(ctx, storage.CreateRequestInput{
 		Spec:       in.Spec,
 		WorkflowID: workflowID,
+		// The account that asked, so the interface can answer "who asked for
+		// this" — a question the watcher list cannot answer, because anybody
+		// may attach themselves to a request.
+		RequestedBy: in.UserID,
 		// Jittered, so requests created in one batch do not stay aligned
 		// forever and turn every hour into a spike against the indexer.
 		NextRunAt:      now.Add(jitter(policy.Jitter)),

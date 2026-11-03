@@ -11,6 +11,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/release"
 	"github.com/alex/mediad/internal/storage"
 )
 
@@ -39,6 +40,7 @@ func sampleRequest() *storage.Request {
 		WorkflowID:      "tv-1399-s2",
 		FirstRunID:      "run-1",
 		State:           storage.StateDownloading,
+		PosterPath:      "/poster.jpg",
 		AttemptCount:    12,
 		ErrorStreak:     1,
 		StallCount:      2,
@@ -73,6 +75,40 @@ func sampleRequest() *storage.Request {
 	}
 }
 
+// sampleBuckets is the dashboard's three buckets, one row each.
+//
+// One row per bucket, and a row in a different state each, because the
+// buckets differ in their columns as well as in their meaning: a transfer
+// has no age and no next check, and a request waiting for a person has an
+// age and a pick.
+func sampleBuckets(t *testing.T) buckets {
+	t.Helper()
+
+	rowIn := func(state storage.State) requestRow {
+		req := sampleRequest()
+		req.State = state
+		return rowFor(req, nil, time.Now(), "")
+	}
+
+	var out buckets
+	for _, b := range dashboardBuckets {
+		var state storage.State
+		switch b.Key {
+		case "downloading":
+			state = storage.StateDownloading
+		case "searching":
+			state = storage.StateSearching
+		default:
+			state = storage.StateManual
+		}
+		out.List = append(out.List, bucketView{
+			dashboardBucket: b,
+			Rows:            []requestRow{rowIn(state)},
+		})
+	}
+	return out
+}
+
 // testPage is the layout data every fixture starts from.
 func testPage() page {
 	return page{
@@ -96,7 +132,7 @@ func fixtures(t *testing.T) map[string]any {
 
 	now := time.Now()
 	req := sampleRequest()
-	row := rowFor(req, []storage.Watcher{{Username: "alex"}}, now)
+	row := rowFor(req, []storage.Watcher{{Username: "alex"}}, now, "")
 	detail := detailFor(req, []storage.Watcher{{Username: "alex"}},
 		[]storage.EventRow{
 			{
@@ -109,7 +145,10 @@ func fixtures(t *testing.T) map[string]any {
 			},
 			{At: now, Event: "no detail", Actor: "workflow"},
 			{At: now, Event: "broken detail", Detail: []byte(`not json`)},
-		}, now)
+		}, 0, now, "")
+	// The requirements are filled in by the handler, which has the policy;
+	// the fixture uses the default one so the panel is not empty.
+	detail.Requirements = requirementsFor(release.DefaultProfile(), req.Media)
 
 	return map[string]any{
 		"dashboard": dashboardView{
@@ -124,7 +163,7 @@ func fixtures(t *testing.T) map[string]any {
 				Since:      "7d",
 				ActiveSubs: []string{"downloading", "adding"},
 			},
-			Active:    []requestRow{row},
+			buckets:   sampleBuckets(t),
 			Recent:    []requestRow{row},
 			ActiveAll: storage.ActiveStates(),
 		},
@@ -158,6 +197,11 @@ func fixtures(t *testing.T) map[string]any {
 			Requests: []requestRow{row},
 		},
 		"request": requestView{page: testPage(), Request: detail},
+		"cancel": cancelView{
+			page:         testPage(),
+			Request:      detail,
+			Consequences: cancelConsequences(req),
+		},
 		"notifications": notificationsView{
 			page: testPage(),
 			Items: []notificationRow{{
@@ -165,7 +209,10 @@ func fixtures(t *testing.T) map[string]any {
 			}},
 		},
 		"settings": settingsView{
-			page:      testPage(),
+			page: testPage(),
+			// The tab the handler defaults to. Without it every panel is
+			// hidden, and the fixture would render an empty page.
+			Tab:       "account",
 			Invites:   []inviteRow{{Code: "abc", CreatedAt: "2026-01-01", ExpiresAt: "2026-01-08", State: "действует"}},
 			Users:     []storage.User{{ID: 1, Username: "alex", IsAdmin: true}, {ID: 2}},
 			InviteTTL: "7 дн",
@@ -237,7 +284,7 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 				Detail:    []byte(`{"score":0.87,"title":"Матрица"}`),
 			},
 			{At: now, Event: "no detail", Actor: "workflow"},
-		}, now)
+		}, 0, now, "")
 
 	p := page{User: &storage.User{ID: 1, Username: "alex"}, CSRF: "token"}
 
@@ -255,7 +302,7 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 			State    string
 			States   []storage.State
 			Requests []requestRow
-		}{p, "all", []storage.State{"pending", "failed"}, []requestRow{rowFor(req, nil, now)}}},
+		}{p, "all", []storage.State{"pending", "failed"}, []requestRow{rowFor(req, nil, now, "")}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -273,18 +320,14 @@ func TestRequestPagesRenderPopulated(t *testing.T) {
 func TestActiveFragmentRendersPopulated(t *testing.T) {
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
 
-	now := time.Now()
-	data := struct {
-		page
-		Active []requestRow
-	}{
-		page:   page{CSRF: "token"},
-		Active: []requestRow{rowFor(sampleRequest(), nil, now)},
+	data := activeFragmentView{
+		page:    page{CSRF: "token"},
+		buckets: sampleBuckets(t),
 	}
 
 	rec := httptest.NewRecorder()
 	s.renderFragment(rec, httptest.NewRequest(http.MethodGet, "/fragments/active", nil),
-		"active_table", data)
+		"active_fragment", data)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("returned %d: %s", rec.Code, truncateForTest(rec.Body.String(), 300))
@@ -294,14 +337,15 @@ func TestActiveFragmentRendersPopulated(t *testing.T) {
 		t.Error("the fragment rendered a whole page; htmx would swap the layout into the table")
 	}
 
-	// The fragment contains a form, so the token has to reach it. A fragment
-	// without one submits a form that the server rejects, which reads as the
-	// cancel button being broken.
-	if !strings.Contains(body, `name="csrf_token"`) {
-		t.Error("the fragment's form has no csrf token")
+	// The fragment used to carry a cancel form, and the token that form
+	// needed. The cancel action is a link now — it leads to the page that
+	// asks before cancelling — so the fragment holds no form at all, which
+	// is also what keeps it from being swallowed by the filter form.
+	if strings.Contains(body, `method="post"`) {
+		t.Error("the fragment holds a form; the dashboard's filter forms would swallow it")
 	}
-	if strings.Contains(body, `value=""`) {
-		t.Error("the fragment's csrf field is empty")
+	if !strings.Contains(body, "/cancel") {
+		t.Error("the fragment has no cancel action")
 	}
 }
 
@@ -382,21 +426,26 @@ func TestNoPageNestsAForm(t *testing.T) {
 	}
 }
 
-// TestCancelButtonsPostToTheCancelRoute checks the button that cancels a
-// request, on both pages that show one.
+// TestCancelActionsLeadToTheCancelRoute checks what the cancel action is on
+// every page that has one.
 //
-// The button's owner is the form the browser submits, and it is not always
+// Cancelling asks first: the confirmation page says what will happen to the
+// files, and only its button does the cancelling. So the action on the
+// dashboard and on the request page is a link to that page, and the button
+// on the confirmation page is a POST to the same path.
+//
+// The check is on the rendered DOM, because a control's owner is not always
 // the form the template looks like it is in — a form nested in another one
-// does not survive the parser. A cancel button owned by a GET filter form
-// reloads the page and cancels nothing, which is exactly the bug this file
-// exists to catch.
-func TestCancelButtonsPostToTheCancelRoute(t *testing.T) {
+// does not survive the parser, and a button that belongs to the wrong form
+// cancels nothing.
+func TestCancelActionsLeadToTheCancelRoute(t *testing.T) {
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+	cases := fixtures(t)
 
 	for _, name := range []string{"dashboard", "request"} {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), name, fixtures(t)[name])
+			s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), name, cases[name])
 
 			doc, err := html.Parse(strings.NewReader(rec.Body.String()))
 			if err != nil {
@@ -406,20 +455,17 @@ func TestCancelButtonsPostToTheCancelRoute(t *testing.T) {
 			found := 0
 			var walk func(*html.Node)
 			walk = func(n *html.Node) {
-				if n.Type == html.ElementNode && n.Data == "button" && isCancelButton(n) {
+				if n.Type == html.ElementNode && isCancelControl(n) {
 					found++
 
-					owner := owningForm(n)
-					if owner == nil {
-						t.Error("the cancel button is not inside a form at all")
+					if n.Data != "a" {
+						t.Errorf("the cancel action is a <%s>; it has to be a link to the "+
+							"confirmation, which is where the consequence is stated", n.Data)
 						return
 					}
-					method, action := attrForTest(owner, "method"), attrForTest(owner, "action")
-					if !strings.EqualFold(method, "post") {
-						t.Errorf("the cancel button submits a %q form; it has to be POST", method)
-					}
-					if !strings.HasSuffix(action, "/cancel") {
-						t.Errorf("the cancel button posts to %q; it has to be the cancel route", action)
+					href := attrForTest(n, "href")
+					if !strings.HasSuffix(href, "/cancel") {
+						t.Errorf("the cancel action links to %q; it has to be the cancel route", href)
 					}
 				}
 				for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -429,10 +475,49 @@ func TestCancelButtonsPostToTheCancelRoute(t *testing.T) {
 			walk(doc)
 
 			if found == 0 {
-				t.Error("the page has no cancel button")
+				t.Error("the page has no cancel action")
 			}
 		})
 	}
+
+	t.Run("confirmation", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "cancel", cases["cancel"])
+
+		doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("parse the rendered page: %v", err)
+		}
+
+		found := 0
+		var walk func(*html.Node)
+		walk = func(n *html.Node) {
+			if n.Type == html.ElementNode && n.Data == "button" && isCancelControl(n) {
+				found++
+
+				owner := owningForm(n)
+				if owner == nil {
+					t.Error("the cancel button is not inside a form at all")
+					return
+				}
+				method, action := attrForTest(owner, "method"), attrForTest(owner, "action")
+				if !strings.EqualFold(method, "post") {
+					t.Errorf("the cancel button submits a %q form; it has to be POST", method)
+				}
+				if !strings.HasSuffix(action, "/cancel") {
+					t.Errorf("the cancel button posts to %q; it has to be the cancel route", action)
+				}
+			}
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+		}
+		walk(doc)
+
+		if found == 0 {
+			t.Error("the confirmation page has no cancel button")
+		}
+	})
 }
 
 // TestDashboardFilterFormsCarryEveryControl checks that both of the
@@ -448,6 +533,112 @@ func TestCancelButtonsPostToTheCancelRoute(t *testing.T) {
 func TestDashboardFilterFormsCarryEveryControl(t *testing.T) {
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
 
+	for _, tc := range []struct {
+		name      string
+		user      *storage.User
+		scope     string
+		showScope bool
+		want      []string
+	}{
+		{
+			name:  "admin",
+			user:  &storage.User{ID: 1, Username: "alex", IsAdmin: true},
+			scope: scopeAll,
+			want:  []string{"q", "type", "sort", "since", "state"},
+		},
+		{
+			name:      "reader",
+			user:      &storage.User{ID: 2, Username: "bob"},
+			scope:     scopeMine,
+			showScope: true,
+			want:      []string{"q", "type", "sort", "since", "state", "scope"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard",
+				dashboardView{
+					page: page{User: tc.user, CSRF: "token"},
+					Filter: dashboardFilter{
+						Q: "матрица", Type: "movie", Sort: "date", Since: "7d",
+						ActiveSubs: []string{"downloading", "adding"},
+						Scope:      tc.scope, ShowScope: tc.showScope,
+					},
+					buckets:   sampleBuckets(t),
+					Recent:    []requestRow{rowFor(sampleRequest(), nil, time.Now(), "")},
+					ActiveAll: storage.ActiveStates(),
+				})
+
+			doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+			if err != nil {
+				t.Fatalf("parse the rendered page: %v", err)
+			}
+
+			want := map[string]bool{}
+			for _, name := range tc.want {
+				want[name] = true
+			}
+
+			forms := 0
+			var walk func(*html.Node)
+			walk = func(n *html.Node) {
+				if n.Type == html.ElementNode && n.Data == "form" &&
+					strings.EqualFold(attrForTest(n, "method"), "get") {
+					forms++
+
+					got := map[string]bool{}
+					var controls func(*html.Node)
+					controls = func(n *html.Node) {
+						if n.Type == html.ElementNode {
+							switch n.Data {
+							case "input", "select", "textarea":
+								if name := attrForTest(n, "name"); name != "" {
+									got[name] = true
+								}
+							}
+						}
+						for c := n.FirstChild; c != nil; c = c.NextSibling {
+							controls(c)
+						}
+					}
+					controls(n)
+
+					for name := range want {
+						if !got[name] {
+							t.Errorf("a filter form does not carry %q; a submission through it "+
+								"would drop that part of the query string", name)
+						}
+					}
+					for name := range got {
+						if !want[name] {
+							t.Errorf("a filter form carries an unknown control %q", name)
+						}
+					}
+				}
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					walk(c)
+				}
+			}
+			walk(doc)
+
+			if forms != 2 {
+				t.Errorf("the dashboard has %d GET forms; it is meant to have two, one per filter row", forms)
+			}
+		})
+	}
+}
+
+// TestDashboardTableCarriesResponsiveLabels checks the markup the phone
+// layout rests on.
+//
+// Below 768 px the table is rendered as a card: the cells become blocks and
+// the column names become the labels of the fields. Without the labels a
+// card is a list of values with nothing saying what they are; without the
+// roles VoiceOver reads the blocks as a stream of unrelated text, because
+// `display: block` takes the table semantics away.
+func TestDashboardTableCarriesResponsiveLabels(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
 	rec := httptest.NewRecorder()
 	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard", fixtures(t)["dashboard"])
 
@@ -456,43 +647,15 @@ func TestDashboardFilterFormsCarryEveryControl(t *testing.T) {
 		t.Fatalf("parse the rendered page: %v", err)
 	}
 
-	want := map[string]bool{"q": true, "type": true, "sort": true, "since": true, "state": true}
-
-	forms := 0
+	tables := 0
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "form" &&
-			strings.EqualFold(attrForTest(n, "method"), "get") {
-			forms++
-
-			got := map[string]bool{}
-			var controls func(*html.Node)
-			controls = func(n *html.Node) {
-				if n.Type == html.ElementNode {
-					switch n.Data {
-					case "input", "select", "textarea":
-						if name := attrForTest(n, "name"); name != "" {
-							got[name] = true
-						}
-					}
-				}
-				for c := n.FirstChild; c != nil; c = c.NextSibling {
-					controls(c)
-				}
+		if n.Type == html.ElementNode && n.Data == "table" {
+			tables++
+			if role := attrForTest(n, "role"); role != "table" {
+				t.Errorf("a table has role %q; the card layout needs an explicit one", role)
 			}
-			controls(n)
-
-			for name := range want {
-				if !got[name] {
-					t.Errorf("a filter form does not carry %q; a submission through it "+
-						"would drop that part of the query string", name)
-				}
-			}
-			for name := range got {
-				if !want[name] {
-					t.Errorf("a filter form carries an unknown control %q", name)
-				}
-			}
+			checkRowRolesAndLabels(t, n)
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			walk(c)
@@ -500,8 +663,345 @@ func TestDashboardFilterFormsCarryEveryControl(t *testing.T) {
 	}
 	walk(doc)
 
-	if forms != 2 {
-		t.Errorf("the dashboard has %d GET forms; it is meant to have two, one per filter row", forms)
+	if tables < 2 {
+		t.Errorf("the dashboard has %d tables; it has two, the active one and the recent one", tables)
+	}
+}
+
+// checkRowRolesAndLabels checks the roles and the labels of one table.
+func checkRowRolesAndLabels(t *testing.T, table *html.Node) {
+	t.Helper()
+
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "tr":
+				if role := attrForTest(n, "role"); role != "row" {
+					t.Errorf("a row has role %q; it has to be a row", role)
+				}
+			case "th":
+				if role := attrForTest(n, "role"); role != "columnheader" {
+					t.Errorf("a header has role %q; it has to be a columnheader", role)
+				}
+			case "td":
+				if role := attrForTest(n, "role"); role != "cell" {
+					t.Errorf("a cell has role %q; it has to be a cell", role)
+				}
+				if _, ok := attrOf(n, "data-label"); !ok {
+					t.Error("a cell has no data-label; the card would show a value " +
+						"with nothing saying what it is")
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(table)
+}
+
+// TestCandidateRowsOfferNoActionOnAHardRefusal checks what a candidate row
+// offers.
+//
+// The action follows the reason. A release refused on principle gets no
+// button at all — offering to download a camrip or a blacklisted hash
+// undoes the decision the product exists to make — and a release refused on
+// quality gets a button that says out loud that it is an overrule.
+func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	detail := detailFor(sampleRequest(), nil, nil, 0, time.Now(), "")
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "request", requestView{
+		page:    testPage(),
+		Request: detail,
+		Candidates: []storage.Candidate{
+			{Rank: 1, Title: "Матрица 1080p", RejectionReason: ""},
+			{Rank: 2, Title: "Матрица 720p", RejectionReason: "too_few_seeders: 2 seeders, minimum is 3"},
+			{Rank: 3, Title: "Матрица CAMRip", RejectionReason: "excluded_source: camrip"},
+		},
+	})
+
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	type row struct {
+		buttons []string
+		class   string
+	}
+	var rows []row
+
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "tr" && hasCell(n) {
+			r := row{class: attrForTest(n, "class")}
+			var collect func(*html.Node)
+			collect = func(n *html.Node) {
+				if n.Type == html.ElementNode && n.Data == "button" {
+					r.buttons = append(r.buttons, strings.TrimSpace(textOf(n)))
+				}
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					collect(c)
+				}
+			}
+			collect(n)
+			rows = append(rows, r)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if len(rows) != 3 {
+		t.Fatalf("the candidate table has %d rows, want 3", len(rows))
+	}
+
+	if len(rows[0].buttons) != 1 || rows[0].buttons[0] != "Скачать это" {
+		t.Errorf("a release nothing refused offers %v; it offers «Скачать это»", rows[0].buttons)
+	}
+	if len(rows[1].buttons) != 1 || rows[1].buttons[0] != "Скачать всё равно" {
+		t.Errorf("a release refused on quality offers %v; it offers «Скачать всё равно»", rows[1].buttons)
+	}
+	if len(rows[2].buttons) != 0 {
+		t.Errorf("a release refused on principle offers %v; it offers nothing at all", rows[2].buttons)
+	}
+	if !strings.Contains(rows[2].class, "refused") {
+		t.Errorf("a refused row has class %q; it is dimmed", rows[2].class)
+	}
+}
+
+// hasCell reports whether a row carries cells, as opposed to being a header
+// row.
+func hasCell(n *html.Node) bool {
+	found := false
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "td" {
+			found = true
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return found
+}
+
+// TestTheFragmentCarriesTheBucketsOutOfBand checks that the polled fragment
+// replaces the tables and the counts in place.
+//
+// The blocks live on the page and the fragment carries the new contents as
+// out-of-band swaps. A mismatch between the two is silent: htmx drops an
+// out-of-band element whose target is not on the page, and the dashboard
+// goes on showing the tables it was rendered with, for ever.
+//
+// So the ids are checked against each other, in both directions.
+func TestTheFragmentCarriesTheBucketsOutOfBand(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+	cases := fixtures(t)
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard", cases["dashboard"])
+	page, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	frag := httptest.NewRecorder()
+	s.renderFragment(frag, httptest.NewRequest(http.MethodGet, "/fragments/active", nil),
+		"active_fragment", activeFragmentView{page: testPage(), buckets: sampleBuckets(t)})
+	if frag.Code != http.StatusOK {
+		t.Fatalf("the fragment returned %d: %s", frag.Code, truncateForTest(frag.Body.String(), 300))
+	}
+	fragment, err := html.Parse(strings.NewReader(frag.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered fragment: %v", err)
+	}
+
+	// The ids the page carries.
+	onPage := map[string]bool{}
+	var collect func(*html.Node)
+	collect = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			if id := attrForTest(n, "id"); id != "" {
+				onPage[id] = true
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			collect(c)
+		}
+	}
+	collect(page)
+
+	// The ids the fragment swaps in, and whether they are marked for it.
+	swapped := map[string]bool{}
+	var outOfBand func(*html.Node)
+	outOfBand = func(n *html.Node) {
+		if n.Type == html.ElementNode && attrForTest(n, "hx-swap-oob") != "" {
+			id := attrForTest(n, "id")
+			if id == "" {
+				t.Error("an out-of-band element has no id; htmx cannot find its target")
+			}
+			swapped[id] = true
+			if !onPage[id] {
+				t.Errorf("the fragment swaps in %q, which is not on the page; the swap "+
+					"is dropped and the table stays as it was", id)
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			outOfBand(c)
+		}
+	}
+	outOfBand(fragment)
+
+	// Both halves of every bucket: the table and the count.
+	for _, b := range dashboardBuckets {
+		for _, id := range []string{"table-" + b.Key, "count-" + b.Key} {
+			if !swapped[id] {
+				t.Errorf("the fragment does not swap in %q; the bucket would freeze "+
+					"after the first render", id)
+			}
+			if !onPage[id] {
+				t.Errorf("the page has no %q for the fragment to replace", id)
+			}
+		}
+	}
+}
+
+// TestTheDashboardHasTheThreeBuckets checks that the wall is split by
+// time-scale.
+//
+// The split is the point of Phase 1a: a request that has been searching for
+// four months and a download at 90% are different things, and putting them
+// in one table is what made the horizon invisible.
+func TestTheDashboardHasTheThreeBuckets(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "dashboard", fixtures(t)["dashboard"])
+
+	body := rec.Body.String()
+	for _, want := range []string{"Качается", "Ищет", "Ждёт выбора"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the dashboard has no %q bucket", want)
+		}
+	}
+
+	// The horizon's numbers: an age, a next check and an attempt count.
+	for _, want := range []string{"Возраст", "След. проверка", "Попыток"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the dashboard does not show %q", want)
+		}
+	}
+}
+
+// TestTheRequestPageShowsTheStoryFirst — the page is in the order the plan
+// puts it: who asked, what the bot is doing, what it is looking for, and
+// the machine's own view behind one disclosure.
+//
+// The disclosure is the point of the last part: an operator needs the
+// workflow id and the event log, and a reader does not. It is there rather
+// than deleted, one click away.
+func TestTheRequestPageShowsTheStoryFirst(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "request", fixtures(t)["request"])
+
+	body := rec.Body.String()
+	for _, want := range []string{"Требования", "Расширенное"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the request page does not have %q", want)
+		}
+	}
+
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	// The disclosure holds the machinery, and it starts closed.
+	var advanced *html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "details" && attrForTest(n, "id") == "request-advanced" {
+			advanced = n
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if advanced == nil {
+		t.Fatal("the request page has no advanced disclosure")
+	}
+	if _, open := attrOf(advanced, "open"); open {
+		t.Error("the advanced disclosure is open; it is meant to start closed")
+	}
+
+	// The workflow id and the event log live inside it.
+	var inside func(*html.Node) string
+	inside = func(n *html.Node) string {
+		var sb strings.Builder
+		sb.WriteString(textOf(n))
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			sb.WriteString(inside(c))
+		}
+		return sb.String()
+	}
+	if !strings.Contains(inside(advanced), "tv-1399-s2") {
+		t.Error("the workflow id is not inside the advanced disclosure")
+	}
+}
+
+// TestTheThemePickerIsOffered — the theme is a choice of the reader, and it
+// is offered in the settings next to the other account preferences.
+//
+// The choice is kept in the browser rather than on the account: two people
+// sharing a machine may want different themes, and the setting is applied
+// before the first paint so a dark-theme reader never sees a light page
+// first.
+func TestTheThemePickerIsOffered(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "settings", fixtures(t)["settings"])
+
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	values := map[string]bool{}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "input" &&
+			strings.EqualFold(attrForTest(n, "type"), "radio") &&
+			attrForTest(n, "name") == "theme" {
+			values[attrForTest(n, "value")] = true
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	for _, want := range []string{"auto", "light", "dark"} {
+		if !values[want] {
+			t.Errorf("the theme picker has no %q option", want)
+		}
+	}
+
+	// The layout applies the saved theme before the first paint.
+	layout := httptest.NewRecorder()
+	s.render(layout, httptest.NewRequest(http.MethodGet, "/", nil), "help", fixtures(t)["help"])
+	if !strings.Contains(layout.Body.String(), "mediad.theme") {
+		t.Error("the layout does not read the saved theme")
 	}
 }
 
@@ -657,11 +1157,20 @@ func attrForTest(n *html.Node, key string) string {
 	return ""
 }
 
-// isCancelButton reports whether a button is the one that cancels a request.
+// isCancelControl reports whether a node is the control that cancels a
+// request.
 //
 // The text is matched loosely on purpose: the dashboard says "отменить" and
-// the request page says "Отменить", and both are the same button.
-func isCancelButton(n *html.Node) bool {
+// the request page says "Отменить", and both are the same action. Only
+// links and buttons are considered — the state pill says "отменён" too, and
+// that is not a control.
+func isCancelControl(n *html.Node) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	if n.Data != "a" && n.Data != "button" {
+		return false
+	}
 	return strings.Contains(strings.ToLower(textOf(n)), "отмен")
 }
 

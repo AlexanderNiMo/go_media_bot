@@ -412,17 +412,7 @@ func (s selector) checkSize(spec domain.MediaSpec, rel domain.Release, parsed Pa
 // MaxSizeGB so a profile that has not been configured for the per-type
 // values keeps the old behaviour.
 func (s selector) maxSizeGB(spec domain.MediaSpec) float64 {
-	switch spec.Ref.Type {
-	case domain.MediaTypeMovie:
-		if s.profile.MaxSizeGBMovies > 0 {
-			return s.profile.MaxSizeGBMovies
-		}
-	case domain.MediaTypeTV:
-		if s.profile.MaxSizeGBSeries > 0 {
-			return s.profile.MaxSizeGBSeries
-		}
-	}
-	return s.profile.MaxSizeGB
+	return MaxSizeGBFor(s.profile, spec)
 }
 
 func plausibleFloorGB(q Quality, src Source) float64 {

@@ -99,6 +99,11 @@ type Request struct {
 	// not have to re-query TMDB.
 	SelectedEpisodeCount int
 
+	// RequestedBy is the account that asked for this request. Zero when the
+	// request was created before this was recorded, or by an interface with
+	// no account behind it.
+	RequestedBy int64
+
 	// SelectedLink is a torrent URL or magnet submitted manually through
 	// the web UI. Empty when the release came from the indexer.
 	SelectedLink string
@@ -133,6 +138,9 @@ type CreateRequestInput struct {
 	Spec       domain.MediaSpec
 	WorkflowID string
 	FirstRunID string
+	// RequestedBy is the account that asked for this. Zero when there is
+	// nobody behind the request — a CLI run on the host, say.
+	RequestedBy int64
 	// SearchDeadline bounds how long the request keeps looking.
 	SearchDeadline time.Time
 	// NextRunAt is when the first search is due. It carries jitter, so that
@@ -158,8 +166,8 @@ func (s *Store) CreateRequest(ctx context.Context, in CreateRequestInput) (*Requ
 		const q = `
 			INSERT INTO requests (
 				media_id, workflow_id, first_run_id, state,
-				next_run_at, search_deadline
-			) VALUES ($1, $2, $3, 'pending', $4, $5)
+				next_run_at, search_deadline, requested_by
+			) VALUES ($1, $2, $3, 'pending', $4, $5, $6)
 			RETURNING id, created_at, updated_at`
 
 		var (
@@ -169,7 +177,7 @@ func (s *Store) CreateRequest(ctx context.Context, in CreateRequestInput) (*Requ
 		)
 		err = tx.QueryRow(ctx, q,
 			mediaID, in.WorkflowID, nullString(in.FirstRunID),
-			in.NextRunAt, in.SearchDeadline,
+			in.NextRunAt, in.SearchDeadline, in.RequestedBy,
 		).Scan(&id, &createdAt, &updatedAt)
 		if err != nil {
 			// The partial unique index on active requests is the arbiter for
@@ -187,6 +195,7 @@ func (s *Store) CreateRequest(ctx context.Context, in CreateRequestInput) (*Requ
 			MediaID:        mediaID,
 			WorkflowID:     in.WorkflowID,
 			FirstRunID:     in.FirstRunID,
+			RequestedBy:    in.RequestedBy,
 			State:          StatePending,
 			NextRunAt:      &in.NextRunAt,
 			SearchDeadline: in.SearchDeadline,
@@ -407,6 +416,10 @@ type RequestFilter struct {
 	// Default (false) sorts by created_at DESC, which is what a list of
 	// work-in-progress wants.
 	SortByTitle bool
+	// OldestFirst sorts by created_at ASC — the longest wait first. It is
+	// what a list of parked requests wants: the request somebody asked for
+	// a year ago and is still quietly running is the one worth seeing.
+	OldestFirst bool
 	// Since limits to rows with created_at >= now() - Since. Zero means no
 	// lower bound. The dashboard's "recent" window uses this; Pending rows
 	// are excluded by States, so it does not double up.
@@ -497,9 +510,12 @@ func (s *Store) ListRequests(ctx context.Context, f RequestFilter) ([]*Request, 
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	if f.SortByTitle {
+	switch {
+	case f.SortByTitle:
 		q += ` ORDER BY title ASC`
-	} else {
+	case f.OldestFirst:
+		q += ` ORDER BY created_at ASC`
+	default:
 		q += ` ORDER BY created_at DESC`
 	}
 	q += fmt.Sprintf(` LIMIT %d`, limit)
@@ -806,6 +822,7 @@ created_at, updated_at, completed_at,
 COALESCE(selected_thread_id, ''),
 COALESCE(selected_video_count, 0),
 COALESCE(selected_episode_count, 0),
+COALESCE(requested_by, 0),
 media_type, tmdb_id, season, title, COALESCE(title_ru, ''),
 COALESCE(original_title, ''), COALESCE(year, 0), COALESCE(poster_path, ''),
 COALESCE(overview, ''), COALESCE(runtime_min, 0),
@@ -833,6 +850,7 @@ func scanRequest(row rowScanner) (*Request, error) {
 		&r.Progress, &r.DlSpeed, &r.ETASeconds,
 		&r.CreatedAt, &r.UpdatedAt, &r.CompletedAt,
 		&r.SelectedThreadID, &r.SelectedVideoCount, &r.SelectedEpisodeCount,
+		&r.RequestedBy,
 		&m.Ref.Type, &m.Ref.TMDBID, &season, &m.Title, &m.TitleRU,
 		&m.OriginalTitle, &m.Year, &r.PosterPath,
 		&r.Overview, &m.RuntimeMin,

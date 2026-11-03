@@ -159,9 +159,59 @@ func reasonTone(stored string) string {
 // blacklisted hash, a release with Russian subtitles and no Russian audio —
 // and offering to download one of those would undo the decision the product
 // exists to make.
+//
+// Everything else may be overruled: a release refused for having two seeders
+// instead of three is one the person may reasonably want anyway. A reason
+// that was never recorded is on that side too — nothing refused it, so there
+// is nothing to overrule.
 func reasonAllowsOverride(stored string) bool {
 	code, _ := splitReason(stored)
-	return code != "" && !hardReasons[code]
+	return !hardReasons[code]
+}
+
+// pickAction is what the interface offers on a candidate row.
+//
+// The action follows the reason, and it is one decision rather than two: the
+// button the page shows and the pick the endpoint accepts are the same
+// question, and a rule that lives only in the markup is a rule with no
+// teeth.
+type pickAction struct {
+	// Label is the button's text. Empty means there is no button at all.
+	Label string
+	// Secondary marks the softer of the two buttons: the release was
+	// refused on quality, and the person may overrule that.
+	Secondary bool
+}
+
+// candidatePick decides what a candidate row offers.
+//
+// Three cases, and the third is the one the interface used to get wrong:
+//
+//   - Nothing refused it, so the ordinary «Скачать это».
+//   - It was refused on quality, so «Скачать всё равно» — dimmer, and it
+//     says out loud that it is an overrule of the policy.
+//   - It was refused on principle, so no button at all. Offering to
+//     download a camrip or a blacklisted hash undoes the decision the
+//     product exists to make.
+func candidatePick(stored string) pickAction {
+	code, _ := splitReason(stored)
+	switch {
+	case code == "":
+		return pickAction{Label: "Скачать это"}
+	case !reasonAllowsOverride(stored):
+		return pickAction{}
+	default:
+		return pickAction{Label: "Скачать всё равно", Secondary: true}
+	}
+}
+
+// canPick reports whether a candidate may be picked at all.
+//
+// The endpoint asks the same question the row asks, and gets the same
+// answer: a release refused on principle is not downloadable through the
+// interface, whatever the page shows.
+func canPick(stored string) bool {
+	return candidatePick(stored).Label != ""
 }
 
 // splitReason separates the machine code from the detail sentence.
@@ -219,6 +269,37 @@ func seeders(n int) string {
 func seedersUnknown(n int) bool { return n < 0 }
 
 // ---------------------------------------------------------------------------
+// Scope
+// ---------------------------------------------------------------------------
+
+// The two views of the request list.
+//
+// "all" is every request in the installation — what the household shares.
+// "mine" is the ones this person is watching. The administrator's scope is
+// "all" and stays there: the requests nobody is watching are exactly the
+// ones an operator has to notice.
+const (
+	scopeAll  = "all"
+	scopeMine = "mine"
+)
+
+// scopeLabel is the Russian name of a scope.
+//
+// "Мои" is a deliberate word. A request has no owner: the person who asked
+// for it is recorded in the event log, and anybody may attach themselves to
+// one. The creator is added as a watcher on creation, so "мои" is a good
+// proxy for "asked for by me" — but it is not the same thing, and the copy
+// must not claim it is.
+func scopeLabel(scope string) string {
+	switch scope {
+	case scopeMine:
+		return "мои"
+	default:
+		return "все"
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Russian plurals
 // ---------------------------------------------------------------------------
 
@@ -227,9 +308,14 @@ func seedersUnknown(n int) bool { return n < 0 }
 // The accusative singular is kept separately because it differs from the
 // nominative in one form only: минута becomes минуту after a verb, while
 // минуты and минут are the same in both cases.
+//
+// The genitive plural is kept for the nouns that need one: after "после" a
+// count takes the genitive, and "после 3 ошибок" is not "после 3 ошибки".
+// A noun without a genitive carries one only where the case is the same.
 type ruNoun struct {
 	nom [3]string
 	acc string
+	gen [3]string
 }
 
 // count renders n with the noun in the nominative: "5 минут".
@@ -249,6 +335,18 @@ func (n ruNoun) countA(k int) string {
 	return fmt.Sprintf("%d %s", k, n.nom[pluralForm(k)])
 }
 
+// countG renders n with the noun in the genitive plural: "после 3 ошибок".
+//
+// Only the nouns that carry a genitive can be rendered this way; the rest
+// fall back to the nominative, which is the same form in every case except
+// the singular.
+func (n ruNoun) countG(k int) string {
+	if n.gen[0] == "" {
+		return n.count(k)
+	}
+	return fmt.Sprintf("%d %s", k, n.gen[pluralForm(k)])
+}
+
 var (
 	nounSecond = ruNoun{nom: [3]string{"секунда", "секунды", "секунд"}, acc: "секунду"}
 	nounMinute = ruNoun{nom: [3]string{"минута", "минуты", "минут"}, acc: "минуту"}
@@ -256,6 +354,17 @@ var (
 	nounDay    = ruNoun{nom: [3]string{"день", "дня", "дней"}, acc: "день"}
 	nounMonth  = ruNoun{nom: [3]string{"месяц", "месяца", "месяцев"}, acc: "месяц"}
 	nounYear   = ruNoun{nom: [3]string{"год", "года", "лет"}, acc: "год"}
+
+	// The nouns of the status line. "Раз" has an unusual shape: the third
+	// form is the same as the first, because five times is "пять раз", not
+	// "пять разов". The error carries a genitive, because "после" wants one.
+	nounTime      = ruNoun{nom: [3]string{"раз", "раза", "раз"}, acc: "раз"}
+	nounCandidate = ruNoun{nom: [3]string{"кандидат", "кандидата", "кандидатов"}, acc: "кандидата"}
+	nounError     = ruNoun{
+		nom: [3]string{"ошибка", "ошибки", "ошибок"},
+		acc: "ошибки",
+		gen: [3]string{"ошибки", "ошибок", "ошибок"},
+	}
 )
 
 // pluralForm picks which of the three Russian plural forms a count takes.

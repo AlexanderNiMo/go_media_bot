@@ -1,0 +1,36 @@
+{{define "content"}}
+{{/*
+  The confirmation before a cancellation.
+
+  The page says what will happen before it offers the button, because the
+  thing that is not obvious is the thing that matters: a cancelled download
+  takes its files off the disk. The wording is generated from the request's
+  state — a request waiting for the rest of a season keeps its episodes,
+  because they are already in Plex.
+
+  The action is a POST on the same path the GET is on: a link brings the
+  person here, a form does the cancelling.
+*/}}
+{{with .Request}}
+<div class="confirm">
+  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+  <div>
+    <h1>Отменить запрос?</h1>
+    <p class="muted">{{.Title}}</p>
+  </div>
+</div>
+
+<h3>Что произойдёт</h3>
+<ul class="consequences">
+  {{range $.Consequences}}<li>{{.}}</li>{{end}}
+</ul>
+
+<div class="actions">
+  <form method="post" action="{{.CancelHref}}">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <button type="submit" class="small">Отменить запрос</button>
+  </form>
+  <a role="button" class="small secondary" href="{{.Href}}">Не отменять</a>
+</div>
+{{end}}
+{{end}}

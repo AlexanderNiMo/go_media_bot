@@ -24,6 +24,23 @@
       } catch (e) {}
     })();
   </script>
+  <script>
+    // Theme persistence: 'auto' (whatever the operating system says),
+    // 'light' or 'dark'. Applied before paint, so a reader who chose the
+    // dark theme never sees the light one first.
+    //
+    // 'auto' is the absence of the attribute: Pico reads data-theme when it
+    // is there and falls back to prefers-color-scheme when it is not, which
+    // is exactly what "auto" means.
+    (function () {
+      try {
+        var t = localStorage.getItem('mediad.theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+        }
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <header class="top">

@@ -4,10 +4,9 @@
 
   A form cannot be nested in HTML: the parser drops the inner <form>
   element, and its controls — including a submit button — become part of
-  the outer form. The active table sits between the two filter rows, so a
-  single form around both rows swallowed the table's own cancel form: the
-  button submitted the filter form instead, and the request was never
-  cancelled.
+  the outer form. The filter rows sit above the buckets, and the buckets'
+  tables hold the cancel links, so a single form around both rows would
+  have swallowed a link that belongs to a table.
 
   So each filter row gets its own form, and each one mirrors the other
   form's controls as hidden inputs. A submission still carries the whole
@@ -19,24 +18,72 @@
   follows the new filter because the URL changes too.
 */}}
 
-<details open class="block" id="block-active">
-  <summary>
-    <span class="title">Что качается</span>
-    <span class="muted count">{{len .Active}}</span>
-  </summary>
+<form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
+  <div class="filter-row shared-filters">
+    {{/*
+      The scope: whose requests this wall shows. The administrator's scope
+      is "all" and is not offered as a choice — there is nothing to choose,
+      and the requests nobody is watching are exactly the ones an operator
+      has to see.
+    */}}
+    {{if .Filter.ShowScope}}
+      <span class="muted">показывать</span>
+      <label class="pill" title="Все запросы установки">
+        <input type="radio" name="scope" value="all"
+               {{if eq .Filter.Scope "all"}}checked{{end}}
+               onchange="this.form.submit()">
+        <span>{{scopeLabel "all"}}</span>
+      </label>
+      <label class="pill" title="Запросы, которые вы смотрите">
+        <input type="radio" name="scope" value="mine"
+               {{if eq .Filter.Scope "mine"}}checked{{end}}
+               onchange="this.form.submit()">
+        <span>{{scopeLabel "mine"}}</span>
+      </label>
+    {{end}}
+    <input type="text" name="q" value="{{.Filter.Q}}" placeholder="поиск" autocomplete="off" class="js-auto pill-input" aria-label="поиск по запросам">
+    <label class="muted">тип
+      <select name="type" onchange="this.form.submit()">
+        <option value="" {{if eq .Filter.Type ""}}selected{{end}}>все</option>
+        <option value="movie" {{if eq .Filter.Type "movie"}}selected{{end}}>фильмы</option>
+        <option value="tv" {{if eq .Filter.Type "tv"}}selected{{end}}>сериалы</option>
+      </select>
+    </label>
+    <label class="muted">сортировка
+      <select name="sort" onchange="this.form.submit()">
+        <option value="date" {{if eq .Filter.Sort "date"}}selected{{end}}>по дате</option>
+        <option value="waiting" {{if eq .Filter.Sort "waiting"}}selected{{end}}>по ожиданию</option>
+        <option value="title" {{if eq .Filter.Sort "title"}}selected{{end}}>по названию</option>
+      </select>
+    </label>
+    <label class="muted">период
+      <select name="since" onchange="this.form.submit()">
+        <option value="" {{if eq .Filter.Since ""}}selected{{end}}>за всё время</option>
+        <option value="24h" {{if eq .Filter.Since "24h"}}selected{{end}}>за сутки</option>
+        <option value="7d" {{if eq .Filter.Since "7d"}}selected{{end}}>за неделю</option>
+        <option value="30d" {{if eq .Filter.Since "30d"}}selected{{end}}>за месяц</option>
+      </select>
+    </label>
 
-  <form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
-    <div class="filter-row state-pills">
-      <span class="muted">состояния:</span>
-      {{range .ActiveAll}}
-        <label class="pill {{if and $.Filter.ActiveSubs (not (hasString $.Filter.ActiveSubs .))}}off{{end}}">
-          <input type="checkbox" name="state" value="{{.}}"
-                 {{if or (not $.Filter.ActiveSubs) (hasString $.Filter.ActiveSubs .)}}checked{{end}}
-                 onchange="this.form.submit()">
-          <span>{{stateLabel .}}</span>
-        </label>
-      {{end}}
-    </div>
+    {{/*
+      The state pills are in the other form. Mirrored here so changing the
+      period carries the selection along instead of dropping it.
+    */}}
+    {{range .Filter.MirrorStates}}<input type="hidden" name="state" value="{{.}}">{{end}}
+  </div>
+</form>
+
+<form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
+  <div class="filter-row state-pills">
+    <span class="muted">состояния:</span>
+    {{range .ActiveAll}}
+      <label class="pill {{if and $.Filter.ActiveSubs (not (hasString $.Filter.ActiveSubs .))}}off{{end}}">
+        <input type="checkbox" name="state" value="{{.}}"
+               {{if or (not $.Filter.ActiveSubs) (hasString $.Filter.ActiveSubs .)}}checked{{end}}
+               onchange="this.form.submit()">
+        <span>{{stateLabel .}}</span>
+      </label>
+    {{end}}
 
     {{/*
       The shared filters are in the other form. Mirrored here so a pill
@@ -46,23 +93,34 @@
     {{with .Filter.Type}}<input type="hidden" name="type" value="{{.}}">{{end}}
     {{with .Filter.Sort}}<input type="hidden" name="sort" value="{{.}}">{{end}}
     {{with .Filter.Since}}<input type="hidden" name="since" value="{{.}}">{{end}}
-  </form>
-
-  {{/*
-    The fragment polls every three seconds. The URL embeds the current
-    filter, so a reload after the user changes the form follows the new
-    filter; htmx replaces only the table body.
-
-    It is deliberately outside the filter form: the table carries the
-    cancel form, and a form inside a form does not survive the HTML
-    parser.
-  */}}
-  <div hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
-       hx-trigger="every 3s"
-       hx-swap="innerHTML">
-    {{template "active_table" .}}
+    {{if .Filter.ShowScope}}<input type="hidden" name="scope" value="{{.Filter.Scope}}">{{end}}
   </div>
+</form>
+
+{{/*
+  The poll. Its response carries the three tables and the three counts as
+  out-of-band swaps, so the blocks themselves are never replaced: a reader
+  who has collapsed one keeps it collapsed, and a reader typing in the
+  search box keeps what they typed.
+*/}}
+<div hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
+     hx-trigger="every 3s"
+     hx-swap="none"></div>
+
+{{/*
+  The three buckets. They are split by how long a thing takes, not by which
+  phase of the workflow it is in: a transfer takes seconds and a parked
+  request takes two years.
+*/}}
+{{range .List}}
+<details open class="block" id="block-{{.Key}}">
+  <summary>
+    <span class="title">{{.Title}}</span>
+    <span class="muted count" id="count-{{.Key}}">{{len .Rows}}</span>
+  </summary>
+  <div id="table-{{.Key}}">{{template "bucket_table" .}}</div>
 </details>
+{{end}}
 
 <details open class="block" id="block-recent">
   <summary>
@@ -70,51 +128,24 @@
     <span class="muted count">{{len .Recent}}</span>
   </summary>
 
-  <form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
-    <div class="filter-row shared-filters">
-      <input type="text" name="q" value="{{.Filter.Q}}" placeholder="поиск" autocomplete="off" class="js-auto pill-input" aria-label="поиск по запросам">
-      <label class="muted">тип
-        <select name="type" onchange="this.form.submit()">
-          <option value="" {{if eq .Filter.Type ""}}selected{{end}}>все</option>
-          <option value="movie" {{if eq .Filter.Type "movie"}}selected{{end}}>фильмы</option>
-          <option value="tv" {{if eq .Filter.Type "tv"}}selected{{end}}>сериалы</option>
-        </select>
-      </label>
-      <label class="muted">сортировка
-        <select name="sort" onchange="this.form.submit()">
-          <option value="date" {{if eq .Filter.Sort "date"}}selected{{end}}>по дате</option>
-          <option value="title" {{if eq .Filter.Sort "title"}}selected{{end}}>по названию</option>
-        </select>
-      </label>
-      <label class="muted">период
-        <select name="since" onchange="this.form.submit()">
-          <option value="" {{if eq .Filter.Since ""}}selected{{end}}>за всё время</option>
-          <option value="24h" {{if eq .Filter.Since "24h"}}selected{{end}}>за сутки</option>
-          <option value="7d" {{if eq .Filter.Since "7d"}}selected{{end}}>за неделю</option>
-          <option value="30d" {{if eq .Filter.Since "30d"}}selected{{end}}>за месяц</option>
-        </select>
-      </label>
-    </div>
-
-    {{/*
-      The state pills are in the other form. Mirrored here so changing the
-      period carries the selection along instead of dropping it.
-    */}}
-    {{range .Filter.MirrorStates}}<input type="hidden" name="state" value="{{.}}">{{end}}
-  </form>
-
   {{if .Recent}}
-    <table>
-      <thead><tr><th colspan="2">Что</th><th>Состояние</th><th>Итог</th></tr></thead>
+    <table role="table" class="table-cards">
+      <thead>
+        <tr role="row">
+          <th role="columnheader" colspan="2">Что</th>
+          <th role="columnheader">Состояние</th>
+          <th role="columnheader">Итог</th>
+        </tr>
+      </thead>
       <tbody>
       {{range .Recent}}
-        <tr>
-          <td class="thumb">
-            {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
+        <tr role="row">
+          <td role="cell" class="thumb" data-label="">
+            {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
           </td>
-          <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
-          <td><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
-          <td class="muted">{{.Detail}}</td>
+          <td role="cell" class="what" data-label=""><a href="{{.Href}}">{{.Title}}</a></td>
+          <td role="cell" data-label="Состояние"><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
+          <td role="cell" data-label="Итог" class="muted">{{.Detail}}</td>
         </tr>
       {{end}}
       </tbody>
@@ -129,7 +160,7 @@
   // the sidebar. Read once here so the page renders with the right state
   // (no flash); the toggle handler on the <details> element writes back.
   (function () {
-    var blocks = ["active", "recent"];
+    var blocks = ["downloading", "searching", "waiting", "recent"];
     try {
       blocks.forEach(function (name) {
         var el = document.getElementById("block-" + name);
@@ -163,45 +194,4 @@
     } catch (e) {}
   })();
 </script>
-{{end}}
-
-{{define "active_table"}}
-{{/*
-  The active fragment is rendered into the dashboard, polled every 3s.
-  Same shape as before; the dashboard's filter controls sit OUTSIDE this
-  fragment so a poll does not undo what the user just typed in the search
-  field.
-*/}}
-{{if .Active}}
-<table>
-  <thead>
-    <tr><th colspan="2">Что</th><th>Состояние</th><th>Прогресс</th><th></th></tr>
-  </thead>
-  <tbody>
-  {{range .Active}}
-    <tr>
-      <td class="thumb">
-        {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
-      </td>
-      <td>
-        <a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a>
-        {{if .Watchers}}<span class="muted"> · {{.Watchers}}</span>{{end}}
-      </td>
-      <td><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
-      <td>{{template "progress" .}}</td>
-      <td class="actions">
-        <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">
-          {{/* $, not ., because inside the range "." is the row: the token
-               belongs to the page, which is one level out. */}}
-          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-          <button type="submit" class="link small">отменить</button>
-        </form>
-      </td>
-    </tr>
-  {{end}}
-  </tbody>
-</table>
-{{else}}
-<p class="muted">Ничего не качается.</p>
-{{end}}
 {{end}}
