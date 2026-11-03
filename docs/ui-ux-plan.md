@@ -1,7 +1,7 @@
 # UI/UX Project Plan — `mediad`
 
 **Date:** 2026-11-03 (Phase 1b and D5 added 2026-11-04)
-**Status:** Phase 0 and Phase 1b shipped; the rest of Phase 1 is not implemented
+**Status:** Phase 0, Phase 1a and Phase 1b shipped; the rest of Phase 1 is not implemented
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
@@ -957,7 +957,7 @@ than the plan:
 *The highest-value phase; it ships on its own if the rest never happens.* Split
 into three sub-phases so it can be cut at a week boundary if it runs long.
 
-#### Phase 1a — The horizon (Week 2)
+#### Phase 1a — The horizon (Week 2) — **shipped**
 
 - Dashboard restructured into **Качается / Ищет / Ждёт выбора** (§3.2).
 - New row fields: **age**, **next check** (`NextRunAt`), attempt count.
@@ -967,6 +967,28 @@ into three sub-phases so it can be cut at a week boundary if it runs long.
 
 > **Success metric:** in a follow-up session, ≥80% of participants correctly
 > state what the bot is doing right now (T3).
+
+#### What Phase 1a actually shipped
+
+| Planned | Shipped | Why it differs |
+|---|---|---|
+| Three buckets on the dashboard | Shipped, with **one query per bucket** | A single query with a limit lets a busy bucket starve a quiet one: fifty downloads in progress and nothing from the parking list |
+| The poll replaces the table | The poll replaces **the tables and the counts, out of band**, and leaves the blocks alone | A poll that replaced the `<details>` blocks would throw away whether the reader has them open. htmx's `hx-swap-oob` swaps the contents in place; the requester carries `hx-swap="none"` |
+| Age, next check, attempt count as row fields | Shipped, and each bucket carries **only the columns that mean something there** | A transfer has no age and no next check — there is nothing to wait for. One table template, switched on the bucket, so a table and its columns cannot drift apart |
+| The generated «Статус» line | Shipped, one sentence per state | — |
+| "По ожиданию" as a sort inside «Ищет» | Shipped as a **global** sort (`created_at ASC`) | The buckets share one query's sort. A per-bucket sort would need a second query, and the plan's own point — a list of the things you asked for a year ago — is served by the global one |
+| — | The period filter **no longer touches the buckets** | It always did, and the fragment's own comment said it should not: "Since is intentionally dropped here: it is a window for the Recent block, not the Active one." A request that has been searching for four months must not disappear because somebody asked for the last day |
+| — | The decimal separator is a **comma** | `humanBytes` and the progress text wrote "21.0 ГиБ" with a dot — the machine's separator, in a Russian interface. A size that says "21.0 ГиБ" reads as a machine talking |
+
+**One thing the plan did not ask for.** The status line needed a sentence for
+a request that failed, and the sentence needed a count: «Поиск остановлен
+после 3 ошибок подряд.» That is the **genitive** plural — "после 3 ошибок",
+not "после 3 ошибки" — and the vocabulary had no case for it. `ruNoun` grew a
+`gen` field and a `countG`, because the noun table is where a case belongs,
+and the alternative was a sentence that was wrong in a way only a Russian
+speaker would notice.
+
+> Commit: `web: the horizon — three buckets and a status line`.
 
 #### Phase 1b — Safety slices (Week 3)
 

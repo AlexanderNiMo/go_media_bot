@@ -334,12 +334,42 @@ action as a link, the table carries no form at all.
 
 ### Below 768 px the dashboard's tables are cards
 
-`table.cards` in `internal/web/views/static/style.css`. One DOM, two
+`table.table-cards` in `internal/web/views/static/style.css`. One DOM, two
 renderings: `data-label` on every cell becomes the field's label, and
 the explicit `role="table"` / `role="row"` / `role="cell"` /
 `role="columnheader"` keep the table semantics that `display: block`
 takes away in Safari and VoiceOver. The candidate table and the events
 table are **not** cards yet — that is Phase 3.
+
+**The class is `table-cards`, not `cards`.** `.cards` is already the
+search-results grid (`display: grid`), and a table that inherits it turns
+into a grid of cells. The two were confused once.
+
+### The dashboard is three buckets, and the poll swaps out of band
+
+`internal/web/views.go` (`dashboardBuckets`), `internal/web/views/fragments.html`.
+
+The buckets are split by **how long a thing takes**, not by workflow phase:
+«Качается» (transfers), «Ищет» (parked requests), «Ждёт выбора» (the ones
+that need a person). A request searching for four months and a download at
+90% are different products.
+
+Two things that are easy to break:
+
+- **One query per bucket.** A single query with a limit lets a busy bucket
+  starve a quiet one — fifty downloads in progress and nothing from the
+  parking list.
+- **The poll swaps out of band.** `/fragments/active` returns the three
+  tables and the three counts with `hx-swap-oob="true"`, and the requester
+  carries `hx-swap="none"`. The blocks stay on the page, so a poll never
+  replaces a `<details>` the reader has collapsed. A renamed id breaks this
+  *silently* — htmx drops an out-of-band element whose target is missing —
+  which is why `TestTheFragmentCarriesTheBucketsOutOfBand` checks the ids
+  in both directions.
+
+The period filter («за сутки» and friends) applies to «Недавно» only. It
+used to apply to the active list too, which made a request that had been
+searching for four months disappear.
 
 ---
 

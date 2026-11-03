@@ -634,12 +634,20 @@ closed and accounts exist only by invite.
 
 | Page | What it is for |
 |---|---|
-| Dashboard | what is being downloaded right now, with a progress bar that updates every three seconds |
+| Dashboard | three buckets — what is downloading, what is still looking, and what is waiting for a person |
 | Search | TMDB search, then a season picker for a series, then a confirmation |
 | Requests | everything, filterable by state |
-| One request | the release, the torrent, the deadlines, the audit trail, and a release you attach by hand |
+| One request | one sentence saying what the bot is doing, then the release, the torrent, the deadlines, the audit trail, and a release you attach by hand |
 | Notifications | the same rows the Telegram bot delivers from |
 | Settings | password change; invites and users for an administrator |
+
+**The dashboard is split by how long a thing takes, not by what phase it is
+in.** «Качается» holds the transfers, with a progress bar that updates every
+three seconds. «Ищет» holds the parked ones — the age, the next check and the
+attempt count, because a request that has been looking for four months has to
+*look* like it. «Ждёт выбора» holds the ones that need a person, and they get
+the action that unblocks them. Sorting by «по ожиданию» puts the longest wait
+first, which is the list that makes the two-year horizon real.
 
 **Who sees what.** A request has no owner — it is one global object that
 people attach themselves to — so the dashboard carries a scope: «все», every
@@ -675,7 +683,10 @@ polling the queue. An interface built on it shows an empty page whenever the
 worker is restarting, which is exactly when somebody is looking.
 
 **One piece of live behaviour, and it is HTMX.** The dashboard polls
-`/fragments/active` every three seconds and swaps the table. Everything else is
+`/fragments/active` every three seconds. The response carries the three
+tables and their counts as out-of-band swaps, so the blocks themselves are
+never replaced — a reader who has collapsed one keeps it collapsed, and a
+reader typing in the search box keeps what they typed. Everything else is
 a plain form post and a redirect, so the interface works with JavaScript
 disabled except for the progress bar. `htmx.min.js` is vendored into
 `internal/web/views/static` rather than loaded from a CDN — a self-hosted
