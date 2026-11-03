@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/alex/mediad/internal/config"
+	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
 )
@@ -1321,6 +1322,54 @@ func TestThePolledFragmentKeepsTheScope(t *testing.T) {
 	qs := f.ActiveFragmentQS()
 	if !strings.Contains(qs, "scope=mine") {
 		t.Errorf("the fragment query %q does not carry the scope", qs)
+	}
+}
+
+// TestTheRequestPageSaysWhoAsked — "who asked for this" and "who watches
+// it" are different questions, and only the second had an answer.
+//
+// The requester's name comes from the request itself, so the page shows it
+// even when somebody else is watching.
+func TestTheRequestPageSaysWhoAsked(t *testing.T) {
+	s, store := newTestServer(t)
+	c := signedIn(t, s)
+	ctx := context.Background()
+
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) == 0 {
+		t.Fatal("the setup created no account")
+	}
+
+	var mediaID int64
+	err = store.Pool().QueryRow(ctx,
+		`INSERT INTO media (media_type, tmdb_id, title, title_ru, year)
+		 VALUES ('movie', 603, 'The Matrix', 'Матрица', 1999)
+		 RETURNING id`).Scan(&mediaID)
+	if err != nil {
+		t.Fatalf("insert media: %v", err)
+	}
+
+	req, err := store.CreateRequest(ctx, storage.CreateRequestInput{
+		WorkflowID:     "movie-603",
+		SearchDeadline: time.Now().Add(48 * time.Hour),
+		NextRunAt:      time.Now().Add(time.Minute),
+		RequestedBy:    users[0].ID,
+		Spec: domain.MediaSpec{
+			Ref:   domain.MediaRef{Type: domain.MediaTypeMovie, TMDBID: 603},
+			Title: "The Matrix",
+			Year:  1999,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+
+	body := c.body("/requests/" + strconv.FormatInt(req.ID, 10))
+	if !strings.Contains(body, "Запросил: alex") {
+		t.Errorf("the request page does not say who asked: %s", truncateForTest(body, 400))
 	}
 }
 

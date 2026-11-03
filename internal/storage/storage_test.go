@@ -515,6 +515,41 @@ func TestRequestViewJoinsMedia(t *testing.T) {
 	}
 }
 
+// TestRequestKeepsWhoAskedForIt — the requester is a fact about the request,
+// not something the interface has to infer from the watcher list.
+//
+// Anybody may attach themselves to a request, so the people who watch it are
+// not the people who asked for it, and "who asked" has to be stored.
+func TestRequestKeepsWhoAskedForIt(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+
+	insertMedia(t, pool, "movie", 603, nil, "The Matrix")
+
+	req, err := store.CreateRequest(ctx, CreateRequestInput{
+		WorkflowID:     "movie-603",
+		SearchDeadline: time.Now().Add(48 * time.Hour),
+		NextRunAt:      time.Now().Add(time.Minute),
+		RequestedBy:    4242,
+		Spec: domain.MediaSpec{
+			Ref:   domain.MediaRef{Type: domain.MediaTypeMovie, TMDBID: 603},
+			Title: "The Matrix",
+			Year:  1999,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRequest: %v", err)
+	}
+
+	read, err := store.GetRequest(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if read.RequestedBy != 4242 {
+		t.Errorf("requested_by = %d, want 4242", read.RequestedBy)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

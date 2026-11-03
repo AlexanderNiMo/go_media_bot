@@ -11,6 +11,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/release"
 	"github.com/alex/mediad/internal/storage"
 )
 
@@ -145,6 +146,9 @@ func fixtures(t *testing.T) map[string]any {
 			{At: now, Event: "no detail", Actor: "workflow"},
 			{At: now, Event: "broken detail", Detail: []byte(`not json`)},
 		}, 0, now, "")
+	// The requirements are filled in by the handler, which has the policy;
+	// the fixture uses the default one so the panel is not empty.
+	detail.Requirements = requirementsFor(release.DefaultProfile(), req.Media)
 
 	return map[string]any{
 		"dashboard": dashboardView{
@@ -205,7 +209,10 @@ func fixtures(t *testing.T) map[string]any {
 			}},
 		},
 		"settings": settingsView{
-			page:      testPage(),
+			page: testPage(),
+			// The tab the handler defaults to. Without it every panel is
+			// hidden, and the fixture would render an empty page.
+			Tab:       "account",
 			Invites:   []inviteRow{{Code: "abc", CreatedAt: "2026-01-01", ExpiresAt: "2026-01-08", State: "действует"}},
 			Users:     []storage.User{{ID: 1, Username: "alex", IsAdmin: true}, {ID: 2}},
 			InviteTTL: "7 дн",
@@ -889,6 +896,112 @@ func TestTheDashboardHasTheThreeBuckets(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the dashboard does not show %q", want)
 		}
+	}
+}
+
+// TestTheRequestPageShowsTheStoryFirst — the page is in the order the plan
+// puts it: who asked, what the bot is doing, what it is looking for, and
+// the machine's own view behind one disclosure.
+//
+// The disclosure is the point of the last part: an operator needs the
+// workflow id and the event log, and a reader does not. It is there rather
+// than deleted, one click away.
+func TestTheRequestPageShowsTheStoryFirst(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "request", fixtures(t)["request"])
+
+	body := rec.Body.String()
+	for _, want := range []string{"Требования", "Расширенное"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the request page does not have %q", want)
+		}
+	}
+
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	// The disclosure holds the machinery, and it starts closed.
+	var advanced *html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "details" && attrForTest(n, "id") == "request-advanced" {
+			advanced = n
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if advanced == nil {
+		t.Fatal("the request page has no advanced disclosure")
+	}
+	if _, open := attrOf(advanced, "open"); open {
+		t.Error("the advanced disclosure is open; it is meant to start closed")
+	}
+
+	// The workflow id and the event log live inside it.
+	var inside func(*html.Node) string
+	inside = func(n *html.Node) string {
+		var sb strings.Builder
+		sb.WriteString(textOf(n))
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			sb.WriteString(inside(c))
+		}
+		return sb.String()
+	}
+	if !strings.Contains(inside(advanced), "tv-1399-s2") {
+		t.Error("the workflow id is not inside the advanced disclosure")
+	}
+}
+
+// TestTheThemePickerIsOffered — the theme is a choice of the reader, and it
+// is offered in the settings next to the other account preferences.
+//
+// The choice is kept in the browser rather than on the account: two people
+// sharing a machine may want different themes, and the setting is applied
+// before the first paint so a dark-theme reader never sees a light page
+// first.
+func TestTheThemePickerIsOffered(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "settings", fixtures(t)["settings"])
+
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	values := map[string]bool{}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "input" &&
+			strings.EqualFold(attrForTest(n, "type"), "radio") &&
+			attrForTest(n, "name") == "theme" {
+			values[attrForTest(n, "value")] = true
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	for _, want := range []string{"auto", "light", "dark"} {
+		if !values[want] {
+			t.Errorf("the theme picker has no %q option", want)
+		}
+	}
+
+	// The layout applies the saved theme before the first paint.
+	layout := httptest.NewRecorder()
+	s.render(layout, httptest.NewRequest(http.MethodGet, "/", nil), "help", fixtures(t)["help"])
+	if !strings.Contains(layout.Body.String(), "mediad.theme") {
+		t.Error("the layout does not read the saved theme")
 	}
 }
 
