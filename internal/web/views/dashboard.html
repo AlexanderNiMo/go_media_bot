@@ -46,6 +46,7 @@
     {{with .Filter.Type}}<input type="hidden" name="type" value="{{.}}">{{end}}
     {{with .Filter.Sort}}<input type="hidden" name="sort" value="{{.}}">{{end}}
     {{with .Filter.Since}}<input type="hidden" name="since" value="{{.}}">{{end}}
+    {{if .Filter.ShowScope}}<input type="hidden" name="scope" value="{{.Filter.Scope}}">{{end}}
   </form>
 
   {{/*
@@ -72,6 +73,27 @@
 
   <form method="get" action="{{path .BasePath "/"}}" class="dashboard-form">
     <div class="filter-row shared-filters">
+      {{/*
+        The scope: whose requests this wall shows. The administrator's scope
+        is "all" and is not offered as a choice — there is nothing to choose,
+        and the requests nobody is watching are exactly the ones an operator
+        has to see.
+      */}}
+      {{if .Filter.ShowScope}}
+        <span class="muted">показывать</span>
+        <label class="pill" title="Все запросы установки">
+          <input type="radio" name="scope" value="all"
+                 {{if eq .Filter.Scope "all"}}checked{{end}}
+                 onchange="this.form.submit()">
+          <span>{{scopeLabel "all"}}</span>
+        </label>
+        <label class="pill" title="Запросы, которые вы смотрите">
+          <input type="radio" name="scope" value="mine"
+                 {{if eq .Filter.Scope "mine"}}checked{{end}}
+                 onchange="this.form.submit()">
+          <span>{{scopeLabel "mine"}}</span>
+        </label>
+      {{end}}
       <input type="text" name="q" value="{{.Filter.Q}}" placeholder="поиск" autocomplete="off" class="js-auto pill-input" aria-label="поиск по запросам">
       <label class="muted">тип
         <select name="type" onchange="this.form.submit()">
@@ -104,17 +126,23 @@
   </form>
 
   {{if .Recent}}
-    <table>
-      <thead><tr><th colspan="2">Что</th><th>Состояние</th><th>Итог</th></tr></thead>
+    <table role="table" class="cards cards-recent">
+      <thead>
+        <tr role="row">
+          <th role="columnheader" colspan="2">Что</th>
+          <th role="columnheader">Состояние</th>
+          <th role="columnheader">Итог</th>
+        </tr>
+      </thead>
       <tbody>
       {{range .Recent}}
-        <tr>
-          <td class="thumb">
+        <tr role="row">
+          <td role="cell" class="thumb" data-label="">
             {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
           </td>
-          <td><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
-          <td><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
-          <td class="muted">{{.Detail}}</td>
+          <td role="cell" class="what" data-label=""><a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a></td>
+          <td role="cell" data-label="Состояние"><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
+          <td role="cell" data-label="Итог" class="muted">{{.Detail}}</td>
         </tr>
       {{end}}
       </tbody>
@@ -173,29 +201,40 @@
   field.
 */}}
 {{if .Active}}
-<table>
+{{/*
+  The table is a table on a wide screen and a card on a narrow one — one
+  DOM, two renderings, chosen by CSS. The roles are written out because
+  `display: block` takes the table semantics away in Safari and VoiceOver:
+  the cells would be read as a stream of unrelated text. The DOM order is
+  unchanged, so the reading order is still the logical one.
+
+  The cancel action is a link, not a form: it leads to the page that says
+  what cancelling will do, and the table holds no form at all — which is
+  also what keeps the filter form and this one from swallowing each other.
+*/}}
+<table role="table" class="cards cards-active">
   <thead>
-    <tr><th colspan="2">Что</th><th>Состояние</th><th>Прогресс</th><th></th></tr>
+    <tr role="row">
+      <th role="columnheader" colspan="2">Что</th>
+      <th role="columnheader">Состояние</th>
+      <th role="columnheader">Прогресс</th>
+      <th role="columnheader"></th>
+    </tr>
   </thead>
   <tbody>
   {{range .Active}}
-    <tr>
-      <td class="thumb">
+    <tr role="row">
+      <td role="cell" class="thumb" data-label="">
         {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
       </td>
-      <td>
+      <td role="cell" class="what" data-label="">
         <a href="{{path $.BasePath "/requests/"}}{{.ID}}">{{.Title}}</a>
         {{if .Watchers}}<span class="muted"> · {{.Watchers}}</span>{{end}}
       </td>
-      <td><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
-      <td>{{template "progress" .}}</td>
-      <td class="actions">
-        <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">
-          {{/* $, not ., because inside the range "." is the row: the token
-               belongs to the page, which is one level out. */}}
-          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-          <button type="submit" class="link small">отменить</button>
-        </form>
+      <td role="cell" data-label="Состояние"><span class="state {{stateClass .State}}">{{stateLabel .State}}</span></td>
+      <td role="cell" data-label="Прогресс">{{template "progress" .}}</td>
+      <td role="cell" class="actions" data-label="Действие">
+        <a class="link small" href="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">отменить</a>
       </td>
     </tr>
   {{end}}

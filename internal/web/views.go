@@ -127,6 +127,20 @@ type dashboardView struct {
 	ActiveAll []storage.State
 }
 
+// cancelView is the confirmation page for a cancellation.
+//
+// The page exists because cancelling is not only a matter of stopping a
+// search: the workflow takes the files of a download that has not been filed
+// into the library yet off the disk. A button that says "Отменить" and
+// nothing else hides that, and the person who finds out is the one who paid.
+type cancelView struct {
+	page
+	Request requestDetail
+	// Consequences are the lines that say what will happen, in the order a
+	// person reads them.
+	Consequences []string
+}
+
 type activeFragmentView struct {
 	page
 	Filter    dashboardFilter
@@ -505,6 +519,53 @@ func plexText(r *storage.Request) string {
 		return "есть в библиотеке"
 	default:
 		return "нет в библиотеке"
+	}
+}
+
+// cancelConsequences says what a cancellation will do to this request.
+//
+// The rules come from the workflow, not from this page. A cancelled download
+// has its files deleted — it was never filed into the library, so nothing on
+// the disk is somebody's. The exception is a request waiting for the rest of
+// a season: its pack is finished and already in Plex, and deleting those
+// files would take off the disk the episodes somebody is watching.
+//
+// The state is read at render time, which is as close to the truth as a
+// confirmation page can get: the request may move on between the page being
+// rendered and the button being pressed.
+func cancelConsequences(r *storage.Request) []string {
+	out := []string{"Поиск остановится: запрос больше не будет проверяться."}
+
+	switch {
+	case r.State == storage.StateOngoing:
+		out = append(out,
+			"Торрент будет удалён из клиента, но уже скачанные серии останутся на диске — "+
+				"они уже в Plex.")
+	case r.QbitHash != "":
+		out = append(out,
+			"Торрент и уже скачанные файлы будут удалены с диска.")
+	default:
+		out = append(out,
+			"На диске ничего нет: загрузка ещё не началась.")
+	}
+
+	out = append(out,
+		"Сам запрос останется в истории, и его можно будет запустить снова.")
+	return out
+}
+
+// cancelOutcome is the one-line answer after a cancellation.
+//
+// The same rule as the confirmation, in one sentence: what happened to the
+// files is the part somebody will want to know an hour later.
+func cancelOutcome(r *storage.Request) string {
+	switch {
+	case r.State == storage.StateOngoing:
+		return "Запрос отменён. Торрент удалён, скачанные серии остались на диске."
+	case r.QbitHash != "":
+		return "Запрос отменён. Торрент и скачанные файлы удалены."
+	default:
+		return "Запрос отменён."
 	}
 }
 

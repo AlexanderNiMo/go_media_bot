@@ -138,6 +138,10 @@ func (s *Server) routes() http.Handler {
 		r.Post("/requests", s.handleCreateRequest)
 		r.Get("/requests", s.handleRequests)
 		r.Get("/requests/{id}", s.handleRequest)
+		// The confirmation comes before the action: a GET that says what
+		// cancelling will do, and a POST that does it. The same path, two
+		// methods, so the button on the dashboard can be a plain link.
+		r.Get("/requests/{id}/cancel", s.handleCancelConfirm)
 		r.Post("/requests/{id}/cancel", s.handleCancel)
 		r.Post("/requests/{id}/retry", s.handleRetry)
 		r.Post("/requests/{id}/manual", s.handleManualRelease)

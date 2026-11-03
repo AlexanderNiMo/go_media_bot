@@ -27,10 +27,13 @@
 
 <div class="actions">
   {{if .Active}}
-    <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">
-      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-      <button type="submit" class="small">Отменить</button>
-    </form>
+    {{/*
+      Cancelling asks first: it can take a half-downloaded file off the
+      disk, and a button that says "Отменить" and nothing else hides that.
+      A link, because the page that follows is a GET that states the
+      consequence — and because the table on the dashboard holds no form.
+    */}}
+    <a role="button" class="small" href="{{path $.BasePath "/requests/"}}{{.ID}}/cancel">Отменить</a>
   {{else}}
     <form method="post" action="{{path $.BasePath "/requests/"}}{{.ID}}/retry">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
@@ -59,7 +62,11 @@
   <thead><tr><th>#</th><th>Релиз</th><th>Размер</th><th>Сидеры</th><th>Отклонён по</th><th></th></tr></thead>
   <tbody>
   {{range $.Candidates}}
-    <tr>
+    {{/* The action follows the reason: a release refused on principle gets
+         no button at all, and the row is dimmed to say so. A release refused
+         on quality gets a button that says it is an overrule. */}}
+    {{$pick := candidatePick .RejectionReason}}
+    <tr{{if eq (reasonTone .RejectionReason) "danger"}} class="refused"{{end}}>
       <td class="mono">{{.Rank}}</td>
       <td>
         <div class="mono">{{.Title}}</div>
@@ -71,11 +78,15 @@
         <span class="reason {{reasonTone .RejectionReason}}">{{reasonLabel .RejectionReason}}</span>
       </td>
       <td>
-        <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
-          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-          <input type="hidden" name="rank" value="{{.Rank}}">
-          <button type="submit" class="small">Скачать это</button>
-        </form>
+        {{if $pick.Label}}
+          <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="rank" value="{{.Rank}}">
+            <button type="submit" class="small{{if $pick.Secondary}} secondary{{end}}">{{$pick.Label}}</button>
+          </form>
+        {{else}}
+          <span class="muted" aria-hidden="true">—</span>
+        {{end}}
       </td>
     </tr>
   {{end}}

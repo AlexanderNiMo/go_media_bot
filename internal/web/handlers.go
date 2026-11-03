@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,17 @@ type dashboardFilter struct {
 	Sort       string   // "date" (default) / "title"
 	Since      string   // "24h" / "7d" / "30d" / "" (none = no limit)
 	ActiveSubs []string // subset of ActiveStates the user wants shown; empty = all
+
+	// Scope is "all" or "mine": every request in the installation, or the
+	// ones this person is watching.
+	Scope string
+	// ShowScope says whether the scope is a choice. It is not for the
+	// administrator, whose scope is always "all" — there is nothing to
+	// offer a control for.
+	ShowScope bool
+	// WatcherUserID is the user the "mine" scope filters on. Zero means no
+	// watcher filter, which is the "all" scope.
+	WatcherUserID int64
 }
 
 // toStorage turns the parsed values into a storage.RequestFilter. Since and
@@ -46,12 +58,13 @@ type dashboardFilter struct {
 func (f dashboardFilter) toStorage(activeDefaultLimit int, recentLimit int) (active storage.RequestFilter, recent storage.RequestFilter) {
 	common := func(states []storage.State, limit int) storage.RequestFilter {
 		return storage.RequestFilter{
-			States:      states,
-			MediaType:   domain.MediaType(f.Type),
-			Query:       f.Q,
-			SortByTitle: f.Sort == "title",
-			Since:       sinceDuration(f.Since),
-			Limit:       limit,
+			States:        states,
+			MediaType:     domain.MediaType(f.Type),
+			Query:         f.Q,
+			SortByTitle:   f.Sort == "title",
+			Since:         sinceDuration(f.Since),
+			Limit:         limit,
+			WatcherUserID: f.WatcherUserID,
 		}
 	}
 	active = common(storage.ActiveStates(), activeDefaultLimit)
@@ -91,12 +104,16 @@ func (f dashboardFilter) MirrorStates() []storage.State {
 	return out
 }
 
-// ActiveFragmentQS is the "?q=...&state=...&type=...&sort=..." query the
-// dashboard builds into the htmx poll URL so the fragment follows the same
+// ActiveFragmentQS is the "?q=...&state=...&type=...&sort=...&scope=..." query
+// the dashboard builds into the htmx poll URL so the fragment follows the same
 // filter as the page it sits inside. Since is intentionally dropped here:
 // it is a window for the Recent block, not the Active one.
+//
+// The scope is carried even though it has a default, because the default
+// depends on who is asking: a polled fragment that dropped it would quietly
+// narrow the table back to the reader's own requests.
 func (f dashboardFilter) ActiveFragmentQS() string {
-	parts := make([]string, 0, 3+len(f.ActiveSubs))
+	parts := make([]string, 0, 4+len(f.ActiveSubs))
 	if f.Q != "" {
 		parts = append(parts, "q="+url.QueryEscape(f.Q))
 	}
@@ -108,6 +125,9 @@ func (f dashboardFilter) ActiveFragmentQS() string {
 	}
 	if f.Sort != "" {
 		parts = append(parts, "sort="+url.QueryEscape(f.Sort))
+	}
+	if f.Scope != "" {
+		parts = append(parts, "scope="+url.QueryEscape(f.Scope))
 	}
 	return "?" + strings.Join(parts, "&")
 }
@@ -172,7 +192,57 @@ func parseDashboardFilter(r *http.Request) dashboardFilter {
 			}
 		}
 	}
+	f.applyScope(r)
 	return f
+}
+
+// applyScope resolves the scope: whose requests the dashboard shows.
+//
+// The administrator's scope is "all", always. That is the point of the
+// role: the requests nobody is watching are exactly the ones an operator has
+// to notice, and a control that could narrow them would be a control
+// somebody would eventually leave narrowed.
+//
+// Everybody else gets their own requests by default — the installation is
+// shared, and a wall of everybody's requests is not the list somebody came
+// for — and can widen it to "all" in one click, because a shared
+// installation is exactly the case where the wider view is useful.
+func (f *dashboardFilter) applyScope(r *http.Request) {
+	user := sessionUser(r)
+
+	if user != nil && user.IsAdmin {
+		f.Scope = scopeAll
+		f.ShowScope = false
+		f.WatcherUserID = 0
+		return
+	}
+
+	f.ShowScope = true
+	f.Scope = scopeFilter(r.URL.Query().Get("scope"))
+	if f.Scope == "" {
+		f.Scope = scopeMine
+	}
+	if f.Scope == scopeMine && user != nil {
+		f.WatcherUserID = user.ID
+	} else {
+		f.WatcherUserID = 0
+	}
+}
+
+// scopeFilter maps the scope parameter to a scope.
+//
+// An empty or unknown value means "whatever the default is for this person",
+// which is not the same as "all": the administrator's default is all, and
+// everybody else's is their own requests.
+func scopeFilter(s string) string {
+	switch s {
+	case scopeAll:
+		return scopeAll
+	case scopeMine:
+		return scopeMine
+	default:
+		return ""
+	}
 }
 
 func mediaTypeFilter(s string) string {
@@ -554,11 +624,60 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCancelConfirm is the page that asks before a cancellation.
+//
+// It exists because cancelling is not only a matter of stopping a search:
+// the workflow deletes the files of a download that has not been filed into
+// the library yet. A button that says "Отменить" and nothing else hides
+// that, and the person who discovers it is the one who paid.
+//
+// The page is a GET and the action is a POST, which also keeps a form out
+// of the dashboard's table — a form inside a table cell inside the filter
+// form is the mistake this codebase made once already.
+func (s *Server) handleCancelConfirm(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "неверный id", http.StatusBadRequest)
+		return
+	}
+
+	req, err := s.store.GetRequest(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.fail(w, r, err)
+		return
+	}
+
+	watchers, err := s.store.ListWatchers(r.Context(), id)
+	if err != nil {
+		s.log.Warn("could not list watchers", "request", id, "error", err)
+	}
+
+	s.render(w, r, "cancel", cancelView{
+		page:         s.basePage(w, r, "dashboard"),
+		Request:      detailFor(req, watchers, nil, time.Now()),
+		Consequences: cancelConsequences(req),
+	})
+}
+
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
 		http.Error(w, "неверный id", http.StatusBadRequest)
 		return
+	}
+
+	// Read before the cancel, not after: the state is what decides what
+	// happened to the files, and the cancel changes it.
+	var outcome string
+	if req, err := s.store.GetRequest(r.Context(), id); err == nil {
+		outcome = cancelOutcome(req)
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		s.log.Warn("could not read a request before cancelling it",
+			"request", id, "error", err)
 	}
 
 	if err := s.req.Cancel(r.Context(), id); err != nil {
@@ -568,7 +687,10 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.flash(w, r, "Отмена запрошена. Торрент будет удалён, если он был добавлен.", "ok")
+	if outcome == "" {
+		outcome = "Запрос отменён."
+	}
+	s.flash(w, r, outcome, "ok")
 	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
 }
 
@@ -1157,6 +1279,26 @@ func (s *Server) handlePickCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The page offers no button on a release the selector refused on
+	// principle, and the endpoint agrees: a hidden button is not a rule.
+	// Without this check, one POST would download a camrip or a blacklisted
+	// hash, and the refusal the product exists to make would be a suggestion.
+	candidate, err := s.candidateByRank(r.Context(), id, rank)
+	if err != nil {
+		if errors.Is(err, storage.ErrNoSuchCandidate) {
+			http.Error(w, "такого кандидата нет (rank="+strconv.Itoa(rank)+")", http.StatusNotFound)
+			return
+		}
+		s.fail(w, r, err)
+		return
+	}
+	if !canPick(candidate.RejectionReason) {
+		s.log.Warn("refused a pick of a release refused on principle",
+			"request", id, "rank", rank, "reason", candidate.RejectionReason)
+		http.Error(w, "этот релиз отклонён по правилам и не может быть выбран", http.StatusForbidden)
+		return
+	}
+
 	if _, err := s.store.MarkPicked(r.Context(), id, rank); err != nil {
 		if errors.Is(err, storage.ErrNoSuchCandidate) {
 			http.Error(w, "такого кандидата нет (rank="+strconv.Itoa(rank)+")", http.StatusNotFound)
@@ -1176,6 +1318,23 @@ func (s *Server) handlePickCandidate(w http.ResponseWriter, r *http.Request) {
 
 	s.flash(w, r, "Выбрано. Загрузка начнётся через несколько секунд.", "ok")
 	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+}
+
+// candidateByRank returns the candidate with the given rank.
+//
+// The list is short — it is what one search returned — and reading it is
+// cheaper than a store method for a lookup the web does once per pick.
+func (s *Server) candidateByRank(ctx context.Context, requestID int64, rank int) (storage.Candidate, error) {
+	candidates, err := s.store.ListCandidates(ctx, requestID)
+	if err != nil {
+		return storage.Candidate{}, fmt.Errorf("list the candidates: %w", err)
+	}
+	for _, c := range candidates {
+		if c.Rank == rank {
+			return c, nil
+		}
+	}
+	return storage.Candidate{}, storage.ErrNoSuchCandidate
 }
 
 // handleEditYear records a corrected year for the request's media row.
