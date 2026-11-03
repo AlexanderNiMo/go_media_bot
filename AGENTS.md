@@ -290,6 +290,57 @@ hamburger was a 1.3 rem muted glyph. New users landed on an empty
 dashboard with the only visible affordance being the brand. This was
 caught and fixed; do not regress to a hidden default.
 
+### The administrator's scope is «Все», and cannot be narrowed
+
+`internal/web/handlers.go` (`applyScope`). The dashboard carries a
+scope: «все» — every request in the installation — and «мои», the
+requests the reader is watching (`RequestFilter.WatcherUserID`).
+
+**An administrator is pinned to «Все»** and is offered no control at
+all: the requests nobody is watching are exactly the ones an operator
+has to notice, and a control that could hide them is a control somebody
+would eventually leave narrowed. Everybody else starts on «Мои» and can
+widen it in one click — the installation is shared, and that is
+exactly the case where the wider view is useful.
+
+The copy is «Мои», not «Запрошенные мной»: a request has no owner, and
+the creator is only a proxy for it (people attach themselves to
+requests). The polled fragment (`/fragments/active`) has to carry the
+scope in its query, or it falls back to the reader's default and
+quietly narrows the table back.
+
+### Cancelling deletes files — the confirmation says so
+
+`GET /requests/{id}/cancel` states the consequence, `POST` does it.
+The consequence is **state-dependent**, and the code is the only
+authority on it (`internal/request/workflow.go:1467`):
+
+| State | Files on disk |
+|---|---|
+| `downloading` | **deleted** — the download was never filed into the library |
+| `ongoing` (watching for the rest of a season) | **kept** — those episodes are already in Plex |
+| anything else | nothing to delete |
+
+An earlier draft of the design plan claimed the opposite in four
+places. It was wrong in the direction that costs the user their files.
+The copy is generated from the request's state, never hard-coded.
+
+### The dashboard's table holds no form
+
+The cancel action is a **link** to the confirmation page. This is not
+cosmetic: the filter forms and the table were siblings, and a form
+inside the table was the form-in-form bug from `b57d037`. With the
+action as a link, the table carries no form at all.
+
+### Below 768 px the dashboard's tables are cards
+
+`table.cards` in `internal/web/views/static/style.css`. One DOM, two
+renderings: `data-label` on every cell becomes the field's label, and
+the explicit `role="table"` / `role="row"` / `role="cell"` /
+`role="columnheader"` keep the table semantics that `display: block`
+takes away in Safari and VoiceOver. The candidate table and the events
+table are **not** cards yet — that is Phase 3.
+
 ---
 
 ## Working with the user

@@ -1,7 +1,7 @@
 # UI/UX Project Plan — `mediad`
 
-**Date:** 2026-11-03
-**Status:** proposal — nothing in this document has been implemented
+**Date:** 2026-11-03 (Phase 1b and D5 added 2026-11-04)
+**Status:** Phase 0 and Phase 1b shipped; the rest of Phase 1 is not implemented
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
@@ -27,6 +27,7 @@ below:
 | D2 | **`manual` handling stays web-only** | No Telegram work in this plan. The existing Telegram manual notification and candidate buttons (shipped in #6) are left untouched. One consequence is flagged in §8.1 — it is not acted on here. |
 | D3 | **Ship auto / light / dark** | Dark mode comes free from `prefers-color-scheme` as soon as every token maps to a `--pico-*` variable (Phase 0). The tri-state toggle is pulled forward from Phase 4 into Phase 1 (§4.2). |
 | D4 | **Only Phase 0 and Phase 1 now** | §7 is resequenced around Phase 0–1. Phases 2–5 are deferred, not deleted, and §7.2 lists what is being deferred and one item that **cannot** be deferred. |
+| D5 | **The administrator sees everything** | The requirement arrived as "the admin must see all releases". It is implemented as the **scope rule**: the administrator's scope is «Все» and cannot be narrowed, everybody else starts on «Мои» and can widen it in one click. See §3.2.2 — the reading of "releases" that was rejected is recorded there, because a global catalogue of releases is a different product and needs a different data model. |
 
 ---
 
@@ -79,9 +80,10 @@ Why hasn't it found it yet?** Everything else is secondary.
 3. One status vocabulary across web and Telegram.
 4. Progressive disclosure: story first, machinery second.
 5. Every irreversible action states its consequence. (Cancelling a request
-   **does not delete already-downloaded files** — season-pack files survive a
-   cancel by design, per `AGENTS.md`. Today's "Отменить" is a bare button that
-   says nothing about this.)
+   **can delete what is already on disk** — the workflow removes the torrent's
+   files unless the request is watching for the rest of a season. Today's
+   "Отменить" is a bare button that says nothing about this, and the plan
+   itself got the consequence wrong at first; see §7.3.)
 
 **Non-negotiable constraints (from `AGENTS.md` and the code):** html/template +
 htmx + Pico, no build step; the sidebar default stays `icons`; forms are
@@ -136,7 +138,7 @@ objective rather than vibes):
 | T2 | "Add season 2 of a series that's currently airing." | Season-as-unit, partial packs | User picks a season, not the show |
 | T3 | "A request has been searching three weeks and hasn't found anything — explain to me what the bot is doing." | **Legibility of waiting** | User mentions the next check / the age / that it's still trying |
 | T4 | "Find out whether the release the bot picked has Russian audio or just Russian subtitles." | Audio-tier surfacing | User distinguishes dub from subtitles *without reading raw code* |
-| T5 | "Cancel a request and tell me what happened to the files already on disk." | Consequence comprehension | User correctly says files are kept (or asks — partial credit, full credit for the *correct* answer after a confirm dialog) |
+| T5 | "Cancel a request and tell me what happened to the files already on disk." | Consequence comprehension | User correctly says what happened to the files (or asks — partial credit, full credit for the *correct* answer after a confirm dialog) |
 
 T3 and T5 are the two that decide the plan. Everything else is secondary.
 
@@ -183,7 +185,7 @@ conventions for "waiting" assume a wait short enough that a spinner suffices.
 | Does the operator/asker split match reality, or is everyone an operator? | T3 + T5 + follow-up interview |
 | Do people re-engage after a long wait, or is the horizon invisible? | Diary |
 | Which state deserves the strongest visual signal? | Mining + T5 |
-| Does "Отменить" cause data loss? | Code + `AGENTS.md` (answer known: files survive) |
+| Does "Отменить" cause data loss? | Code (answer known: yes, unless the request is watching for the rest of a season) |
 | Does the current search handle Russian vs. original titles? | Code review + T1 (probe) |
 
 ---
@@ -268,6 +270,53 @@ means a third mirror set: the scope toggle goes inside one of the two existing
 forms as a radio group, and the other form mirrors it. The existing
 `TestDashboardFilterFormsCarryEveryControl` test enforces exactly this and will
 catch a missed mirror.
+
+### 3.2.2 The scope rule — D5
+
+**The requirement, and the two readings of it.** "The admin must see all
+releases" was added to this plan on 2026-11-04. It has two possible meanings,
+and they are not the same work:
+
+| Reading | What it means | What it costs |
+|---|---|---|
+| **The scope rule** (chosen) | The administrator's dashboard is never narrowed: they see every request, and therefore every release that every request holds | One filter parameter and one rule |
+| **A catalogue of releases** | A new page listing every release the installation has ever seen — chosen, rejected, blacklisted — across every request | A durable release log: today the candidate list is **overwritten** on every fruitless search and **deleted** after a pick, and the chosen release's resolution, audio tier and studio are computed at selection time and thrown away. Nothing is stored, so nothing can be listed |
+
+The catalogue was rejected for now, and the reason is worth keeping: it is not
+a page, it is a **storage change**, and it is a different product — an audit
+of the tracker's output rather than a view of the household's requests. The
+data it would need is also the data §3.4's «Качество» and «Аудио» columns
+need, so the table is worth having — but it belongs with Phase 2's candidate
+table, not with a scope filter.
+
+**What the rule is.** The scope is resolved from the role, not from the URL
+alone:
+
+| Who | Default | Can be narrowed? |
+|---|---|---|
+| Administrator | «Все» — every request in the installation | **No.** A scope that could be narrowed is a scope somebody would eventually leave narrowed |
+| Everybody else | «Мои» — the requests they are watching | Yes, to «Все», in one click |
+
+The copy is «Мои» and not «Запрошенные мной», because a request has no owner:
+people attach themselves to one. The creator is added as a watcher on
+creation, so «Мои» is a good proxy for «asked for by me» — but it is not the
+same thing, and the copy must not claim it is.
+
+**Three details that are easy to get wrong, and were:**
+
+1. **The polled fragment has to carry the scope.** The dashboard polls
+   `/fragments/active` every three seconds. A fragment that dropped the
+   scope would fall back to the reader's default and quietly narrow the table
+   back under the page it belongs to.
+2. **The administrator is offered no control at all.** A locked «Все / Мои»
+   toggle would say "you may narrow this" and then refuse. The control is not
+   rendered, and the administrator's forms carry no scope parameter — which is
+   why `TestDashboardFilterFormsCarryEveryControl` now runs twice, once per
+   role, with a different expected set of controls.
+3. **The scope is the dashboard's, not the whole interface's.** `/requests`
+   stays the unfiltered report of everything that ever happened. A filter
+   there without a control would be a surprise, and a control there is Phase
+   1c's business if it is wanted at all.
 
 ### 3.3 Request detail page — proposed hierarchy
 
@@ -361,7 +410,9 @@ action set must follow the reason.
 > offers "Скачать это" on every row regardless of why the release was refused.
 > Promoting the bucket without fixing the table would surface a
 > blacklisted release as a one-click download. The minimum slice is: Russian
-> reason labels, and no action button on a hard rejection.
+> reason labels, and no action button on a hard rejection. **Shipped in
+> Phase 1b** — plus one thing the plan did not ask for: the endpoint refuses
+> the pick as well, because a hidden button is not a rule.
 
 ### 3.5 Reason vocabulary — the full mapping
 
@@ -410,8 +461,9 @@ pick → `downloading`. The candidate table (§3.4) *is* this journey; if it's
 wrong, the journey has no value.
 
 **J5 — Cancel.** Request → cancel → **confirmation stating the consequence** →
-cancelled. The confirmation must say the files stay on disk. Today it is a bare
-button.
+cancelled. The consequence depends on the request: a cancelled download takes
+its files off the disk, a request waiting for the rest of a season keeps the
+episodes it already put in Plex. The confirmation says which one it is.
 
 **Deliberately not in scope:** a browse/recommendations surface, a Kanban view
 of states, a "similar titles" feature. The brief mentions "random media", but
@@ -811,8 +863,10 @@ replacements:
    between "your request failed" and "we're still looking" — and the whole
    product thesis lives in that distinction.
 3. **Destructive actions confirm with their consequence.** «Отменить запрос?
-   Уже скачанные файлы останутся на диске.» (Per `AGENTS.md`, a season pack's
-   files are not deleted on cancel or stall.)
+   Торрент и уже скачанные файлы будут удалены с диска.» — and, for a request
+   watching for the rest of a season, «Торрент будет удалён, но уже скачанные
+   серии останутся на диске.» The wording is generated from the request's
+   state, because the consequence is not the same for both.
 
 ---
 
@@ -931,15 +985,51 @@ None of it is additive; each one removes a risk that 1a introduces.
   sidesteps the form-in-form constraint entirely — the cancel form currently
   lives inside the dashboard table.
 
+#### What Phase 1b actually shipped
+
+| Planned | Shipped | Why it differs |
+|---|---|---|
+| Russian reason labels on the candidate table | Already in Phase 0's vocabulary | The labels were never the hard part; the *action* was |
+| No action button on a hard rejection | Shipped, **and the endpoint refuses the pick too** | A hidden button is not a rule: one POST would have downloaded the camrip the selector refused. The button and the endpoint now ask the same question — `candidatePick` / `canPick` in `internal/web/vocab.go` — and a refused row is dimmed |
+| Dashboard table → card on mobile | Shipped for **both** dashboard tables | The «Недавно» table is on the same page and was the same width. The card layout is `table.cards` with `data-label` on every cell and explicit `role="table"` / `role="row"` / `role="cell"` / `role="columnheader"`, because `display: block` takes the table semantics away in Safari and VoiceOver |
+| Cancel confirmation | Shipped as a GET → POST pair — `GET /requests/{id}/cancel` states the consequence, `POST` does it | See the correction below: **the copy this plan specified was wrong** |
+| — | The dashboard's table now holds **no form at all** | The cancel action became a link. The form-in-form constraint is not "handled" here, it is gone: there is nothing left to swallow |
+
+**One correction to this document, found by reading the workflow rather than
+the plan.** This plan said, in four places, that cancelling a request does not
+delete already-downloaded files. The code says the opposite:
+
+```go
+// internal/request/workflow.go:1467 — cancelRequest
+DeleteFiles: !state.Monitoring,
+```
+
+A cancelled download has its files deleted, because it was never filed into
+the library — "a cancelled download has not been filed into the library, so
+there is nothing here the user is watching". The **exception** is a request
+watching for the rest of a season (`state.Monitoring`, which is what the
+`ongoing` state is): its pack is finished and already in Plex, and deleting
+those files would take the episodes somebody is watching off the disk.
+
+So the confirmation page states one of three consequences, generated from the
+request's state, and the flash after the cancellation says the same thing in
+one line. The plan's blanket promise would have been the more comfortable
+sentence and the wrong one — and it would have been wrong in the direction
+that costs the user their files.
+
+> Commit: `web: the safety slices of phase 1b`.
+
 #### Phase 1c — Shared installation and theme (Week 4)
 
 Everything in this sub-phase follows from D1 (several people) and D3 (theme).
 
-- **Scope filter «Все / Мои»** (§3.2.1) — `RequestFilter.WatcherUserID` already
-  exists in storage and is used only by Telegram; the web just has to set it.
-  The scope control goes into one of the dashboard's two existing GET forms as
-  a radio group, and the other form mirrors it — the
-  `TestDashboardFilterFormsCarryEveryControl` test enforces the mirroring.
+- **Scope filter «Все / Мои»** (§3.2.1, §3.2.2) — **shipped early**, as D5:
+  `RequestFilter.WatcherUserID` already existed in storage and was used only
+  by Telegram; the web now sets it. The scope control goes into one of the
+  dashboard's two existing GET forms as a radio group, and the other form
+  mirrors it — the `TestDashboardFilterFormsCarryEveryControl` test enforces
+  the mirroring, and now runs once per role, because the administrator is
+  offered no control at all.
 - **«Запросил»** on the request page — the requester's username, promoted out
   of the create event's raw JSON detail (§3.3).
 - **«Расширенное» disclosure** — workflow ID, infohash, content path and the
@@ -978,7 +1068,8 @@ is short enough to state:
 
 So Phase 1b must deliver: **Russian reason labels** (from the §3.5 map, already
 built in Phase 0) and **no action button on a hard rejection**. Everything else
-about the redesigned table can wait for Phase 2.
+about the redesigned table can wait for Phase 2. **Shipped** — and the endpoint
+refuses the pick too, which the plan did not ask for and should have.
 
 ---
 
@@ -1083,6 +1174,7 @@ Taken 2026-11-03. Each answer changed something specific in this document.
 | D2 | Should `manual` get a Telegram prompt, or stay web-only? | **Web-only** | No Telegram work in this plan; the existing manual notification and candidate buttons (#6) are untouched. One consequence recorded in §8.1 and deliberately not acted on. |
 | D3 | Theme — auto/light/dark, or dark only? | **auto / light / dark** | Dark mode becomes a Phase 0 constraint rather than a Phase 4 polish item (§4.2): the token layer must be built entirely on `--pico-*` variables so `prefers-color-scheme` works for free. The tri-state toggle is pulled forward into Phase 1c. |
 | D4 | Phase 1 only, or the whole roadmap? | **Phase 0 and Phase 1 only** | §7 is resequenced around four weeks, split 1a / 1b / 1c so it can be cut at a week boundary. Phases 2–5 move to the §7.2 backlog. Two protective slices are pulled forward (§7.3) because Phase 1 would otherwise make things worse. |
+| D5 | "The admin must see all releases" — which reading? | **The scope rule** | The administrator's scope is «Все» and cannot be narrowed; everybody else starts on «Мои» and can widen it (§3.2.2). The other reading — a catalogue of every release the installation has seen — is a storage change, not a page, and is deferred to Phase 2's candidate table with the data it needs. |
 
 **Open, and deliberately not blocking:** whether the §8.1 notification-mask
 issue should be scheduled, and whether the diary study (§2.3) is worth
@@ -1152,3 +1244,29 @@ Added while implementing Phase 0:
   again.
 - `.pill input[type="checkbox"]` sets only a margin; the checkbox is visible
   inside the pill, so the native focus ring survives there.
+
+Added while implementing Phase 1b:
+
+- **Cancelling deletes the files, unless the request is watching for the rest
+  of a season.** `cancelRequest` asks for `DeleteFiles: !state.Monitoring`
+  (`internal/request/workflow.go:1467`), and `state.Monitoring` is set exactly
+  where the request enters `ongoing` (`workflow.go:866`). The plan's opposite
+  claim was wrong in four places.
+- **A release is not a durable object.** `StoreCandidates` replaces the list
+  on every fruitless search (`storage/candidates.go:65`) and `ClearCandidates`
+  deletes it after a pick or a 14-day timeout (`candidates.go:233`). The
+  chosen release keeps only `selected_title / indexer / size / seeders /
+  score / thread_id`; its resolution, audio tier and studio are computed at
+  selection time and thrown away. This is why D5's "catalogue of releases"
+  reading is a storage change rather than a page.
+- **Pico v2.0.6 has no `.button` class**, but it styles `[role=button]`
+  fully — so `<a role="button">` is the way to make an anchor look like one.
+  The stylesheet's compact-button rule was written for `a.button.small`,
+  which could never match anything, and now names `a[role="button"].small`.
+- **A card-mode table needs explicit roles.** `display: block` on table
+  elements removes the implicit table semantics in Safari and VoiceOver; the
+  roles are written into the markup, and the DOM order is unchanged, so the
+  reading order stays the logical one.
+- The dashboard's active table is now **form-free**: the cancel action is a
+  link to the confirmation page, so the filter forms and the table have
+  nothing left to swallow each other.

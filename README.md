@@ -641,6 +641,32 @@ closed and accounts exist only by invite.
 | Notifications | the same rows the Telegram bot delivers from |
 | Settings | password change; invites and users for an administrator |
 
+**Who sees what.** A request has no owner — it is one global object that
+people attach themselves to — so the dashboard carries a scope: «все», every
+request in the installation, and «мои», the ones this person is watching.
+The administrator's scope is «все» and cannot be narrowed: the requests
+nobody is watching are exactly the ones an operator has to notice. Everybody
+else starts on «мои» and widens it in one click, because a shared
+installation is exactly the case where the wider view is useful.
+
+**Cancelling asks first.** A cancellation is not only a matter of stopping a
+search: the workflow removes the torrent from the client and deletes the
+files of a download that has not been filed into the library yet. The button
+therefore leads to a page that says what will happen — including the
+exception, a request waiting for the rest of a season, whose episodes are
+already in Plex and stay on the disk.
+
+**A refused release is not offered.** When the selector refuses a release on
+principle — a camrip, a blacklisted hash, a release with Russian subtitles
+and no Russian audio — the candidate row carries no button, and the endpoint
+refuses the pick too. A release refused only on quality (too few seeders,
+too large) still has one, and it says out loud that it is an overrule.
+
+**On a phone the tables are cards.** Below 768 px the dashboard's tables
+become one block per request, with the column names as the labels of the
+fields. It is the same DOM either way — the stylesheet chooses the rendering
+— so the data is in the page once and a screen reader announces it once.
+
 **Nothing on a render path talks to Temporal.** Every page reads the
 projection. That is not an optimisation: SQL-backed visibility has no
 `ORDER BY` at all — asking for one is a hard `InvalidArgument` — it is
