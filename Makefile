@@ -16,7 +16,7 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-db test-db-setup tidy fmt fmt-check vet workflowcheck replay capture inspect-histories check check-ci install-hooks
+.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-env test-live-env check-commit test-db test-db-setup tidy fmt fmt-check verify vet workflowcheck replay capture inspect-histories check check-ci install-hooks
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -83,20 +83,30 @@ build: ## Compile the binary into ./bin
 	@mkdir -p bin
 	go build -ldflags '$(LDFLAGS)' -o bin/mediad ./cmd/mediad
 
-test: ## Run the tests (database tests are skipped without a server)
-	go test ./... -count=1
+# Explicit test settings win; the database otherwise follows the local app.
+test check-commit: export MEDIAD_TEST_DSN ?= $(MEDIAD_POSTGRES_DSN)
+test check-commit: export MEDIAD_REQUIRE_REPLAY = 1
+test check-commit: export MEDIAD_TEST_CHROME ?= $(shell command -v google-chrome || command -v chromium || command -v chromium-browser || { test ! -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" || printf '%s' "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; })
 
-# An explicit test DSN wins; otherwise use the same local DSN as the app.
-test-db: export MEDIAD_TEST_DSN ?= $(MEDIAD_POSTGRES_DSN)
+test-env:
+	@test -n "$$MEDIAD_TEST_DSN" || { echo "set MEDIAD_TEST_DSN or MEDIAD_POSTGRES_DSN in .env"; exit 1; }
+	@command -v node >/dev/null || { echo "install Node.js for browser checks"; exit 1; }
+	@test -n "$$MEDIAD_TEST_CHROME" && test -x "$$MEDIAD_TEST_CHROME" || { echo "set MEDIAD_TEST_CHROME to a Chrome/Chromium executable"; exit 1; }
+
+test-live-env:
+	@test -n "$$MEDIAD_TEST_QBIT_URL" || { echo "set MEDIAD_TEST_QBIT_URL in .env for live qBittorrent tests"; exit 1; }
+
+test: test-live-env check-commit ## Run every check, including database, replay, browser and live qBittorrent tests
+
+check-commit: test-env fmt-check verify vet workflowcheck build ## Run commit checks; live qBittorrent tests are optional
+	go test ./... -count=1 -race -timeout 10m
 
 test-db-setup: ## Start local Postgres and initialise the application's test role
 	@test -f .env || { echo "no .env — copy .env.example and fill it in"; exit 1; }
 	docker compose up -d --wait postgresql
 	docker compose run --rm mediad-db-setup
 
-test-db: ## Run the tests including those that need Postgres
-	@test -n "$$MEDIAD_TEST_DSN" || { echo "set MEDIAD_TEST_DSN or MEDIAD_POSTGRES_DSN in .env"; exit 1; }
-	go test ./... -count=1
+test-db: test ## Alias for the complete test run
 
 tidy: ## Sync go.mod / go.sum
 	go mod tidy
@@ -109,6 +119,9 @@ fmt-check: ## Check Go formatting without modifying files
 		if [ -n "$$unformatted" ]; then \
 			printf 'Run make fmt and stage the formatted files:\n%s\n' "$$unformatted"; exit 1; \
 		fi
+
+verify: ## Verify downloaded module contents
+	go mod verify
 
 vet: ## Run go vet
 	go vet ./...
@@ -129,12 +142,11 @@ capture: ## Record histories into the replay corpus (pass ids: make capture IDS=
 inspect-histories: ## Decode the corpus so it can be reviewed before committing
 	./scripts/inspect-history.sh 'internal/request/testdata/histories/*.json'
 
-check: fmt-check vet build test ## Check formatting, vet, build and test
+check: test ## Alias for the complete test run
 	@echo "all checks passed"
 
-check-ci: workflowcheck check test-db ## What CI runs: determinism, build, tests
-	@MEDIAD_REQUIRE_REPLAY=1 go test ./internal/request/ -run TestReplay -count=1
-	@echo "all CI checks passed"
+check-ci: test ## Alias for the complete test run
+	@echo "all checks passed"
 
 # install-hooks: copy the tracked pre-commit hook into .git/hooks/ and
 # make it executable. .git/hooks/ is per-clone and gitignored, so the

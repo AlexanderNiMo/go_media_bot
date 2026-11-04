@@ -111,9 +111,11 @@
   who has collapsed one keeps it collapsed, and a reader typing in the
   search box keeps what they typed.
 */}}
-<div hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
-     hx-trigger="every 3s"
-     hx-swap="none"></div>
+<p id="dashboard-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+<div id="dashboard-poll" hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
+     hx-trigger="every 3s[!document.hidden]"
+     hx-sync="this:drop"
+     hx-swap="none settle:0"></div>
 
 {{/*
   The three buckets. They are split by how long a thing takes, not by which
@@ -183,6 +185,83 @@
         });
       });
     } catch (e) {}
+
+    var poll = document.getElementById("dashboard-poll");
+    var status = document.getElementById("dashboard-status");
+    var snapshot, focus, scroll, announcement;
+
+    function rows() {
+      return Array.from(document.querySelectorAll('[id^="table-"] tr[data-request]'));
+    }
+    function states() {
+      var result = new Map();
+      rows().forEach(function (row) {
+        result.set(row.dataset.request, {
+          state: row.dataset.state,
+          title: row.querySelector(".what a").textContent,
+          label: row.querySelector(".state").textContent
+        });
+      });
+      return result;
+    }
+    poll.addEventListener("htmx:beforeRequest", function (event) {
+      if (document.hidden) event.preventDefault();
+    });
+    poll.addEventListener("htmx:beforeSwap", function () {
+      snapshot = states();
+      var active = document.activeElement;
+      var row = active.closest("tr[data-request]");
+      focus = row ? {
+        element: active, request: row.dataset.request,
+        href: active.getAttribute("href"), action: !!active.closest(".actions"),
+        block: row.closest("details")
+      } : null;
+      scroll = [window.scrollX, window.scrollY];
+    });
+    document.addEventListener("htmx:oobBeforeSwap", function (event) {
+      var target = event.detail.target;
+      if (!/^(table|count)-/.test(target.id)) return;
+      // Leave unchanged buckets in place, including focus and loaded posters.
+      if (target.isEqualNode(event.detail.fragment.firstElementChild)) {
+        event.detail.shouldSwap = false;
+      }
+    });
+    poll.addEventListener("htmx:afterRequest", function () {
+      if (!snapshot) return;
+      var current = states();
+      var messages = [];
+      current.forEach(function (value, key) {
+        var previous = snapshot.get(key);
+        if (!previous || previous.state !== value.state) {
+          messages.push(value.title + ": " + value.label + ".");
+        }
+      });
+      snapshot.forEach(function (value, key) {
+        if (!current.has(key)) messages.push(value.title + ": больше нет в активном списке.");
+      });
+      if (focus && !focus.element.isConnected && document.activeElement === document.body) {
+        var row = rows().find(function (item) { return item.dataset.request === focus.request; });
+        var target = focus.block.querySelector("summary");
+        if (row && row.closest("details").open) {
+          target = Array.from(row.querySelectorAll("a")).find(function (link) {
+            return link.getAttribute("href") === focus.href &&
+              !!link.closest(".actions") === focus.action;
+          }) || row.querySelector(".what a");
+        }
+        target.focus({preventScroll: true});
+      }
+      window.scrollTo(scroll[0], scroll[1]);
+      if (messages.length) {
+        clearTimeout(announcement);
+        status.textContent = "";
+        announcement = setTimeout(function () {
+          status.textContent = messages.slice(0, 3).join(" ") +
+            (messages.length > 3 ? " Других изменений: " + (messages.length - 3) + "." : "");
+        }, 100);
+      }
+      snapshot = null;
+      focus = null;
+    });
 
     // Auto-submit the filter form on text input, debounced so each keystroke
     // does not round-trip to the server. The submit fires 300 ms after the

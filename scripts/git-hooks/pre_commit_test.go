@@ -1,6 +1,7 @@
 package githooks
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,7 +67,7 @@ if [ "$1" = test-db-setup ]; then
  printf setup > setup-ran
  exit 0
 fi
-test "$1" = check-ci
+test "$1" = check-commit
 test "$(cat tracked.go)" = staged
 test ! -e untracked.go
 test "$(cat .env)" = private-settings
@@ -115,43 +116,102 @@ if [ "${FAIL_CHECKS:-}" = 1 ]; then exit 42; fi
 	}
 }
 
-func TestDatabaseTargetUsesExplicitDSN(t *testing.T) {
+func TestTestTargetsRunEveryCheck(t *testing.T) {
 	makefile, err := os.ReadFile("../../Makefile")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ target, explicit, want string }{
-		{target: "test", want: ""},
-		{target: "test-db", want: "local-dsn"},
-		{target: "test-db", explicit: "explicit-dsn", want: "explicit-dsn"},
-	} {
-		t.Run(tc.target+"/"+tc.explicit, func(t *testing.T) {
-			dir := t.TempDir()
-			for name, body := range map[string]string{
-				"Makefile": string(makefile), ".env": "MEDIAD_POSTGRES_DSN=local-dsn\n",
-				"go": "#!/bin/sh\nprintf 'DSN=%s\\n' \"${MEDIAD_TEST_DSN:-}\"\n",
-			} {
-				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+	for _, target := range []string{"test", "test-db", "check", "check-ci", "check-commit"} {
+		for _, explicit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/explicit=%t", target, explicit), func(t *testing.T) {
+				dir := t.TempDir()
+				settings := "MEDIAD_POSTGRES_DSN=local-dsn\nMEDIAD_TEST_CHROME=" + filepath.Join(dir, "chrome") + "\n"
+				if target != "check-commit" {
+					settings += "MEDIAD_TEST_QBIT_URL=http://fixture.invalid\n"
+				}
+				for name, body := range map[string]string{
+					"Makefile": string(makefile), ".env": settings,
+					"chrome": "#!/bin/sh\nexit 0\n", "node": "#!/bin/sh\nexit 0\n",
+					"gofmt":         "#!/bin/sh\necho fmt-check >> checks\n",
+					"workflowcheck": "#!/bin/sh\nexit 0\n",
+					"go": `#!/bin/sh
+printf '%s\n' "$*" >> checks
+if [ "$1" = test ]; then
+ printf 'DSN=%s REPLAY=%s CHROME=%s\n' "$MEDIAD_TEST_DSN" "$MEDIAD_REQUIRE_REPLAY" "$MEDIAD_TEST_CHROME"
+fi
+`,
+				} {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cmd := exec.Command("make", target, "WORKFLOWCHECK="+filepath.Join(dir, "workflowcheck"))
+				cmd.Dir = dir
+				for _, e := range os.Environ() {
+					if !strings.HasPrefix(e, "MEDIAD_") && !strings.HasPrefix(e, "MAKEFLAGS=") {
+						cmd.Env = append(cmd.Env, e)
+					}
+				}
+				cmd.Env = append(cmd.Env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+				want := "local-dsn"
+				if explicit {
+					want = "explicit-dsn"
+					cmd.Env = append(cmd.Env, "MEDIAD_TEST_DSN="+want)
+				}
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("make: %v\n%s", err, out)
+				}
+				if !strings.Contains(string(out), "DSN="+want+" REPLAY=1 CHROME="+filepath.Join(dir, "chrome")) {
+					t.Fatalf("wrong test settings: %s", out)
+				}
+				checks, err := os.ReadFile(filepath.Join(dir, "checks"))
+				if err != nil {
 					t.Fatal(err)
 				}
+				for _, check := range []string{"fmt-check", "mod verify", "vet ./...", "vet -vettool ", "build -ldflags", "test ./... -count=1 -race -timeout 10m"} {
+					if strings.Count(string(checks), check) != 1 {
+						t.Fatalf("expected exactly one %q check, got:\n%s", check, checks)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestTestTargetRejectsMissingSettings(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range []string{"MEDIAD_POSTGRES_DSN", "MEDIAD_TEST_QBIT_URL", "MEDIAD_TEST_CHROME"} {
+		t.Run(missing, func(t *testing.T) {
+			dir := t.TempDir()
+			settings := map[string]string{"MEDIAD_POSTGRES_DSN": "local-dsn", "MEDIAD_TEST_QBIT_URL": "http://fixture.invalid", "MEDIAD_TEST_CHROME": filepath.Join(dir, "missing-chrome")}
+			settings[missing] = ""
+			var env strings.Builder
+			for key, value := range settings {
+				fmt.Fprintf(&env, "%s=%s\n", key, value)
 			}
-			cmd := exec.Command("make", tc.target)
+			if err := os.WriteFile(filepath.Join(dir, "Makefile"), makefile, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("make", "test", "MEDIAD_TEST_CHROME="+settings["MEDIAD_TEST_CHROME"])
 			cmd.Dir = dir
 			for _, e := range os.Environ() {
-				if !strings.HasPrefix(e, "MEDIAD_TEST_DSN=") {
+				if !strings.HasPrefix(e, "MEDIAD_") {
 					cmd.Env = append(cmd.Env, e)
 				}
 			}
-			cmd.Env = append(cmd.Env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			if tc.explicit != "" {
-				cmd.Env = append(cmd.Env, "MEDIAD_TEST_DSN="+tc.explicit)
-			}
 			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("make: %v\n%s", err, out)
+			if err == nil {
+				t.Fatalf("missing %s passed: %s", missing, out)
 			}
-			if !strings.Contains(string(out), "DSN="+tc.want+"\n") {
-				t.Fatalf("wrong database environment: %s", out)
+			if !strings.Contains(string(out), missing) {
+				t.Fatalf("missing %s not explained: %s", missing, out)
 			}
 		})
 	}

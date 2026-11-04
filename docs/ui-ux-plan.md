@@ -1,7 +1,7 @@
 # UI/UX Project Plan — `mediad`
 
-**Date:** 2026-11-03; last reconciled with the code on 2026-11-04 (baseline `24b32b0`, Phase 3 merged as PR #13)
-**Status:** Phases 0–3 shipped; Phase 4 implemented; Phase 5 planned, not implemented. Phase 3 browser checks use fixtures; screen-reader verification remains open.
+**Date:** 2026-11-03; last reconciled with the code on 2026-11-04 (baseline `3b4947a`, Phase 4 merged as PR #14)
+**Status:** Phases 0–4 shipped; Phase 5 implemented and reviewed. Browser checks use fixtures; screen-reader verification remains open.
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
@@ -23,14 +23,15 @@ browser checks and usability metrics are not claimed without recorded evidence.
 | Responsive layout | All data tables use `table-cards` with explicit table roles; narrow events render as a timeline | `internal/web/views/static/style.css`, `views/fragments.html`, `views/request.html` |
 | Theme | Auto/light/dark stored per browser; auto removes `data-theme` | `internal/web/views/layout.html`, `views/settings.html` |
 | Empty states and web copy | Contextual empty lists, scope-preserving reset, search/season recovery, manual-empty guidance and help vocabulary | Phase 4 below; `internal/web/empty_test.go` |
-| Remaining | Phase 5: poll focus/announcements and measured performance; manual accessibility and user validation remain open | §6, Phase 5 and §7.2 |
+| Poll robustness and performance | Hidden-tab pause, no queued polls, unchanged DOM retention, focus/scroll restoration and bounded polite announcements; fixture payload/cache measurements recorded | `views/dashboard.html`, `poll_test.go`, `testdata/poll.mjs`; Phase 5 below |
+| Remaining | Manual accessibility, live performance and user validation | §6 and §7.2 |
 
-**Next planned phase: Phase 5** — poll robustness and measured performance.
-Phase 4 is implemented and fixture-checked; Telegram remains outside its scope
+**Phase 5 is implemented and reviewed.** Remaining validation is listed in §7.2.
+Phase 4 shipped in PR #14 and is fixture-checked; Telegram remains outside its scope
 (D2). Phase 3 shipped in PR #13 and was checked in headless Chrome on fixtures at
 320 / 375 / 768 / 1024 / 1440 px in both themes, including both desktop sidebar
 states. Screen-reader and measured contrast checks remain open.
-`docs/ui-patterns.md` records the candidate table and Phase 3 mobile patterns.
+`docs/ui-patterns.md` records the implemented patterns through Phase 5.
 
 Two things are **out of scope by construction** and are not revisited anywhere
 below:
@@ -772,11 +773,13 @@ regression. **No proposal in this plan touches it.**
 
 ### 5.6 Polling on mobile
 
-The dashboard polls every 3 s. Each response replaces the three table wrappers
-and counts through OOB swaps; bucket disclosures and filter forms stay in place.
-Phase 5 should pause polling when `document.hidden` and verify focus and scroll
-on a phone. Pointer hover is not a mobile interaction; do not add a separate
-hover timer without evidence that it is needed.
+The dashboard polls every 3 s while visible. Hidden ticks are skipped and
+in-flight requests are not queued; returning waits for the next regular tick.
+OOB swaps retain unchanged tables/counts; changed tables restore the focused
+request link and scroll position. Disclosures and filters stay in place.
+Chrome fixture checks cover focus transitions and 320 / 1440 px layout in both
+themes; physical-phone and screen-reader checks remain open. Pointer hover
+does not add a separate polling timer.
 
 ---
 
@@ -808,10 +811,10 @@ current code or a concrete requirement.
   labelled options and disclosures checked on fixtures in Chrome (Phase 3).
 - [x] **Sidebar visibility** — no hard-coded `aria-hidden` on the navigation;
   JS follows visual availability on desktop/mobile (`views/layout.html`).
-- [ ] **Focus preservation on poll.** Phase 1a preserves the bucket disclosures,
-  but still replaces tables and counts every 3 s through OOB swaps. Verify
-  keyboard focus and preserve it when a table contains the focused link.
-  Row-level replacement alone does not guarantee focus survives a changed row.
+- [x] **Focus preservation on poll.** Phase 5 retains unchanged DOM and restores
+  a replaced link by request/route after all OOB swaps. A removed row or closed
+  destination returns focus to the original bucket summary without opening it.
+  Chrome covers native Tab traversal and nonzero scroll; VoiceOver remains open.
 - [x] Escape closes the mobile drawer; Tab stays inside while open. Closed
   mobile navigation is inert; breakpoint changes update its accessibility
   and return focus to the toggle if the focused navigation becomes hidden.
@@ -830,9 +833,12 @@ current code or a concrete requirement.
 
 ### 6.4 Robust
 
-- [ ] **Status messages (4.1.3).** On a state transition, announce it in an
-  `aria-live="polite"` region — but not the whole table. Debounce, and announce
-  only meaningful transitions («Загрузка завершена: …»).
+- [x] **Status message implementation.** A separate polite, atomic status region
+  reports state changes and entries/removals, batches each response after 100 ms
+  and caps it at three named changes plus a remaining count. Progress-only and
+  unchanged responses are silent. A removed row is not called completed: the
+  bounded active fragment does not report terminal states. Screen-reader
+  delivery and WCAG 4.1.3 conformance still need manual verification.
 - [x] **`role="progressbar"`** with `aria-valuenow` / `aria-valuemin` /
   `aria-valuemax` and an accessible name on the progress element.
 - [x] Explicit table roles on dashboard and candidate cards (§5.2). Events
@@ -860,26 +866,26 @@ current code or a concrete requirement.
 The original six-state count predates the dashboard split. Current empty
 buckets use `dashboardBuckets` in `views.go` and `bucket_table` in
 `views/fragments.html`; «Недавно» remains in `views/dashboard.html`.
-Notifications, search, requests and seasons still use short messages in their
-respective templates. Phase 4 must review each surface rather than replace a
-fixed count of strings. The table below is the target behaviour, not a list of
-verified current defects; several request/candidate cases already shipped:
+Phase 4 shipped contextual guidance in notifications, search, requests and
+seasons, plus scope-preserving resets and manual-empty guidance. The table
+separates implemented behaviour from proposals that still need validation;
+it does not reopen the shipped copy as a new phase.
 
-| Situation | Content |
+| Situation | Current behaviour / remaining work |
 |---|---|
-| No requests at all | One sentence on what the product does + a search field + «как это работает» |
-| No requests match a filter | «Под фильтр ничего не подошло» + «сбросить фильтр» — the current copy implies there are no requests at all |
-| Search returns nothing | Offer the original title, a shorter query, and a link to search TMDB manually |
-| `manual`, zero candidates | «Индексатор ничего не вернул» + the manual magnet/.torrent form inline |
-| `manual`, with candidates | The redesigned candidate table (§3.4) |
-| Download stalled | A named state with last progress + retry — not a generic error |
-| Indexer down | **Not an error.** «Индексатор недоступен, поиск продолжится» — the request is healthy, the dependency is not |
-| Poster missing | Keep «постер недоступен», use a consistent silhouette |
-| Long release name | 2-line clamp + full name in `title` |
-| Seeders unknown vs zero | «—» muted vs «0» danger — **the rule made visible** |
-| Two-year expiry | «Истёк срок поиска» + «начать заново» |
-| Partial season pack | «5 из 8 серий», counted from the *pack's name* per `AGENTS.md` |
-| Plex already has it | Shouldn't happen — but if it does: «уже есть в Plex» + close the request |
+| Empty dashboard | Search/help links and the search horizon; does not infer an empty installation from an empty «Мои» scope |
+| No requests match a filter | Contextual message and reset preserving scope; request list distinguishes `state=all` from selected states |
+| Search returns nothing | Suggests the original title or a shorter query; reuses the search form. A direct TMDB search link was not added |
+| `manual`, zero candidates | Explains that the selection list is empty and points to the existing magnet/.torrent form; does not guess why candidates disappeared |
+| `manual`, with candidates | Candidate table shipped in Phase 2 (§3.4) |
+| Empty notifications / missing seasons | Explains unread notifications / offers a route back to search |
+| Download stalled / indexer down | State vocabulary and status sentence exist; validate recovery and self-healing explanations with real failure scenarios |
+| Poster missing | Existing placeholder; responsive sizing shipped in Phase 3 |
+| Long release name | Responsive candidate cards and wrapping shipped; keep long-name fixtures in layout checks |
+| Seeders unknown vs zero | «—» for unknown, «0» for zero; separate values, covered by candidate tests |
+| Two-year expiry | Expiry vocabulary exists; end-to-end expiry/retry comprehension remains unvalidated |
+| Partial season pack | Episode count derived from the pack's name, never the torrent file count |
+| Plex already has it | Existing Plex check flow; validate the already-present outcome with live services before claiming end-to-end coverage |
 
 ### 6.6 Error recovery rules
 
@@ -900,8 +906,8 @@ verified current defects; several request/candidate cases already shipped:
 ## 7. Phased Rollout & Handoff Milestones
 
 **Implemented: Phases 0, 1a, 1b, 1c, 2, 3 and 4.** D4 was the original Phase 0–1
-window; Phase 2 subsequently shipped as PR #12 and Phase 3 as PR #13.
-Phase 4 is implemented; Phase 5 remains planned, as
+window; Phase 2 subsequently shipped as PR #12, Phase 3 as PR #13
+and Phase 4 as PR #14. Phase 5 is implemented and reviewed, as
 summarised in §7.2. Week numbers below are the original sequencing, not current deadlines.
 
 **Every phase ships.** Each ends with something testable in the running app and
@@ -1173,7 +1179,7 @@ were not checked; this is implementation/layout verification, not a user study.
 
 ---
 
-### Phase 4 — Empty states and web copy — **implemented**
+### Phase 4 — Empty states and web copy — **shipped (PR #14)**
 
 **Scope:** `views/help.html`, `views.go`, `views/dashboard.html`, `views/fragments.html`,
 `views/search.html`, `views/requests.html`, `views/notifications.html` and
@@ -1223,24 +1229,70 @@ with no document overflow. The mobile dashboard screenshot is recorded in
 `docs/ui-patterns.md`. Live services, Safari/VoiceOver and measured contrast
 were not checked.
 
-### Phase 5 — Poll robustness and measured performance — **planned**
+### Phase 5 — Poll robustness and measured performance — **implemented and reviewed**
 
-- Pause requests in a hidden tab and resume on return without a burst of polls.
-- Preserve keyboard focus and scroll when OOB content changes, including when
-  the focused request leaves its bucket. Preserve filters, scope, bucket
-  disclosure state and the one-query-per-bucket contract.
-- Announce meaningful state transitions in a small polite live region; do not
-  announce every progress tick or the entire replaced table.
-- Measure response bytes, request frequency and poster/cache behaviour before
-  choosing further optimisations. Smaller poster sources already shipped.
-  Row-level swaps are an option only if measurements or focus checks justify
-  them; replacing a focused row can still lose focus.
+**What changed:** the existing 3 s htmx poll skips hidden ticks and drops triggers
+while a request is in flight. Return to the tab waits for the next regular tick,
+without a catch-up burst. An already-running request may finish while hidden.
+The OOB ids, filter/scope query, disclosure state and separate bounded bucket
+queries are retained. No dependency, migration or backend query was added.
 
-**Acceptance:** exercise focused links, bucket transitions, hidden-tab resume
-and unchanged responses in a browser; add narrow regression coverage for the
-chosen behaviour. Record measurements and manual accessibility results.
-Research in §2 and a second usability round remain unperformed unless evidence
-is recorded; they are not prerequisites for the empty-state copy slice.
+Unchanged OOB tables and counts keep their DOM nodes. A changed table restores
+the active request link after all swaps, matching both the URL and title/action
+cell, including a move to an earlier/later bucket. «Выбрать» and the title share
+a URL but retain their own place in keyboard navigation. If the action disappears,
+use the request's title link; if the row is gone or its destination is closed, use the original bucket summary. Do not open
+a closed bucket or steal focus moved elsewhere while the request was pending.
+Restore the viewport's scroll offset, subject to the browser's document bounds.
+
+A separate visually hidden `role="status"` region reports state changes and
+entries/removals after a 100 ms batch delay. It reads labels from the rendered
+vocabulary, stays silent for progress-only updates and names at most three
+changes plus a remaining count. Leaving this bounded list is described as leaving
+the active list, not as successful completion.
+
+**Measurements (local rendered fixtures, uncompressed response body):**
+
+| Rows in the fragment | Bytes |
+|---|---:|
+| 0 | 745 |
+| 3 (one per bucket) | 4,364 |
+| 60 (20 per bucket, the existing cap) | 58,452 |
+
+The visible-tab browser check observed two polls in 6.5 s; a real background tab
+made zero in 6.5 s, then one in 3.5 s after return. At a 3 s cadence the 60-row
+fixture would transfer about 1.17 MB/min per visible tab, excluding headers;
+hidden-tab pausing removes that recurring traffic while hidden. These numbers
+do not measure database latency, live concurrent users or actual poster sizes.
+A single cached fixture poster (`w185`) served all repeated rows and swaps:
+70 body bytes / 370 transfer bytes, with one resource fetch. The fixture uses
+the production immutable 30-day cache policy; live TMDB was not contacted.
+
+**Optimisation decision:** keep bounded bucket responses. Unchanged DOM retention
+and hidden-tab pause address observed replacement work and avoidable requests;
+row-diff protocols, compression and further poster changes are not justified
+by a production measurement in this task. Payload bytes for a visible tab are
+unchanged apart from the new request/state attributes.
+
+**Validation:** `go test ./internal/web -count=1` and the optional Chrome check
+`MEDIAD_TEST_CHROME="/path/to/chrome" go test ./internal/web -run
+'TestDashboardPollBrowser|TestActiveFragmentPayload' -count=1 -v`.
+The browser check uses a local Go fixture server under `/mediad` and the vendored
+htmx, without live services. It covers unchanged DOM/focus, progress silence,
+state announcements, bounded mass updates, both bucket-move directions, closed
+destinations, vanished rows/actions, retained «выбрать» focus and native Tab,
+scroll, retained filters/scope, HTTP
+errors, a slow response, actual background-tab pause/resume and no overflow at
+320 / 1440 px in light/dark. It requires Node and Chrome; `make test` enables
+it automatically, while direct `go test` needs `MEDIAD_TEST_CHROME`. The
+regular structural/render guards remain in the ordinary package test run.
+Resume assertions allow one or two regular ticks in 3.5 s and check their
+spacing; two requests in that window alone do not imply a catch-up burst.
+
+**Still unverified:** Safari/VoiceOver and actual spoken announcements, physical
+phones, measured contrast, live DB/network performance and user studies (§2).
+The existing 50-row initial-page / 20-row polled per-bucket limits are unchanged;
+a row may leave the visible list because of that cap, not because it completed.
 
 ---
 
@@ -1250,10 +1302,11 @@ is recorded; they are not prerequisites for the empty-state copy slice.
 |---|---|---|
 | ~~Full candidate table redesign — audio badge, quality column, soft-override actions~~ | Phase 2 | **Shipped in Phase 2.** The soft-override actions were Phase 1b's |
 | ~~Responsive tables, touch targets, poster sizes~~ | Phase 3 | **Implemented and fixture-verified in Phase 3.** Screen-reader validation remains open |
-| ~~Empty states and web copy across current surfaces~~ | Phase 4 | **Implemented and fixture-checked.** Empty scope is not described as an empty installation |
+| ~~Empty states and web copy across current surfaces~~ | Phase 4 | **Shipped in PR #14 and fixture-checked.** Empty scope is not described as an empty installation |
 | Cross-channel vocabulary review | Separate scope decision | D2 excludes Telegram edits; Phase 4 uses the existing web vocabulary |
-| Poll robustness — hidden-tab pause, focus preservation, `aria-live` | Phase 5 | OOB preserves disclosures, but still replaces focused table content |
-| Performance — smaller poll payload and image/cache measurements | Phase 5 | Responsive poster sources already landed in Phase 3; payload and measurements remain |
+| ~~Poll robustness — hidden-tab pause, focus preservation, `aria-live`~~ | Phase 5 | **Implemented and Chrome fixture-checked.** Spoken announcements still need a screen-reader check |
+| ~~Fixture payload, request-rate and poster/cache measurements~~ | Phase 5 | **Recorded above.** Live latency/load measurements remain open; no row-diff protocol was added |
+| Manual accessibility and live performance | Validation backlog | Safari/VoiceOver, contrast, physical phones and live service/load measurements are not claimed |
 | Second usability round and before/after metrics | Phase 5 | No completed study or before/after metrics are recorded |
 
 ### 7.3 The protective slice pulled forward — shipped in Phase 1b
@@ -1310,13 +1363,13 @@ artifacts *are* code:
 | **R4** | **Accessibility regresses** — no a11y tooling, no screen-reader pass on every change | The lint test gets skipped | The Go a11y-lint test runs in `make test` as a hard gate; one manual screen-reader pass per phase. |
 | **R5** | **Russian plural/grammar bugs** — «2 ч», «1 мес.», «5 мес.» | Wrong forms appearing in the UI | One `plural()` helper, table-tested. No `fmt.Sprintf("%d ч", n)` anywhere. |
 | **R6** | **The form-in-form constraint bites again** | A new page needs a filter *and* a row action | Forms are siblings by default; `TestNoPageNestsAForm` enforces it. Document the rule in the layout comment. |
-| **R7** | **htmx polling fights the redesign** — the whole table is replaced every 3 s | Rows lose hover/focus; scroll jumps | Keep the shipped OOB bucket contract; verify focus and scroll in Phase 5. Choose a smaller swap only if needed; row-level replacement alone does not preserve focus. |
+| **R7** | **htmx polling fights the redesign** — the whole table is replaced every 3 s | Rows lose hover/focus; scroll jumps | Phase 5 keeps OOB ids, retains unchanged DOM and restores focus/scroll; Chrome regression checks cover moves and removals. Verify spoken delivery separately. |
 | **R8** | **Long release names break the layout** | Horizontal scroll on a table | 2-line clamp + `word-break` from day one; test with a real 120-character multi-voice name. |
 | **R9** | **The operator/asker split is wrong** — with several people, maybe everyone *is* an operator | Operators complain the machine data is now buried | The «Расширенное» disclosure is one click away and remembers its state. **Never delete the machine view — hide it behind one click.** D1 confirms the split is real: `is_admin` marks the operators, and the rest are askers. |
 | **R10** | **Two channels drift** — web says «ждёт вас», Telegram says `manual` | A notification using different words | Compare the vocabulary first; web labels live in `vocab.go`. Telegram edits or a shared package are not shipped and need a separate scope decision (D2). |
 | **R11** | **Dark mode breaks** — Pico's dark theme is barely used today | Contrast failures in dark | Theme tokens and the picker shipped in Phases 0/1c; a measured contrast pass in both themes remains open. |
 | **R12** | **A two-year promise can't be validated in a short study** | Usability tests say "looks fine" | The 3-week diary and the event-log mining are the only honest validation. Treat the 45-minute test as testing the *representation*, not the *patience*. |
-| **R13** | **Performance** — the 3 s poll ships the whole active table every time | Load time grows with request count | Measure payload and request rate first; retain a separate bounded query for each bucket. Change swap granularity only with evidence (R7). |
+| **R13** | **Performance** — the 3 s poll ships the whole active table every time | Load time grows with request count | Phase 5 records fixture payload/rate/cache measurements and pauses hidden tabs. Retain bounded bucket queries; measure live latency/load before further payload changes (R7). |
 | **R14** | **i18n pressure** — every string is hardcoded Russian in templates | Someone asks for English | Out of scope. But keep user-facing strings in Go maps, not inline in templates — that one structural decision makes a future i18n layer near-free. |
 
 ### 8.1 A consequence of D1 + D2 that this plan does not act on

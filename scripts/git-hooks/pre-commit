@@ -24,7 +24,7 @@ fi
 # Git's hook environment must not redirect commands in the snapshot back here.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
 cd "$check_dir"
-echo "→ make check-ci (staged files)"
-make check-ci
+echo "→ make check-commit (staged files)"
+make check-commit
 
 echo "pre-commit checks passed"
