@@ -110,3 +110,26 @@ unread messages, not that no notifications have ever arrived.
 The screenshot uses a rendered fixture, not live requests. Headless Chrome
 checked seven changed pages at 320 / 1440 px in light/dark (28 combinations),
 with no document overflow. Screen-reader and measured contrast checks remain open.
+
+
+## Dashboard polling (Phase 5)
+
+Visible dashboards poll every three seconds; hidden tabs skip ticks and resume
+on the next tick without catching up. Requests in flight drop repeated triggers.
+Unchanged tables/counts retain their DOM nodes. Changed tables restore the
+focused request link after all OOB swaps, matching both its URL and title/action
+cell so «выбрать» stays distinct from the title. This includes a bucket move;
+a vanished row or closed destination returns focus to the original bucket summary. The
+viewport offset is restored within the document's bounds. Filters and bucket
+disclosures remain outside the swaps.
+
+A separate visually hidden polite status region batches state/list changes,
+never progress ticks, naming up to three changes plus the remaining count.
+Leaving the bounded active list is not described as completion.
+
+`TestDashboardPollBrowser` exercises these behaviours with vendored htmx, a local
+fixture server, native Tab and a real background tab. `make test` enables it
+and requires Node and Chrome; direct `go test` needs `MEDIAD_TEST_CHROME`.
+The plan records payload/cache measurements.
+No new visible component needs a screenshot; actual screen-reader speech,
+Safari and live service performance remain unverified.
