@@ -175,14 +175,25 @@ func authenticate(ctx context.Context, db querier, username, password string) (*
 // the timing of a missing account level with a wrong password.
 var dummyHash = []byte("$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy")
 
-// ChangePassword verifies the current password while locking out concurrent
-// temporary-password reissues, and revokes sessions in the same transaction.
+var ErrPasswordUnchanged = errors.New("новый пароль должен отличаться от текущего")
+
+// ChangePassword requires the current password for an ordinary password change.
 func (s *Store) ChangePassword(ctx context.Context, userID int64, current, password string) error {
+	return s.changePassword(ctx, userID, current, password, "")
+}
+
+// ChangeTemporaryPassword accepts a live session in place of the temporary
+// password. Check it under the user lock so a reissue cannot revoke it mid-change.
+func (s *Store) ChangeTemporaryPassword(ctx context.Context, userID int64, token, password string) error {
+	if token == "" {
+		return ErrUnauthorized
+	}
+	return s.changePassword(ctx, userID, "", password, token)
+}
+
+func (s *Store) changePassword(ctx context.Context, userID int64, current, password, token string) error {
 	if err := ValidatePassword(password); err != nil {
 		return err
-	}
-	if current == password {
-		return errors.New("новый пароль должен отличаться от текущего")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -190,15 +201,30 @@ func (s *Store) ChangePassword(ctx context.Context, userID int64, current, passw
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		var old string
-		err := tx.QueryRow(ctx, "SELECT COALESCE(password_hash, '') FROM users WHERE id = $1 FOR UPDATE", userID).Scan(&old)
+		var temporary bool
+		err := tx.QueryRow(ctx, "SELECT COALESCE(password_hash, ''), must_change_password FROM users WHERE id = $1 FOR UPDATE", userID).Scan(&old, &temporary)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrUnauthorized
 		}
 		if err != nil {
 			return err
 		}
-		if bcrypt.CompareHashAndPassword([]byte(old), []byte(current)) != nil {
+		if token != "" {
+			if !temporary {
+				return ErrUnauthorized
+			}
+			var valid bool
+			if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM sessions WHERE token = $1 AND user_id = $2 AND expires_at > now())", hashToken(token), userID).Scan(&valid); err != nil {
+				return err
+			}
+			if !valid {
+				return ErrUnauthorized
+			}
+		} else if bcrypt.CompareHashAndPassword([]byte(old), []byte(current)) != nil {
 			return ErrUnauthorized
+		}
+		if bcrypt.CompareHashAndPassword([]byte(old), []byte(password)) == nil {
+			return ErrPasswordUnchanged
 		}
 		if _, err := tx.Exec(ctx, "UPDATE users SET password_hash = $2, must_change_password = FALSE WHERE id = $1", userID, string(hash)); err != nil {
 			return err
