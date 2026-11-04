@@ -7,7 +7,7 @@
      machine's own view of the request. */}}
 {{with .Request}}
 <div class="confirm">
-  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+  {{if .PosterURL}}{{template "responsive_poster" .PosterURL}}{{end}}
   <div>
     <h1>{{.Title}} <span class="state {{stateClass .State}}">{{stateLabel .State}}</span></h1>
     {{/* The age is the product's claim made visible: this request has been
@@ -171,15 +171,15 @@
 
   {{if .Events}}
     <h3>Что происходило</h3>
-    <table class="events">
-      <thead><tr><th>Когда</th><th>Событие</th><th>Кто</th><th>Подробности</th></tr></thead>
+    <table role="table" class="table-cards events">
+      <thead><tr role="row"><th role="columnheader">Когда</th><th role="columnheader">Событие</th><th role="columnheader">Кто</th><th role="columnheader">Подробности</th></tr></thead>
       <tbody>
       {{range .Events}}
-        <tr>
-          <td class="muted mono">{{.At}}</td>
-          <td class="mono">{{.Event}}</td>
-          <td class="muted">{{.Actor}}</td>
-          <td class="muted">{{.Detail}}</td>
+        <tr role="row">
+          <td role="cell" data-label="Когда" class="muted mono">{{.At}}</td>
+          <td role="cell" data-label="Событие" class="mono">{{.Event}}</td>
+          <td role="cell" data-label="Кто" class="muted">{{.Actor}}</td>
+          <td role="cell" data-label="Подробности" class="muted">{{.Detail}}</td>
         </tr>
       {{end}}
       </tbody>

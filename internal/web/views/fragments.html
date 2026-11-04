@@ -94,3 +94,10 @@
 <span id="count-{{.Key}}" class="muted count" hx-swap-oob="true">{{len .Rows}}</span>
 {{end}}
 {{end}}
+
+{{define "responsive_poster"}}
+<picture>
+  <source media="(max-width: 767px)" srcset="{{mobilePoster .}}">
+  <img src="{{.}}" alt="" loading="lazy" width="342" height="513">
+</picture>
+{{end}}

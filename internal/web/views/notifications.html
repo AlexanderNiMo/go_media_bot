@@ -9,18 +9,18 @@
       <button type="button" class="small secondary" onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = true)">Выбрать все</button>
       <button type="button" class="small secondary" onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = false)">Снять выбор</button>
     </div>
-    <table>
-      <thead><tr><th></th><th colspan="2">Когда</th><th>Что</th><th>Текст</th></tr></thead>
+    <table role="table" class="table-cards">
+      <thead><tr role="row"><th role="columnheader"></th><th role="columnheader" colspan="2">Когда</th><th role="columnheader">Что</th><th role="columnheader">Текст</th></tr></thead>
       <tbody>
       {{range .Items}}
-        <tr class="{{if .Unread}}unread{{end}}">
-          <td><input type="checkbox" class="notif-check" name="id" value="{{.ID}}" aria-label="выбрать уведомление «{{.Title}}»"></td>
-          <td class="thumb">
+        <tr role="row" class="{{if .Unread}}unread{{end}}">
+          <td role="cell" data-label="Выбрать" class="selection"><label class="notification-select"><input type="checkbox" class="notif-check" name="id" value="{{.ID}}" aria-label="выбрать уведомление «{{.Title}}»"></label></td>
+          <td role="cell" data-label="" class="thumb">
             {{if .PosterURL}}<img src="{{path $.BasePath .PosterURL}}" alt="" loading="lazy">{{end}}
           </td>
-          <td class="muted mono">{{.When}}</td>
-          <td>{{if .RequestID}}<a href="{{path $.BasePath "/requests/"}}{{.RequestID}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
-          <td class="muted">{{.Body}}</td>
+          <td role="cell" data-label="Когда" class="muted mono">{{.When}}</td>
+          <td role="cell" data-label="Что">{{if .RequestID}}<a href="{{path $.BasePath "/requests/"}}{{.RequestID}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
+          <td role="cell" data-label="Текст" class="muted">{{.Body}}</td>
         </tr>
       {{end}}
       </tbody>

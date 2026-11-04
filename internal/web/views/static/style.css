@@ -702,9 +702,9 @@ html[data-sidebar="open"] .hamburger::before { content: '✕'; }
   html[data-sidebar="icons"] .layout { grid-template-columns: 3.5rem 1fr; }
 }
 
-/* --- the request table on a phone -------------------------------------- */
+/* --- tables on phones and tablets -------------------------------------- */
 
-/* Below 768 px a five-column table is the worst surface in the product: the
+/* When the content column is too narrow, a wide table is the worst surface in the product: the
    state — the thing the user came for — is off the screen, and the poster
    column takes the room the title needs.
 
@@ -718,7 +718,7 @@ html[data-sidebar="open"] .hamburger::before { content: '✕'; }
    would be read as a stream of unrelated text. The DOM order is unchanged,
    so the reading order is still the logical one — only the visual order
    changes, which is safe because it already was. */
-@media (max-width: 767px) {
+@container (max-width: 60rem) {
   table.table-cards,
   table.table-cards tbody { display: block; width: 100%; }
   table.table-cards thead { display: none; }
@@ -851,4 +851,110 @@ details.advanced h3 { margin-top: 1.25rem; }
   width: 1.1em;
   height: 1.1em;
   margin: 0;
+}
+
+/* Intrinsic widths of paths, release names and grid children must not widen
+   the page; the content remains available through wrapping. */
+.content, .content > main, .confirm > div { min-width: 0; }
+.content > main { container-type: inline-size; }
+dl.facts { grid-template-columns: max-content minmax(0, 1fr); }
+dl.facts dd, table.table-cards td, .confirm h1, .confirm h2 {
+  overflow-wrap: anywhere;
+}
+.confirm picture { flex: 0 0 9rem; }
+.confirm picture img { width: 100%; height: auto; }
+.poster picture { display: block; width: 100%; height: 100%; }
+.notification-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  min-width: 44px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.notification-select input.notif-check { margin: 0; }
+button.link, a.link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+}
+:focus-visible, .pill:focus-within, .notification-select:focus-within {
+  outline: 2px solid var(--m-accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 768px) {
+  .cards, .cards.seasons { grid-template-columns: repeat(auto-fill, minmax(min(11rem, 100%), 1fr)); }
+  .confirm { flex-direction: column; gap: 0.75rem; }
+  .confirm picture { flex: none; width: 6rem; }
+  .confirm img { width: 6rem; height: auto; }
+  .confirm h1, .confirm h2 { font-size: 1.5rem; }
+  dl.facts { grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
+  dl.facts dd { margin-bottom: 0.65rem; }
+
+  /* Keep the state row compact without hiding the labels or their focus. */
+  .state-pills {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    padding: 0.25rem;
+    background: linear-gradient(to left, var(--m-surface), transparent) right / 1rem 100% no-repeat;
+  }
+  .state-pills > * { flex-shrink: 0; scroll-snap-align: start; }
+  .shared-filters > label:not(.pill), .filters > label {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 0.25rem;
+  }
+  .shared-filters > label > select, .filters select, .shared-filters .pill-input {
+    width: 100%;
+    min-width: 0;
+  }
+  .shared-filters .pill-input { flex-basis: 100%; }
+  .invite-row { flex-wrap: wrap; }
+  .invite-row input[type="text"] { min-width: 0; flex-basis: 100%; }
+  .tabs a { padding: 0.5rem; }
+
+  button, button.link, a[role="button"], a.link, .brand, .tabs a, .sidebar nav a,
+  .pill, .theme-picker label, form .checkrows label, summary {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  button.link.icon-btn, .hamburger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  button.link.icon-btn svg { width: 1.25rem; height: 1.25rem; }
+  .filter-row select, .filter-row .pill-input { min-height: 44px; }
+  .theme-picker label, form .checkrows label { margin: 0; }
+  .actions { gap: 0.5rem; }
+  .actions > form { max-width: 100%; }
+  table.table-cards td.actions a { flex: 1 1 auto; }
+  table.table-cards td.actions { display: flex; gap: 0.5rem; margin: 0.5rem 0; }
+  table.table-cards td.actions::before { content: none; }
+  table.table-cards td.actions form { width: 100%; }
+  .brand, table.table-cards td a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  table.table-cards .audio { white-space: normal; }
+  table.candidates td.quality, table.candidates td.audio-cell,
+  table.candidates td.size { white-space: normal; }
+
+  /* One event per timeline entry, with the full machine detail still readable. */
+  table.events tr { border-left: 2px solid var(--m-border); padding-left: 0.75rem; gap: 0.35rem; }
+  table.events td:first-child { color: var(--m-text-muted); }
+  table.table-cards td.selection { flex: 0 0 44px; }
+  table.table-cards td.selection::before { content: none; }
 }

@@ -60,14 +60,14 @@
 
   {{if .Telegram}}
     <p>Привязанные чаты:</p>
-    <table>
-      <thead><tr><th>ID чата</th><th>Привязан</th><th></th></tr></thead>
+    <table role="table" class="table-cards">
+      <thead><tr role="row"><th role="columnheader">ID чата</th><th role="columnheader">Привязан</th><th role="columnheader"></th></tr></thead>
       <tbody>
       {{range .Telegram}}
-        <tr>
-          <td class="mono">{{.ID}}</td>
-          <td class="muted">{{.CreatedAt}}</td>
-          <td>
+        <tr role="row">
+          <td role="cell" data-label="ID чата" class="mono">{{.ID}}</td>
+          <td role="cell" data-label="Привязан" class="muted">{{.CreatedAt}}</td>
+          <td role="cell" data-label="Действие">
             <form method="post" action="{{path $.BasePath "/settings/telegram"}}">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
               <input type="hidden" name="action" value="unlink">
@@ -141,15 +141,15 @@
     </form>
 
     {{if .Invites}}
-      <table>
-        <thead><tr><th>Код</th><th>Создан</th><th>Действует до</th><th>Состояние</th></tr></thead>
+      <table role="table" class="table-cards">
+        <thead><tr role="row"><th role="columnheader">Код</th><th role="columnheader">Создан</th><th role="columnheader">Действует до</th><th role="columnheader">Состояние</th></tr></thead>
         <tbody>
         {{range .Invites}}
-          <tr>
-            <td class="mono">{{.Code}}</td>
-            <td class="muted mono">{{.CreatedAt}}</td>
-            <td class="muted mono">{{.ExpiresAt}}</td>
-            <td>{{.State}}</td>
+          <tr role="row">
+            <td role="cell" data-label="Код" class="mono">{{.Code}}</td>
+            <td role="cell" data-label="Создан" class="muted mono">{{.CreatedAt}}</td>
+            <td role="cell" data-label="Действует до" class="muted mono">{{.ExpiresAt}}</td>
+            <td role="cell" data-label="Состояние">{{.State}}</td>
           </tr>
         {{end}}
         </tbody>
@@ -159,13 +159,13 @@
 
   <article class="tabpanel {{if eq .Tab "users"}}on{{end}}">
     <h2>Пользователи</h2>
-    <table>
-      <thead><tr><th>Имя</th><th>Права</th></tr></thead>
+    <table role="table" class="table-cards">
+      <thead><tr role="row"><th role="columnheader">Имя</th><th role="columnheader">Права</th></tr></thead>
       <tbody>
       {{range .Users}}
-        <tr>
-          <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">без имени</span>{{end}}</td>
-          <td>{{if .IsAdmin}}администратор{{else}}пользователь{{end}}</td>
+        <tr role="row">
+          <td role="cell" data-label="Имя">{{if .Username}}{{.Username}}{{else}}<span class="muted">без имени</span>{{end}}</td>
+          <td role="cell" data-label="Права">{{if .IsAdmin}}администратор{{else}}пользователь{{end}}</td>
         </tr>
       {{end}}
       </tbody>
