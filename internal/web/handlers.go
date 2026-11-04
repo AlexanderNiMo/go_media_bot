@@ -1069,14 +1069,28 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	user := sessionUser(r)
 
 	redirect := "/settings"
+	var err error
 	if user.MustChangePassword {
 		redirect = "/change-password"
+		cookie, cookieErr := r.Cookie(sessionCookie)
+		if cookieErr != nil {
+			err = storage.ErrUnauthorized
+		} else {
+			err = s.store.ChangeTemporaryPassword(r.Context(), user.ID, cookie.Value, r.PostFormValue("password"))
+		}
+	} else {
+		err = s.store.ChangePassword(r.Context(), user.ID, r.PostFormValue("current"), r.PostFormValue("password"))
 	}
-	err := s.store.ChangePassword(r.Context(), user.ID, r.PostFormValue("current"), r.PostFormValue("password"))
 	if err != nil {
 		if errors.Is(err, storage.ErrUnauthorized) {
+			if user.MustChangePassword {
+				s.clearCookie(w, sessionCookie, r)
+				s.flash(w, r, "Сессия устарела. Войдите заново.", "bad")
+				s.seeOther(w, r, "/login")
+				return
+			}
 			s.flash(w, r, "Текущий пароль неверен.", "bad")
-		} else if storage.ValidatePassword(r.PostFormValue("password")) != nil || r.PostFormValue("current") == r.PostFormValue("password") {
+		} else if storage.ValidatePassword(r.PostFormValue("password")) != nil || errors.Is(err, storage.ErrPasswordUnchanged) {
 			s.flash(w, r, err.Error(), "bad")
 		} else {
 			s.fail(w, r, err)
@@ -1442,6 +1456,10 @@ func (s *Server) handleEditYear(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChangePasswordForm(w http.ResponseWriter, r *http.Request) {
+	if !sessionUser(r).MustChangePassword {
+		s.seeOther(w, r, "/settings")
+		return
+	}
 	s.render(w, r, "change-password", s.basePage(w, r, "change-password"))
 }
 
