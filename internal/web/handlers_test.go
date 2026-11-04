@@ -639,7 +639,7 @@ func TestOnlyActiveRequestsAreInTheFragment(t *testing.T) {
 	if strings.Contains(body, "Матрица") {
 		t.Errorf("a finished request appeared in the live fragment: %s", truncateForTest(body, 300))
 	}
-	if !strings.Contains(body, "Ничего не качается") {
+	if strings.Contains(body, "<table") || !strings.Contains(body, `id="count-downloading" class="muted count" hx-swap-oob="true">0</span>`) {
 		t.Errorf("the empty state did not render: %s", truncateForTest(body, 300))
 	}
 }
