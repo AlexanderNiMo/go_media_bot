@@ -106,3 +106,70 @@ func TestLoginSerializesWithPasswordUpdates(t *testing.T) {
 		})
 	}
 }
+
+func TestChangeTemporaryPasswordRequiresLiveTemporarySession(t *testing.T) {
+	store, pool := newStoreFor(t)
+	ctx := context.Background()
+	admin, err := store.CreateAccount(ctx, "admin", "admin-password-long", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := store.CreateInvite(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, temporary, err := store.RedeemTelegramInvite(ctx, code, "777", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := store.Login(ctx, "alice", temporary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.CreateSession(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.CreateSession(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE sessions SET expires_at = now() - interval '1 second' WHERE token = $1", hashToken(expired)); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{"", "missing", other, expired} {
+		if err := store.ChangeTemporaryPassword(ctx, user.ID, invalid, "permanent-password"); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("invalid session accepted: %v", err)
+		}
+	}
+	if err := store.ChangeTemporaryPassword(ctx, user.ID, token, temporary); !errors.Is(err, ErrPasswordUnchanged) {
+		t.Fatalf("temporary password reused: %v", err)
+	}
+	_, replacement, err := store.RedeemTelegramInvite(ctx, code, "777", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ChangeTemporaryPassword(ctx, user.ID, token, "permanent-password"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("reissued password's revoked session accepted: %v", err)
+	}
+	_, token, err = store.Login(ctx, "alice", replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ChangeTemporaryPassword(ctx, user.ID, token, "permanent-password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SessionUser(ctx, token); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("password change did not revoke session")
+	}
+	_, token, err = store.Login(ctx, "alice", "permanent-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ChangeTemporaryPassword(ctx, user.ID, token, "another-password"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("permanent account changed password without current one: %v", err)
+	}
+	if err := store.ChangePassword(ctx, user.ID, "", "another-password"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ordinary password change accepted empty current password: %v", err)
+	}
+}

@@ -1701,7 +1701,10 @@ func TestTelegramAccountMustChangePassword(t *testing.T) {
 			c := newClient(t, s)
 			c.get(prefix + "/login").Body.Close()
 			resp := c.post(prefix+"/login", url.Values{"username": {"alice"}, "password": {password}})
-			resp.Body.Close()
+			body := readBody(t, resp)
+			if strings.Contains(body, `name="current"`) {
+				t.Fatal("temporary password form asks for the current password")
+			}
 			if got := resp.Request.URL.Path; got != prefix+"/change-password" {
 				t.Fatalf("login landed on %s", got)
 			}
@@ -1722,13 +1725,13 @@ func TestTelegramAccountMustChangePassword(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, next := range []string{"short", password} {
-				resp = c.post(prefix+"/change-password", url.Values{"current": {password}, "password": {next}})
+				resp = c.post(prefix+"/change-password", url.Values{"password": {next}})
 				resp.Body.Close()
 				if got := resp.Request.URL.Path; got != prefix+"/change-password" {
 					t.Fatalf("invalid password accepted: %s", got)
 				}
 			}
-			resp = c.post(prefix+"/change-password", url.Values{"current": {password}, "password": {"permanent-password"}})
+			resp = c.post(prefix+"/change-password", url.Values{"password": {"permanent-password"}})
 			resp.Body.Close()
 			if got := resp.Request.URL.Path; got != prefix+"/login" {
 				t.Fatalf("password change landed on %s", got)
