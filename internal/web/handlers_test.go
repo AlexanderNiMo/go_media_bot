@@ -20,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/net/html"
 
 	"github.com/alex/mediad/internal/config"
 	"github.com/alex/mediad/internal/domain"
@@ -1739,6 +1740,57 @@ func TestTelegramAccountMustChangePassword(t *testing.T) {
 			resp.Body.Close()
 			if got := resp.Request.URL.Path; got != prefix+"/" {
 				t.Fatalf("permanent login landed on %s", got)
+			}
+		})
+	}
+}
+
+func TestLoginLinkPrefillsTemporaryCredentials(t *testing.T) {
+	for _, prefix := range []string{"", "/mediad"} {
+		t.Run(prefix, func(t *testing.T) {
+			s, store := newTestServer(t)
+			s.cfg.Server.BasePath = prefix
+			ctx := context.Background()
+			admin, err := store.CreateAccount(ctx, "admin", "admin-password-long", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, err := store.CreateInvite(ctx, admin.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const username = "alice+&\"test"
+			_, password, err := store.RedeemTelegramInvite(ctx, code, "777", username)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := newClient(t, s)
+			resp := c.get(prefix + "/login?" + url.Values{"username": {username}, "password": {password}}.Encode())
+			if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Referrer-Policy") != "no-referrer" {
+				t.Fatal("credential response can be cached or leaked in a referrer")
+			}
+			doc, err := html.Parse(strings.NewReader(readBody(t, resp)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inputs := url.Values{}
+			var walk func(*html.Node)
+			walk = func(n *html.Node) {
+				if n.Type == html.ElementNode && n.Data == "input" {
+					inputs.Set(attrForTest(n, "name"), attrForTest(n, "value"))
+				}
+				for child := n.FirstChild; child != nil; child = child.NextSibling {
+					walk(child)
+				}
+			}
+			walk(doc)
+			if inputs.Get("username") != username || inputs.Get("password") != password {
+				t.Fatal("login link did not fill the form credentials")
+			}
+			resp = c.post(prefix+"/login", inputs)
+			resp.Body.Close()
+			if resp.Request.URL.Path != prefix+"/change-password" {
+				t.Fatal("temporary login bypassed password change")
 			}
 		})
 	}

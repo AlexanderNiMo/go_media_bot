@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -111,6 +113,12 @@ func newStubTelegram(t *testing.T) *stubTelegram {
 					}
 				}
 			}
+		}
+
+		if method == "sendMessage" && len(utf16.Encode([]rune(msg.Text))) > 4096 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"description":"message is too long"}`))
+			return
 		}
 
 		if method == "sendMessage" && s.failSend {
@@ -1105,7 +1113,7 @@ func TestManualNotificationCarriesTheCandidateButtons(t *testing.T) {
 		t.Fatalf("store candidates: %v", err)
 	}
 	if _, err := h.store.CreateNotifications(ctx, id, storage.NotificationManual,
-		"Pick a release: Старый фильм", "1. [rutor] old film 1080p", nil); err != nil {
+		"Pick a release: Старый фильм", strings.Repeat("1. [rutor] old film 1080p 🎬\n", 500), nil); err != nil {
 		t.Fatalf("create notification: %v", err)
 	}
 
@@ -1114,6 +1122,13 @@ func TestManualNotificationCarriesTheCandidateButtons(t *testing.T) {
 	}
 
 	sent := h.stub.last("sendMessage")
+	if !strings.Contains(sent.Text, "Полный текст:") {
+		t.Fatal("long notification has no full text link")
+	}
+	pending, err := h.store.ListPendingTelegram(ctx, 10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("delivered notification remains pending: %v", err)
+	}
 	if !sent.hasButton("old film 1080p") || !sent.hasButton("old film 720p") {
 		t.Fatalf("the candidates were not offered as buttons: %+v", sent)
 	}
@@ -1263,6 +1278,8 @@ func TestJoinCreatesWebAndTelegramAccount(t *testing.T) {
 	for _, command := range []string{"/join ", "/start join_"} {
 		t.Run(strings.Fields(command)[0], func(t *testing.T) {
 			h := newHarness(t)
+			h.bot.cfg.Server.BaseURL = "https://media.example/"
+			h.bot.cfg.Server.BasePath = "/mediad"
 			ctx := context.Background()
 			admin, err := h.store.CreateAccount(ctx, "admin", "admin-password-long", true)
 			if err != nil {
@@ -1280,6 +1297,19 @@ func TestJoinCreatesWebAndTelegramAccount(t *testing.T) {
 				t.Fatalf("missing credentials: %q", text)
 			}
 			password, _, _ := strings.Cut(tail, "\n")
+			_, linkTail, ok := strings.Cut(text, "Веб-интерфейс: ")
+			if !ok {
+				t.Fatal("missing web link")
+			}
+			link, _, _ := strings.Cut(linkTail, "\n")
+			loginURL, err := url.Parse(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loginURL.Scheme != "https" || loginURL.Host != "media.example" || loginURL.Path != "/mediad/login" ||
+				loginURL.Query().Get("username") != "alex" || loginURL.Query().Get("password") != password {
+				t.Fatal("registration link has wrong path or credentials")
+			}
 			u, err := h.store.Authenticate(ctx, "alex", password)
 			if err != nil || !u.MustChangePassword || u.IsAdmin {
 				t.Fatalf("web account: %+v, %v", u, err)
