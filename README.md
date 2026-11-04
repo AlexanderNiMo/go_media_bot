@@ -826,7 +826,7 @@ outright rather than starting a process that does nothing.
 | Message | What it does |
 |---|---|
 | any title | searches TMDB and offers the matches as buttons |
-| `/list` | what this account is waiting on |
+| `/list` | active requests this account watches; administrators see every user’s |
 | `/cancel <id>` | stops one of them |
 | `/join <code> [login]` | creates a Telegram and web account using an invitation |
 | `/link <code>` | attaches the chat to an existing web account |
@@ -891,10 +891,11 @@ valid for seven days. Neither command accepts the other kind of code.
 On upgrading to this version, unused legacy codes are expired because their
 purpose was not recorded. Issue new invitations and link codes after migration.
 
-**Cancelling is scoped to the watchers.** Request ids are small numbers, so
-`/cancel 12` is trivially guessable; the handler checks that the account is one
-of the request's watchers before doing anything. Without it, anybody could stop
-a stranger's download by typing a number.
+**Administrators can manage every request.** In Telegram, administrators can
+cancel any request and pick its release using either `/pick` or the candidate
+buttons. Other users must be watching the request to perform these actions.
+Request ids are small numbers, so the handlers check permissions before making
+any changes.
 
 ## Architecture
 
