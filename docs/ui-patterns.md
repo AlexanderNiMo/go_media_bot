@@ -2,7 +2,7 @@
 
 One screenshot per pattern, written **after** the implementation.
 
-The [remaining plan](ui-ux-plan.md) lists unfinished work; the
+The [closed plan](ui-ux-plan.md) records deferred work and known limitations; the
 [completed plan](ui-ux-completed.md) records shipped work and verification.
 This file records the implemented interface patterns. A pattern here is a
 piece of the interface with rules of its own — a component, not a page.

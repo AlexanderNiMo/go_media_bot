@@ -239,10 +239,12 @@ func fixtures(t *testing.T) map[string]any {
 			page: testPage(),
 			// The tab the handler defaults to. Without it every panel is
 			// hidden, and the fixture would render an empty page.
-			Tab:       "account",
-			Invites:   []inviteRow{{Code: "abc", CreatedAt: "2026-01-01", ExpiresAt: "2026-01-08", State: "действует"}},
-			Users:     []storage.User{{ID: 1, Username: "alex", IsAdmin: true}, {ID: 2}},
-			InviteTTL: "7 дн",
+			Tab:          "account",
+			Invites:      []inviteRow{{Code: "abc", CreatedAt: "2026-01-01", ExpiresAt: "2026-01-08", State: "действует"}},
+			Users:        []storage.User{{ID: 1, Username: "alex", IsAdmin: true}, {ID: 2}},
+			InviteTTL:    "7 дн",
+			NewInvite:    "new-code",
+			NewInviteURL: "https://mediad.example/join?code=new-code",
 			// BotUsername is empty in the smoke fixture; a separate test
 			// exercises the populated case.
 			BotUsername: "mediad_bot",

@@ -569,7 +569,9 @@ func (s *Server) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.log.Error("could not start a request", "media", spec.String(), "error", err)
-		s.renderError(w, r, "search", "Не удалось поставить запрос: "+err.Error())
+		p := s.basePage(w, r, "search")
+		p.Error = "Не удалось поставить запрос: " + err.Error()
+		s.render(w, r, "search", searchView{page: p})
 		return
 	}
 

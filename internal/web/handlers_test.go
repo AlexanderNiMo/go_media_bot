@@ -25,6 +25,7 @@ import (
 	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/request"
 	"github.com/alex/mediad/internal/storage"
+	"github.com/alex/mediad/internal/tmdb"
 )
 
 // The handler tests run the real mux against a real database.
@@ -546,6 +547,53 @@ func TestPostWithAMismatchedTokenIsRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------
+
+func TestCreateRequestShowsWorkflowError(t *testing.T) {
+	s, _ := newTestServer(t)
+	c := signedIn(t, s)
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/3/movie/603":
+			fmt.Fprint(w, `{"id":603,"title":"Матрица","release_date":"1999-03-31"}`)
+		case "/3/tv/1399":
+			fmt.Fprint(w, `{"id":1399,"name":"Игра престолов","seasons":[{"season_number":2,"episode_count":10}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer metadata.Close()
+	var err error
+	s.tmdb, err = tmdb.NewForTest(metadata.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		kind, id string
+	}{
+		{"movie", "603"},
+		{"tv", "1399"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			resp := c.post("/requests", url.Values{
+				"media_type": {tc.kind}, "tmdb_id": {tc.id}, "season": {"2"},
+			})
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+				t.Fatalf("response = %d %s: %s", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+			}
+			for _, want := range []string{"Не удалось поставить запрос: the web tests do not start workflows", `class="flash bad"`, `action="/search"`} {
+				if !strings.Contains(string(body), want) {
+					t.Errorf("missing %q in workflow error page: %s", want, body)
+				}
+			}
+		})
+	}
+}
 
 // seedRequest inserts a request row, since starting one needs TMDB.
 //

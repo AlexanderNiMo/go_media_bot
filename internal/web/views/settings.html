@@ -124,10 +124,10 @@
 
     {{if .NewInviteURL}}
       <div class="invite">
-        <p><strong>Готовая ссылка для приглашённого:</strong></p>
+        <p><strong id="new-invite-label">Готовая ссылка для приглашённого:</strong></p>
         <p class="invite-row">
           <input type="text" readonly value="{{.NewInviteURL}}" id="new-invite-link"
-                 onclick="this.select()">
+                 aria-labelledby="new-invite-label" onclick="this.select()">
           <button type="button" class="small"
                   onclick="navigator.clipboard.writeText(document.getElementById('new-invite-link').value)">Копировать</button>
         </p>
