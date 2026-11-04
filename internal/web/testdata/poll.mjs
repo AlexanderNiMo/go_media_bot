@@ -59,6 +59,34 @@ try {
   const stage = async n => { await fetch(origin+'/stage?n='+n); };
   const refresh = async n => { await stage(n); await evaluate('refresh()'); await delay(150); };
 
+  for (const width of [320,769,1440]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:400,deviceScaleFactor:1,mobile:false});
+    for (const theme of ['light','dark']) {
+      await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+      for (const reverse of [false,true]) {
+        await evaluate(`(() => {
+          const target = titleLink();
+          const controls = [...document.querySelectorAll('a[href],button,input,select,summary')]
+            .filter(e => e.tabIndex >= 0 && !e.disabled && e.getClientRects().length && !e.closest('[inert]'));
+          controls[controls.indexOf(target) + (${reverse} ? 1 : -1)].focus({preventScroll:true});
+          const r = target.getBoundingClientRect();
+          scrollTo(0, scrollY + r.top - (${reverse} ? -r.height/2 : innerHeight-r.height/2));
+        })()`);
+        for (const type of ['keyDown','keyUp']) {
+          await send('Input.dispatchKeyEvent',{type,key:'Tab',code:'Tab',windowsVirtualKeyCode:9,modifiers:reverse?8:0});
+        }
+        await evaluate('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))');
+        await check(`(() => {
+          const e = titleLink(), r = e.getBoundingClientRect(), s = getComputedStyle(e);
+          const outline = parseFloat(s.outlineWidth) + parseFloat(s.outlineOffset);
+          return document.activeElement === e && outline > 0 && r.top-outline >= 0 && r.bottom+outline <= innerHeight;
+        })()`, 'Tab keeps the whole focus outline visible: '+width+' '+theme+' reverse='+reverse);
+      }
+    }
+  }
+  await send('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
+  await evaluate(`document.documentElement.removeAttribute('data-theme'); scrollTo(0,0)`);
+
   await evaluate(`window.original = titleLink(); original.focus(); window.originalBucket = original.closest('[id^="table-"]');`);
   await refresh(0);
   await check('titleLink() === original && original.closest("[id^=table-]") === originalBucket && document.activeElement === original', 'unchanged response keeps DOM and focus');
