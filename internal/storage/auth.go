@@ -111,16 +111,40 @@ func (s *Store) CreateAccount(ctx context.Context, username, password string, is
 
 // Authenticate checks a username and password.
 func (s *Store) Authenticate(ctx context.Context, username, password string) (*User, error) {
+	return authenticate(ctx, s.pool, username, password)
+}
+
+// Login holds the user lock until its session is stored, so password changes
+// either revoke this session or make the supplied password fail.
+func (s *Store) Login(ctx context.Context, username, password string) (*User, string, error) {
+	var user *User
+	var token string
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		user, err = authenticate(ctx, tx, username, password)
+		if err != nil {
+			return err
+		}
+		token, err = createSession(ctx, tx, user.ID)
+		return err
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return user, token, nil
+}
+
+func authenticate(ctx context.Context, db querier, username, password string) (*User, error) {
 	const q = `
 		SELECT id, COALESCE(username, ''), is_admin, must_change_password, COALESCE(password_hash, '')
 		  FROM users
-		 WHERE username = $1`
+		 WHERE username = $1 FOR UPDATE`
 
 	var (
 		u    User
 		hash string
 	)
-	err := s.pool.QueryRow(ctx, q, strings.TrimSpace(username)).
+	err := db.QueryRow(ctx, q, strings.TrimSpace(username)).
 		Scan(&u.ID, &u.Username, &u.IsAdmin, &u.MustChangePassword, &hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Hash a dummy value before returning, so that a missing account and a
@@ -243,6 +267,10 @@ func ValidUsername(name string) error { return validateUsername(strings.TrimSpac
 // that a leaked database — a backup, a `pg_dump` in a ticket — does not hand
 // over live sessions. The cookie is the only place the original exists.
 func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error) {
+	return createSession(ctx, s.pool, userID)
+}
+
+func createSession(ctx context.Context, db querier, userID int64) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("generate a session token: %w", err)
@@ -250,7 +278,7 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 	token := base64.RawURLEncoding.EncodeToString(raw)
 
 	const q = `INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, $3)`
-	if _, err := s.pool.Exec(ctx, q, hashToken(token), userID,
+	if _, err := db.Exec(ctx, q, hashToken(token), userID,
 		time.Now().Add(SessionTTL)); err != nil {
 		return "", fmt.Errorf("create session: %w", err)
 	}

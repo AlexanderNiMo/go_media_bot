@@ -282,7 +282,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.store.Authenticate(r.Context(),
+	user, token, err := s.store.Login(r.Context(),
 		r.PostFormValue("username"), r.PostFormValue("password"))
 	if err != nil {
 		if !errors.Is(err, storage.ErrUnauthorized) {
@@ -300,10 +300,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.startSession(w, r, user.ID); err != nil {
-		s.fail(w, r, err)
-		return
-	}
+	s.setSessionCookie(w, token)
 
 	s.log.Info("login", "user", user.Username, "remote", r.RemoteAddr)
 	if user.MustChangePassword {
@@ -330,6 +327,11 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID int
 		return err
 	}
 
+	s.setSessionCookie(w, token)
+	return nil
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:  sessionCookie,
 		Value: token,
@@ -342,7 +344,6 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID int
 		Secure:   isTLS(s.cfg.Server.BaseURL),
 		MaxAge:   int(storage.SessionTTL.Seconds()),
 	})
-	return nil
 }
 
 // handleSetupForm is the first-run wizard.
