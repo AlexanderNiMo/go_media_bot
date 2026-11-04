@@ -1391,3 +1391,110 @@ func TestJoinRecoversFromFailedCredentialDelivery(t *testing.T) {
 		t.Fatalf("replacement login: %v", err)
 	}
 }
+
+func TestAdminListShowsEveryUsersRequests(t *testing.T) {
+	h := newHarness(t)
+	admin := h.link(t)
+	ctx := context.Background()
+	if _, err := h.store.Pool().Exec(ctx, "UPDATE users SET is_admin = TRUE WHERE id = $1", admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	other, err := h.store.CreateAccount(ctx, "bob", "another-long-secret", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := h.seedRequest(t, "Матрица", storage.StateDownloading)
+	theirs := h.seedRequest(t, "Чужой фильм", storage.StateSearching)
+	h.seedRequest(t, "Без подписчиков", storage.StateOngoing)
+	if err := h.store.AddWatcher(ctx, mine, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AddWatcher(ctx, theirs, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.press(t, h.message("/list"))
+	text := h.stub.last("sendMessage").Text
+	for _, title := range []string{"Матрица", "Чужой фильм", "Без подписчиков"} {
+		if !strings.Contains(text, title) {
+			t.Fatalf("admin list omits %s: %s", title, text)
+		}
+	}
+}
+
+func TestListCandidatesAllowsAdminInspection(t *testing.T) {
+	h := newHarness(t)
+	user := h.link(t)
+	ctx := context.Background()
+	id := h.seedRequest(t, "Чужой фильм", storage.StateManual)
+	if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+		{Rank: 1, Title: "Чужой релиз 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", Seeders: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.press(t, h.message(fmt.Sprintf("/list %d", id)))
+	if text := h.stub.last("sendMessage").Text; !strings.Contains(text, "Это не ваш запрос") {
+		t.Fatal(text)
+	}
+	if _, err := h.store.Pool().Exec(ctx, "UPDATE users SET is_admin = TRUE WHERE id = $1", user.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.press(t, h.message(fmt.Sprintf("/list %d", id)))
+	if text := h.stub.last("sendMessage").Text; !strings.Contains(text, "Чужой релиз 1080p") {
+		t.Fatal(text)
+	}
+}
+
+func TestAdminCanManageOtherUsersRequests(t *testing.T) {
+	for _, action := range []string{"cancel", "pick", "button"} {
+		t.Run(action, func(t *testing.T) {
+			h := newHarness(t)
+			admin := h.link(t)
+			ctx := context.Background()
+			if _, err := h.store.Pool().Exec(ctx, "UPDATE users SET is_admin = TRUE WHERE id = $1", admin.ID); err != nil {
+				t.Fatal(err)
+			}
+			other, err := h.store.CreateAccount(ctx, "bob", "another-long-secret", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := h.seedRequest(t, "Чужой фильм", storage.StateManual)
+			if err := h.store.AddWatcher(ctx, id, other.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.store.StoreCandidates(ctx, id, []storage.Candidate{
+				{Rank: 1, Title: "Чужой релиз 1080p", Indexer: "rutor", InfoHash: "h1", MagnetLink: "magnet:?xt=1", Seeders: 5},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if action == "cancel" {
+				h.press(t, h.message(fmt.Sprintf("/cancel %d", id)))
+				if len(h.req.canceled) != 1 || h.req.canceled[0] != id {
+					t.Fatalf("canceled %v, want %d", h.req.canceled, id)
+				}
+			} else {
+				if action == "pick" {
+					h.press(t, h.message(fmt.Sprintf("/pick %d 1", id)))
+				} else {
+					h.press(t, h.callback(fmt.Sprintf("%s%d:1", candidatePrefix, id)))
+				}
+				candidates, err := h.store.ListCandidates(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(candidates) != 1 || candidates[0].PickedAt == nil {
+					t.Fatal("admin choice was not saved")
+				}
+				if len(h.req.signaled) != 1 || h.req.signaled[0] != id {
+					t.Fatalf("signaled %v, want %d", h.req.signaled, id)
+				}
+			}
+			watchers, err := h.store.ListWatchers(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(watchers) != 1 || watchers[0].UserID != other.ID {
+				t.Fatal("admin action changed request watchers")
+			}
+		})
+	}
+}
