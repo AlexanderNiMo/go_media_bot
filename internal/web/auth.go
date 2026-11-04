@@ -270,15 +270,23 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.render(w, r, "login", struct {
-		page
-		Next string
-	}{s.basePage(w, r, "login"), r.URL.Query().Get("next")})
+	if r.URL.Query().Get("password") != "" {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+	}
+	s.render(w, r, "login", loginView{
+		page:     s.basePage(w, r, "login"),
+		Next:     r.URL.Query().Get("next"),
+		Username: r.URL.Query().Get("username"),
+		Password: r.URL.Query().Get("password"),
+	})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.renderError(w, r, "login", "не разобрать форму")
+		p := s.basePage(w, r, "login")
+		p.Error = "не разобрать форму"
+		s.render(w, r, "login", loginView{page: p})
 		return
 	}
 
@@ -293,10 +301,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		p := s.basePage(w, r, "login")
 		p.Error = "Неверное имя или пароль."
-		s.render(w, r, "login", struct {
-			page
-			Next string
-		}{p, r.PostFormValue("next")})
+		s.render(w, r, "login", loginView{
+			page: p, Next: r.PostFormValue("next"),
+			Username: r.PostFormValue("username"),
+		})
 		return
 	}
 

@@ -398,7 +398,9 @@ type settingsView struct {
 
 type loginView struct {
 	page
-	Next string
+	Next     string
+	Username string
+	Password string
 }
 
 // helpView is the static help page. No data beyond what the layout already

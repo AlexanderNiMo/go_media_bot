@@ -872,10 +872,16 @@ mid-loop.
 An administrator issues a registration invitation in the web settings. Send
 `/join <code>` in a private chat, or open the Telegram invitation link.
 Your Telegram username becomes the web login; if it is missing or taken,
-send `/join <code> <another_login>`. The bot sends a temporary web password,
-which must be changed at the first web login. Before changing it, repeat
+send `/join <code> <another_login>`. The bot sends a temporary web password
+and a login link that includes the configured base path and fills in both
+credentials. The password must be changed
+at the first web login. Before changing it, repeat
 `/join` with the same code to issue a replacement if delivery failed.
-The temporary password remains in the Telegram chat history.
+The temporary password remains in the Telegram chat history. The login link
+also contains it.
+
+Long Telegram notifications are shortened to fit the message limit. Their
+buttons remain available, and a link opens the full text in the web inbox.
 
 To attach Telegram to an existing web account, generate a **link code**
 in that account's Telegram settings and send `/link <code>`.
