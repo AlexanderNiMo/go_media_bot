@@ -578,3 +578,76 @@ func TestSelectPrefersSameThread(t *testing.T) {
 		t.Errorf("empty thread id should not affect the score, chose %q", v.Chosen.Title)
 	}
 }
+
+// TestTheRefusedReleasesAreOrderedBestFirst checks the order of the
+// refusals.
+//
+// The refusals are the menu a person picks from when the selector found
+// nothing acceptable, so the best of them has to come first. A menu whose
+// first item is a camrip and whose last is the best release the tracker has
+// is a menu nobody can use.
+func TestTheRefusedReleasesAreOrderedBestFirst(t *testing.T) {
+	s := selectorFor(t)
+
+	verdict := s.Select(movieSpec(), []domain.Release{
+		rel("Матрица (1999) 480p CAM | Дубляж", 8, 40),
+		rel("Матрица (1999) 1080p WEB-DL | Дубляж", 4, 2),
+		rel("Матрица (1999) 2160p BluRay | Дубляж", 40, 2),
+	}, nil, "")
+
+	if len(verdict.Rejected) != 3 {
+		t.Fatalf("rejected = %d, want 3", len(verdict.Rejected))
+	}
+
+	for i := 1; i < len(verdict.Rejected); i++ {
+		before, after := verdict.Rejected[i-1], verdict.Rejected[i]
+		if before.Score < after.Score {
+			t.Errorf("the refusals are not ordered: %q scores %.3f and comes before %q at %.3f",
+				before.Release.Title, before.Score, after.Release.Title, after.Score)
+		}
+	}
+
+	if !strings.Contains(verdict.Rejected[0].Release.Title, "2160p") {
+		t.Errorf("the first refusal is %q; the best release on offer comes first",
+			verdict.Rejected[0].Release.Title)
+	}
+	if !strings.Contains(verdict.Rejected[2].Release.Title, "CAM") {
+		t.Errorf("the last refusal is %q; the camrip comes last",
+			verdict.Rejected[2].Release.Title)
+	}
+}
+
+// TestARefusalCarriesTheFactsOfItsRelease checks what a refusal comes with.
+//
+// The refused releases are shown to a person, who chooses between them. A
+// choice needs the facts of the release and not only the verdict on it —
+// "no Russian audio" is an answer only if the reader can see what the
+// release actually has.
+func TestARefusalCarriesTheFactsOfItsRelease(t *testing.T) {
+	s := selectorFor(t)
+
+	verdict := s.Select(movieSpec(), []domain.Release{
+		rel("Матрица (1999) 1080p BluRay | LostFilm", 8, 2),
+	}, nil, "")
+
+	if len(verdict.Rejected) != 1 {
+		t.Fatalf("rejected = %d, want 1", len(verdict.Rejected))
+	}
+	r := verdict.Rejected[0]
+
+	if r.Parsed.Quality != Quality1080p {
+		t.Errorf("the refusal reads the resolution as %v, want %v", r.Parsed.Quality, Quality1080p)
+	}
+	if r.Parsed.Source != SourceBluRay {
+		t.Errorf("the refusal reads the source as %v, want %v", r.Parsed.Source, SourceBluRay)
+	}
+	if r.Audio.Tier != AudioMulti {
+		t.Errorf("the refusal reads the audio as %v, want %v", r.Audio.Tier, AudioMulti)
+	}
+	if len(r.Audio.Studios) == 0 || r.Audio.Studios[0] != "lostfilm" {
+		t.Errorf("the refusal reads the studios as %v, want lostfilm", r.Audio.Studios)
+	}
+	if r.Score <= 0 {
+		t.Errorf("the refusal scores %.3f; a refused release is rated like any other", r.Score)
+	}
+}

@@ -196,7 +196,34 @@ func fixtures(t *testing.T) map[string]any {
 			States:   []storage.State{"pending", "failed"},
 			Requests: []requestRow{row},
 		},
-		"request": requestView{page: testPage(), Request: detail},
+		"request": requestView{
+			page:    testPage(),
+			Request: detail,
+			// The candidate table is only on the page when the request is
+			// offering releases to choose from, so the fixture offers
+			// some. A table that no test renders is a table nothing
+			// checks — and this one carries the roles and the labels
+			// that the card layout depends on.
+			Candidates: candidateRows([]storage.Candidate{
+				{
+					Rank: 1, Title: "Матрица 1080p BluRay | LostFilm",
+					Indexer: "rutracker", InfoHash: "abc123",
+					SizeBytes: 8 << 30, Seeders: 12,
+				},
+				{
+					Rank: 2, Title: "Матрица 720p WEB-DL | Дубляж",
+					Indexer: "rutracker", InfoHash: "def456",
+					SizeBytes: 2 << 30, Seeders: 2,
+					RejectionReason: "too_few_seeders: 2 seeders, minimum is 3",
+				},
+				{
+					Rank: 3, Title: "Матрица CAMRip | ENG",
+					Indexer: "rutracker", InfoHash: "ghi789",
+					SizeBytes: 1 << 30, Seeders: 40,
+					RejectionReason: "excluded_source: camrip",
+				},
+			}, release.DefaultProfile()),
+		},
 		"cancel": cancelView{
 			page:         testPage(),
 			Request:      detail,
@@ -716,11 +743,11 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "request", requestView{
 		page:    testPage(),
 		Request: detail,
-		Candidates: []storage.Candidate{
+		Candidates: candidateRows([]storage.Candidate{
 			{Rank: 1, Title: "Матрица 1080p", RejectionReason: ""},
 			{Rank: 2, Title: "Матрица 720p", RejectionReason: "too_few_seeders: 2 seeders, minimum is 3"},
 			{Rank: 3, Title: "Матрица CAMRip", RejectionReason: "excluded_source: camrip"},
-		},
+		}, release.DefaultProfile()),
 	})
 
 	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
@@ -771,6 +798,104 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 	}
 	if !strings.Contains(rows[2].class, "refused") {
 		t.Errorf("a refused row has class %q; it is dimmed", rows[2].class)
+	}
+}
+
+// TestTheCandidateTableShowsTheFactsOfEveryRelease checks what a row of the
+// candidate table carries.
+//
+// The table is where a person decides whether the bot understood them, so a
+// row says what the release is — its resolution, its source, its Russian
+// audio — and not only why it was refused. "Нет русской дорожки" is an
+// answer only if the reader can see what the release actually has.
+func TestTheCandidateTableShowsTheFactsOfEveryRelease(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	detail := detailFor(sampleRequest(), nil, nil, 2, time.Now(), "")
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "request", requestView{
+		page:    testPage(),
+		Request: detail,
+		Candidates: candidateRows([]storage.Candidate{
+			{
+				Rank: 1, Title: "Матрица 1999 1080p BluRay | LostFilm",
+				Indexer: "rutracker", InfoHash: "abc123",
+				SizeBytes: 8 << 30, Seeders: 12,
+			},
+			{
+				Rank: 2, Title: "Матрица 1999 720p WEB-DL | Дубляж",
+				Indexer: "rutracker", InfoHash: "def456",
+				SizeBytes: 2 << 30, Seeders: 2,
+				RejectionReason: "too_few_seeders: 2 seeders, minimum is 3",
+			},
+		}, release.DefaultProfile()),
+	})
+
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	text := textOf(doc)
+	for _, want := range []string{
+		"Матрица 1999 1080p BluRay | LostFilm",
+		"1080p · BluRay",
+		"многоголосый",
+		"Lostfilm",
+		"8,0 ГиБ",
+		// The reason carries the release's own number.
+		"мало сидеров: 2",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the candidate table does not show %q", want)
+		}
+	}
+}
+
+// TestTheCandidateTableCarriesResponsiveLabels checks the markup the phone
+// layout rests on.
+//
+// Below 768 px the candidate table is rendered as a card. It has to be: it
+// is the widest surface in the product, and Phase 2 made it two columns
+// wider. Without the labels a card is a list of values with nothing saying
+// what they are; without the roles VoiceOver reads the blocks as a stream of
+// unrelated text, because `display: block` takes the table semantics away.
+func TestTheCandidateTableCarriesResponsiveLabels(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+
+	detail := detailFor(sampleRequest(), nil, nil, 2, time.Now(), "")
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), "request", requestView{
+		page:    testPage(),
+		Request: detail,
+		Candidates: candidateRows([]storage.Candidate{
+			{Rank: 1, Title: "Матрица 1080p", Indexer: "rutracker", Seeders: 3},
+		}, release.DefaultProfile()),
+	})
+
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("parse the rendered page: %v", err)
+	}
+
+	tables := 0
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "table" {
+			tables++
+			if role := attrForTest(n, "role"); role != "table" {
+				t.Errorf("a table has role %q; the card layout needs an explicit one", role)
+			}
+			checkRowRolesAndLabels(t, n)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if tables != 1 {
+		t.Errorf("the page has %d tables; the candidate table is the only one here", tables)
 	}
 }
 
