@@ -126,9 +126,6 @@ func TestTestTargetsRunEveryCheck(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/explicit=%t", target, explicit), func(t *testing.T) {
 				dir := t.TempDir()
 				settings := "MEDIAD_POSTGRES_DSN=local-dsn\nMEDIAD_TEST_CHROME=" + filepath.Join(dir, "chrome") + "\n"
-				if target != "check-commit" {
-					settings += "MEDIAD_TEST_QBIT_URL=http://fixture.invalid\n"
-				}
 				for name, body := range map[string]string{
 					"Makefile": string(makefile), ".env": settings,
 					"chrome": "#!/bin/sh\nexit 0\n", "node": "#!/bin/sh\nexit 0\n",
@@ -184,10 +181,10 @@ func TestTestTargetRejectsMissingSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, missing := range []string{"MEDIAD_POSTGRES_DSN", "MEDIAD_TEST_QBIT_URL", "MEDIAD_TEST_CHROME"} {
+	for _, missing := range []string{"MEDIAD_POSTGRES_DSN", "MEDIAD_TEST_CHROME"} {
 		t.Run(missing, func(t *testing.T) {
 			dir := t.TempDir()
-			settings := map[string]string{"MEDIAD_POSTGRES_DSN": "local-dsn", "MEDIAD_TEST_QBIT_URL": "http://fixture.invalid", "MEDIAD_TEST_CHROME": filepath.Join(dir, "missing-chrome")}
+			settings := map[string]string{"MEDIAD_POSTGRES_DSN": "local-dsn", "MEDIAD_TEST_CHROME": filepath.Join(dir, "missing-chrome")}
 			settings[missing] = ""
 			var env strings.Builder
 			for key, value := range settings {

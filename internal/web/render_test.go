@@ -747,6 +747,7 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 			{Rank: 1, Title: "Матрица 1080p", RejectionReason: ""},
 			{Rank: 2, Title: "Матрица 720p", RejectionReason: "too_few_seeders: 2 seeders, minimum is 3"},
 			{Rank: 3, Title: "Матрица CAMRip", RejectionReason: "excluded_source: camrip"},
+			{Rank: 4, Title: "Матрица 480p", RejectionReason: "too_few_seeders: 1 seeders, minimum is 3"},
 		}, release.DefaultProfile()),
 	})
 
@@ -757,6 +758,7 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 
 	type row struct {
 		buttons []string
+		names   []string
 		class   string
 	}
 	var rows []row
@@ -769,6 +771,7 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 			collect = func(n *html.Node) {
 				if n.Type == html.ElementNode && n.Data == "button" {
 					r.buttons = append(r.buttons, strings.TrimSpace(textOf(n)))
+					r.names = append(r.names, attrForTest(n, "aria-label"))
 				}
 				for c := n.FirstChild; c != nil; c = c.NextSibling {
 					collect(c)
@@ -783,8 +786,8 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 	}
 	walk(doc)
 
-	if len(rows) != 3 {
-		t.Fatalf("the candidate table has %d rows, want 3", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("the candidate table has %d rows, want 4", len(rows))
 	}
 
 	if len(rows[0].buttons) != 1 || rows[0].buttons[0] != "Скачать это" {
@@ -792,6 +795,11 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 	}
 	if len(rows[1].buttons) != 1 || rows[1].buttons[0] != "Скачать всё равно" {
 		t.Errorf("a release refused on quality offers %v; it offers «Скачать всё равно»", rows[1].buttons)
+	}
+	for i, want := range map[int]string{0: "Скачать это: Матрица 1080p", 1: "Скачать всё равно: Матрица 720p", 3: "Скачать всё равно: Матрица 480p"} {
+		if len(rows[i].names) != 1 || rows[i].names[0] != want {
+			t.Errorf("candidate %d button names = %v, want %q", i+1, rows[i].names, want)
+		}
 	}
 	if len(rows[2].buttons) != 0 {
 		t.Errorf("a release refused on principle offers %v; it offers nothing at all", rows[2].buttons)

@@ -121,7 +121,7 @@
           <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
             <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
             <input type="hidden" name="rank" value="{{.Rank}}">
-            <button type="submit" class="small{{if .Pick.Secondary}} secondary{{end}}">{{.Pick.Label}}</button>
+            <button type="submit" class="small{{if .Pick.Secondary}} secondary{{end}}" aria-label="{{.Pick.Label}}: {{.Title}}">{{.Pick.Label}}</button>
           </form>
         {{else}}
           <span class="muted" aria-hidden="true">—</span>
