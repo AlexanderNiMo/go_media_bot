@@ -74,34 +74,54 @@
 <h3>Кандидаты для ручного выбора</h3>
 <p class="muted">
   Авто-подбор не нашёл подходящего релиза, но индексатор вернул эти варианты.
-  Нажмите «Скачать это» на том, что подходит — загрузка начнётся сразу.
+  Лучшие — сверху. Нажмите «Скачать это» на том, что подходит; «Скачать всё
+  равно» стоит на отклонённом по качеству, и это ваш выбор.
   Список обновляется при каждом поиске.
 </p>
-<table>
-  <thead><tr><th>#</th><th>Релиз</th><th>Размер</th><th>Сидеры</th><th>Отклонён по</th><th></th></tr></thead>
+{{/* The facts of every release are on the row, not only the verdict on it:
+     "нет русской дорожки" is an answer only if the reader can see what the
+     release actually has. The cells carry the name of the column they came
+     from, because below 768 px the table is rendered as a card and the name
+     becomes the field's label. */}}
+<table role="table" class="table-cards candidates">
+  <thead>
+    <tr role="row">
+      <th role="columnheader">Релиз</th>
+      <th role="columnheader">Качество</th>
+      <th role="columnheader">Аудио</th>
+      <th role="columnheader">Размер</th>
+      <th role="columnheader">Сидеры</th>
+      <th role="columnheader">Причина</th>
+      <th role="columnheader"></th>
+    </tr>
+  </thead>
   <tbody>
   {{range $.Candidates}}
     {{/* The action follows the reason: a release refused on principle gets
          no button at all, and the row is dimmed to say so. A release refused
          on quality gets a button that says it is an overrule. */}}
-    {{$pick := candidatePick .RejectionReason}}
-    <tr{{if eq (reasonTone .RejectionReason) "danger"}} class="refused"{{end}}>
-      <td class="mono">{{.Rank}}</td>
-      <td>
-        <div class="mono">{{.Title}}</div>
-        <div class="muted small">[{{.Indexer}}] {{.InfoHash}}</div>
+    <tr role="row"{{if .Refused}} class="refused"{{end}}>
+      <td role="cell" class="release" data-label="">
+        <div class="mono name" title="{{.Title}}">{{.Title}}</div>
+        <div class="muted small">#{{.Rank}} · {{.Indexer}} · <span class="mono">{{.InfoHash}}</span></div>
+        {{if .Episodes}}<div class="muted small">{{.Episodes}}</div>{{end}}
       </td>
-      <td class="muted mono">{{bytes .SizeBytes}}</td>
-      <td class="muted mono"{{if seedersUnknown .Seeders}} title="сидеры неизвестны"{{end}}>{{seeders .Seeders}}</td>
-      <td class="muted small" title="{{.RejectionReason}}">
-        <span class="reason {{reasonTone .RejectionReason}}">{{reasonLabel .RejectionReason}}</span>
+      <td role="cell" class="quality" data-label="Качество"{{if .QualityTitle}} title="{{.QualityTitle}}"{{end}}>{{.QualityText}}</td>
+      <td role="cell" class="audio-cell" data-label="Аудио">
+        <span class="audio {{.AudioTone}}"{{if .AudioTitle}} title="{{.AudioTitle}}"{{end}}>{{.AudioLabel}}</span>
+        {{if .Studio}}<div class="muted small">{{.Studio}}</div>{{end}}
       </td>
-      <td>
-        {{if $pick.Label}}
+      <td role="cell" class="muted mono size" data-label="Размер">{{.Size}}</td>
+      <td role="cell" class="muted mono seeders" data-label="Сидеры"{{if .SeedersUnknown}} title="сидеры неизвестны"{{end}}>{{.Seeders}}</td>
+      <td role="cell" class="reason-cell" data-label="Причина"{{if .ReasonTitle}} title="{{.ReasonTitle}}"{{end}}>
+        <span class="reason {{.ReasonTone}}">{{.Reason}}</span>
+      </td>
+      <td role="cell" class="actions" data-label="Действие">
+        {{if .Pick.Label}}
           <form method="post" action="{{path $.BasePath "/requests/"}}{{$.Request.ID}}/pick">
             <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
             <input type="hidden" name="rank" value="{{.Rank}}">
-            <button type="submit" class="small{{if $pick.Secondary}} secondary{{end}}">{{$pick.Label}}</button>
+            <button type="submit" class="small{{if .Pick.Secondary}} secondary{{end}}">{{.Pick.Label}}</button>
           </form>
         {{else}}
           <span class="muted" aria-hidden="true">—</span>

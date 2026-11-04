@@ -153,6 +153,49 @@ tr.unread td { font-weight: 500; }
 .reason.warn { color: var(--m-warn); }
 .reason.neutral { color: var(--m-text-muted); }
 
+/* The audio tier of a release: a pill, like the state pill, because it
+   answers the same kind of question — where on the ladder does this sit.
+   "ok" is a professional dub, "warn" an amateur reading, and "danger" the
+   case the whole detection exists for: Russian subtitles and no Russian
+   audio. "neutral" is a release whose name says nothing at all, which is
+   not the same thing as a release with no Russian audio. */
+.audio {
+  font-size: 0.85em;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--m-radius-pill);
+  border: 1px solid var(--m-border);
+  white-space: nowrap;
+}
+.audio.ok { color: var(--m-ok); border-color: var(--m-ok); }
+.audio.warn { color: var(--m-warn); border-color: var(--m-warn); }
+.audio.danger { color: var(--m-danger); border-color: var(--m-danger); }
+.audio.neutral { color: var(--m-text-muted); }
+
+/* The candidate table: the releases a person chooses from by hand.
+
+   A release name is long and inflects freely — a real multi-voice name
+   runs to a hundred and twenty characters — so it is clamped to two lines
+   and the full name stays in the tooltip. The table has to survive it. */
+table.candidates td.release { max-width: 22rem; min-width: 13rem; }
+table.candidates td.release .name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
+  line-height: 1.25;
+}
+table.candidates td.quality,
+table.candidates td.audio-cell,
+table.candidates td.size { white-space: nowrap; }
+/* The reason gets room to be read: "источник исключён: CAM" over three
+   lines is a sentence nobody reads. */
+table.candidates td.reason-cell { min-width: 9rem; }
+/* The button keeps its words: "Скачать всё равно" split over two lines is
+   two lines of a row that was already the tallest. */
+table.candidates td.actions button { white-space: nowrap; }
+
 /* The download progress bar.
    The fill is a block, not an inline element: an inline element ignores a
    width, which is why the bar rendered as nothing at all before this rule
@@ -719,6 +762,28 @@ html[data-sidebar="open"] .hamburger::before { content: '✕'; }
   table.table-cards td.actions a {
     display: inline-flex;
     align-items: center;
+    min-height: 44px;
+  }
+
+  /* The candidate table is seven columns wide, and seven full-width lines
+     per card would make the card longer than the table it replaced. The
+     quality and the audio share a line, and so do the size and the
+     seeders: the facts that go together are read together. */
+  table.candidates td.quality,
+  table.candidates td.audio-cell { flex: 1 1 40%; }
+  table.candidates td.size,
+  table.candidates td.seeders { flex: 1 1 40%; }
+
+  /* The desktop column widths are a minimum for the table and not for the
+     card: on a 320 px screen they would push the fields past the edge
+     instead of stacking them. */
+  table.candidates td.release,
+  table.candidates td.reason-cell { min-width: 0; }
+
+  /* The pick is the thing a finger reaches for, and it is a button here
+     rather than a link. */
+  table.candidates td.actions button {
+    width: 100%;
     min-height: 44px;
   }
 }

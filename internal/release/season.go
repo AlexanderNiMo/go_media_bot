@@ -207,11 +207,16 @@ func (s selector) SelectUpdate(
 		if reason != "" {
 			verdict.Rejected = append(verdict.Rejected, Rejection{
 				Release: rel, Reason: reason, Detail: detail,
+				Parsed: parsed, Audio: audio,
 			})
 			continue
 		}
 		accepted = append(accepted, scored{release: rel, parsed: parsed, audio: audio})
 	}
+
+	// The refusals are scored and ordered before anything else looks at
+	// them, so that the list is a menu with the best of it first.
+	s.scoreRefusals(verdict.Rejected)
 
 	// The most complete update on offer: the one that carries the most of
 	// what is still missing.

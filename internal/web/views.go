@@ -296,8 +296,13 @@ type requestsView struct {
 
 type requestView struct {
 	page
-	Request    requestDetail
-	Candidates []storage.Candidate
+	Request requestDetail
+	// Candidates are the rows of the table a person picks a release
+	// from. They are built here rather than passed through raw, because
+	// the table shows facts about each release — its resolution, its
+	// source, its Russian audio — and those facts are read out of the
+	// release's name.
+	Candidates []candidateRow
 }
 
 type notificationRow struct {
