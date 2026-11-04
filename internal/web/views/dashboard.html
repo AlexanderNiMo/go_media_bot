@@ -1,4 +1,12 @@
 {{define "content"}}
+<p>Добавьте фильм или сезон — бот найдёт релиз с русским звуком. Если подходящего
+  релиза пока нет, он продолжит поиск до двух лет.
+  <a href="{{path .BasePath "/search"}}">Найти фильм или сериал</a> ·
+  <a href="{{path .BasePath "/help"}}">Как это работает</a>
+</p>
+{{if .Filter.HasFilters}}
+<p><a href="{{path .BasePath "/"}}?scope={{.Filter.Scope}}">Сбросить фильтры</a> — охват «{{scopeLabel .Filter.Scope}}» сохранится.</p>
+{{end}}
 {{/*
   Two GET forms, not one.
 
@@ -151,7 +159,7 @@
       </tbody>
     </table>
   {{else}}
-    <p class="muted">Пусто.</p>
+    <p class="muted">{{if .Filter.HasFilters}}Под текущие фильтры не подошло ни одного завершённого запроса.{{else}}В этом списке пока нет завершённых запросов. Здесь появятся результаты поиска и загрузок.{{end}}</p>
   {{end}}
 </details>
 

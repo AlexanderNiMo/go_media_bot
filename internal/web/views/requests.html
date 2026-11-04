@@ -32,6 +32,10 @@
     </tbody>
   </table>
 {{else}}
-  <p class="muted">Ничего нет.</p>
+  {{if eq .State "all"}}
+    <p class="muted">Запросов пока нет. <a href="{{path .BasePath "/search"}}">Найдите фильм или сериал</a>, чтобы добавить первый.</p>
+  {{else}}
+    <p class="muted">Нет запросов в выбранных состояниях. <a href="{{path .BasePath "/requests"}}?state=all">Показать все запросы</a> или <a href="{{path .BasePath "/search"}}">найти фильм или сериал</a>.</p>
+  {{end}}
 {{end}}
 {{end}}
