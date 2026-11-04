@@ -42,14 +42,21 @@
   --m-radius-pill: 999px;
 }
 
-/* The warning colour for the dark theme, in both ways a theme can be chosen:
+/* Dark theme overrides, in both ways a theme can be chosen:
    by the operating system's preference, or by the data-theme attribute the
    toggle sets. This mirrors exactly how Pico itself switches, so the two
-   never disagree about which theme is in force. */
+   never disagree about which theme is in force. The base button background
+   keeps white hover/focus text above 4.5:1. */
 @media only screen and (prefers-color-scheme: dark) {
-  :root:not([data-theme]) { --m-warn: #e0a63c; }
+  :root:not([data-theme]) {
+    --m-warn: #e0a63c;
+    --pico-primary-hover-background: var(--pico-primary-background);
+  }
 }
-[data-theme="dark"] { --m-warn: #e0a63c; }
+[data-theme="dark"] {
+  --m-warn: #e0a63c;
+  --pico-primary-hover-background: var(--pico-primary-background);
+}
 
 main.container, main { max-width: 76rem; }
 
@@ -279,7 +286,7 @@ table.candidates td.actions button { white-space: nowrap; }
   position: absolute;
   top: 0.4rem;
   right: 0.4rem;
-  background: var(--pico-primary);
+  background: var(--pico-primary-background);
   color: var(--pico-primary-inverse);
   font-size: 0.7em;
   font-weight: 600;
@@ -550,8 +557,7 @@ table td > input.notif-check {
 .block[open] > summary::before { transform: rotate(90deg); }
 .block > summary .count { font-weight: 400; font-size: 0.85em; }
 
-/* State pills: a checkbox + label rendered as a single tag-like control.
-   .off dims the pill so the user can see at a glance which states are hidden. */
+/* State pills: the checkbox and filled background mark selected states. */
 .state-pills { gap: 0.35rem; }
 .pill {
   display: inline-flex;
@@ -567,8 +573,7 @@ table td > input.notif-check {
 }
 .pill input[type="checkbox"],
 .pill input[type="radio"] { margin: 0; }
-.pill.off { opacity: 0.45; }
-.pill:has(input:checked) { background: var(--pico-primary); color: var(--pico-primary-inverse); border-color: var(--pico-primary); }
+.pill:has(input:checked) { background: var(--pico-primary-background); color: var(--pico-primary-inverse); border-color: var(--pico-primary); }
 .pill.off:has(input:checked) { background: transparent; color: inherit; }
 
 /* --- layout with sidebar ---------------------------------------------- */
@@ -619,7 +624,7 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
   position: relative;
 }
 .sidebar nav a:hover { background: var(--pico-muted-border-color); text-decoration: none; }
-.sidebar nav a.on { background: var(--pico-primary); color: var(--pico-primary-inverse); }
+.sidebar nav a.on { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
 .sidebar nav + nav { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--pico-muted-border-color); }
 .sidebar nav.sub a { padding-left: 1.5rem; font-size: 0.9em; }
 .sidebar nav.help { margin-top: auto; border-top: 1px solid var(--pico-muted-border-color); }
@@ -805,10 +810,6 @@ html[data-sidebar="open"] .hamburger::before { content: '✕'; }
    the word does. */
 #block-waiting { border-left: 3px solid var(--m-warn); }
 
-/* A candidate row that was refused on principle. It carries no action, so
-   it is dimmed: the eye should pass over it to the row that can be picked. */
-tr.refused td { opacity: 0.6; }
-
 /* The lines that say what a cancellation will do. */
 ul.consequences {
   max-width: 40rem;
@@ -881,7 +882,8 @@ button.link, a.link {
   min-width: 32px;
   min-height: 32px;
 }
-:focus-visible, .pill:focus-within, .notification-select:focus-within {
+:focus-visible, details summary:focus-visible:not([role]),
+.pill:focus-within, .notification-select:focus-within {
   outline: 2px solid var(--m-accent);
   outline-offset: 2px;
 }
@@ -957,17 +959,4 @@ button.link, a.link {
   table.events td:first-child { color: var(--m-text-muted); }
   table.table-cards td.selection { flex: 0 0 44px; }
   table.table-cards td.selection::before { content: none; }
-}
-
-/* Keep poll announcements available without shifting the dashboard. */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
 }

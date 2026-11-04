@@ -4,11 +4,14 @@
 {{if .Items}}
   <form method="post" action="{{path $.BasePath "/notifications/read"}}">
     <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-    <div class="actions">
+    <div class="actions" id="notification-actions">
       <button type="submit" class="small">Отметить выбранные прочитанными</button>
-      <button type="button" class="small secondary" onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = true)">Выбрать все</button>
-      <button type="button" class="small secondary" onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = false)">Снять выбор</button>
+      <button type="button" class="small secondary" hidden onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = true)">Выбрать все</button>
+      <button type="button" class="small secondary" hidden onclick="document.querySelectorAll('input.notif-check').forEach(c => c.checked = false)">Снять выбор</button>
     </div>
+    <script>
+      document.querySelectorAll('#notification-actions button[hidden]').forEach(button => button.hidden = false);
+    </script>
     <table role="table" class="table-cards">
       <thead><tr role="row"><th role="columnheader"></th><th role="columnheader" colspan="2">Когда</th><th role="columnheader">Что</th><th role="columnheader">Текст</th></tr></thead>
       <tbody>

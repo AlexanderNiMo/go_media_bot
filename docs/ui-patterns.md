@@ -2,8 +2,9 @@
 
 One screenshot per pattern, written **after** the implementation.
 
-The plan (`docs/ui-ux-plan.md`) is the argument for what the interface
-should do; this file is the record of what it does. A pattern here is a
+The [remaining plan](ui-ux-plan.md) lists unfinished work; the
+[completed plan](ui-ux-completed.md) records shipped work and verification.
+This file records the implemented interface patterns. A pattern here is a
 piece of the interface with rules of its own — a component, not a page.
 
 ---
@@ -39,7 +40,7 @@ what the release actually has.
 
 1. **The action follows the reason.** A release refused on principle — a
    camrip, a blacklisted hash, a release with Russian subtitles and no
-   Russian audio — has no button at all, and its row is dimmed. A release
+   Russian audio — has no button at all. Its text retains full contrast. A release
    refused on quality gets «Скачать всё равно», which says out loud that it
    is an overrule of the policy. The endpoint asks the same question the
    row asks, so a hidden button is not a rule with no teeth.
@@ -123,13 +124,11 @@ a vanished row or closed destination returns focus to the original bucket summar
 viewport offset is restored within the document's bounds. Filters and bucket
 disclosures remain outside the swaps.
 
-A separate visually hidden polite status region batches state/list changes,
-never progress ticks, naming up to three changes plus the remaining count.
-Leaving the bounded active list is not described as completion.
+Automatic spoken poll announcements were removed at the user’s request.
+Polling continues to preserve focus and scroll without a live status region.
 
 `TestDashboardPollBrowser` exercises these behaviours with vendored htmx, a local
 fixture server, native Tab and a real background tab. `make test` enables it
 and requires Node and Chrome; direct `go test` needs `MEDIAD_TEST_CHROME`.
 The plan records payload/cache measurements.
-No new visible component needs a screenshot; actual screen-reader speech,
-Safari and live service performance remain unverified.
+No new visible component needs a screenshot; Safari and live service performance remain unverified.

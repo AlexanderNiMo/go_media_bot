@@ -55,25 +55,23 @@ try {
     window.cancelLink = () => document.querySelector('[data-request="/mediad/requests/7"] .actions a:last-child');
   `);
   const check = async (expression, label) => assert.equal(await evaluate(expression), true, label);
+  await check(`!document.querySelector('#dashboard-status, [aria-live], [role="status"]')`, 'dashboard has no live announcements');
   const stage = async n => { await fetch(origin+'/stage?n='+n); };
   const refresh = async n => { await stage(n); await evaluate('refresh()'); await delay(150); };
 
   await evaluate(`window.original = titleLink(); original.focus(); window.originalBucket = original.closest('[id^="table-"]');`);
   await refresh(0);
   await check('titleLink() === original && original.closest("[id^=table-]") === originalBucket && document.activeElement === original', 'unchanged response keeps DOM and focus');
-  await check('document.getElementById("dashboard-status").textContent === ""', 'unchanged response is silent');
   await evaluate(`document.querySelector('[name=q]').value = 'не отправлять'; document.getElementById('block-searching').open = false; window.scrollTo(0, 150); window.scrollBefore = scrollY;`);
   await check('scrollBefore > 0', 'scroll check starts below the top');
   await refresh(1);
   await check('document.activeElement === titleLink() && scrollY === scrollBefore', 'progress replacement restores focus without scrolling');
-  await check('document.getElementById("dashboard-status").textContent === ""', 'progress ticks are silent');
   await check(`document.querySelector('[name=q]').value === 'не отправлять' && !document.getElementById('block-searching').open && poll.getAttribute('hx-get').includes('scope=mine') && poll.getAttribute('hx-get').includes('sort=waiting')`, 'filters, scope and disclosure survive');
   await send('Input.dispatchKeyEvent', {type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
   await send('Input.dispatchKeyEvent', {type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
   await check('document.activeElement === cancelLink()', 'Tab continues from restored title link');
   await refresh(2);
   await check('document.activeElement === cancelLink() && cancelLink().closest("details").id === "block-waiting"', 'cancel focus follows request to a later bucket');
-  await check(`document.getElementById("dashboard-status").textContent.includes(document.querySelector('[data-request="/mediad/requests/7"] .state').textContent)`, 'state transition is announced');
   await evaluate(`
     window.pickBefore = pickLink(); pickBefore.focus();
     pickBefore.closest('tr').querySelector('[data-label="Возраст"]').textContent = 'до обновления';
@@ -92,24 +90,11 @@ try {
   await evaluate(`document.getElementById('block-waiting').open = true; cancelLink().focus();`);
   await refresh(4);
   await check('document.activeElement === document.querySelector("#block-waiting summary")', 'removed request falls back to summary');
-  await check('document.getElementById("dashboard-status").textContent.includes("больше нет в активном списке")', 'removal does not claim completion');
-  await evaluate(`window.beforeError = document.getElementById('table-searching'); window.messageBeforeError = document.getElementById('dashboard-status').textContent;`);
+  await evaluate(`window.beforeError = document.getElementById('table-searching');`);
   await stage(5);
   await evaluate('refresh().catch(() => {})');
-  await check('document.getElementById("table-searching") === beforeError && document.getElementById("dashboard-status").textContent === messageBeforeError', 'HTTP error leaves DOM and announcements alone');
-  await stage(0);
-  await evaluate('refresh()');
-  await delay(200);
-  await evaluate(`
-    var tbody = document.querySelector('#table-downloading tbody');
-    for (var i=0; i<4; i++) {
-      var extra = tbody.firstElementChild.cloneNode(true);
-      extra.dataset.request = '/extra/' + i;
-      tbody.appendChild(extra);
-    }
-  `);
+  await check('document.getElementById("table-searching") === beforeError', 'HTTP error leaves DOM alone');
   await refresh(0);
-  await check('document.getElementById("dashboard-status").textContent.endsWith("Других изменений: 1.")', 'bulk announcement is bounded');
   await evaluate('window.count = 0; window.requestTimes = []');
   await delay(6500);
   const visibleRequests = await evaluate('count');
