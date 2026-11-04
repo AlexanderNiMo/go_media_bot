@@ -58,6 +58,11 @@ type dashboardFilter struct {
 	WatcherUserID int64
 }
 
+// HasFilters excludes scope and sorting: neither needs resetting to see the list.
+func (f dashboardFilter) HasFilters() bool {
+	return f.Q != "" || f.Type != "" || f.Since != "" || len(f.ActiveSubs) > 0
+}
+
 // toStorage turns the parsed values into a storage.RequestFilter.
 //
 // Since and SortByTitle come from the same source, so they live together

@@ -88,3 +88,25 @@ Screenshots use rendered fixtures at 375 px. Layout checks in headless Chrome
 covered 320 / 375 / 768 / 1024 / 1440 px, light/dark and both desktop sidebar
 states, including deliberately long paths and event details. These checks do
 not substitute for Safari/VoiceOver or a user study.
+
+
+## Empty lists and recovery (Phase 4)
+
+![Empty dashboard with filters at 320 px](patterns/empty-dashboard-mobile.png)
+
+Empty messages describe the visible list, not the whole installation. The
+«Мои» scope can be empty while other people have requests. The dashboard always
+provides search/help links; its filter reset retains the current scope. Bucket
+messages account for both manual choice and automatic waiting for new episodes.
+
+The all-requests page offers all states when a state filter yields nothing.
+Search suggests an original or shorter title; notifications explain what will
+appear; a show without seasons offers a return to search. A manual request with
+no candidates points to the existing upload/link form without guessing why the
+candidate list is empty. Submitting empty fields removes the attached link;
+it does not resume searching. An empty notification inbox means there are no
+unread messages, not that no notifications have ever arrived.
+
+The screenshot uses a rendered fixture, not live requests. Headless Chrome
+checked seven changed pages at 320 / 1440 px in light/dark (28 combinations),
+with no document overflow. Screen-reader and measured contrast checks remain open.

@@ -189,7 +189,7 @@ var dashboardBuckets = []dashboardBucket{
 			storage.StateDownloading, storage.StateAdding,
 		},
 		ShowProgress: true,
-		Empty:        "Ничего не качается.",
+		Empty:        "В этом списке нет текущих загрузок.",
 	},
 	{
 		Key:   "searching",
@@ -200,7 +200,7 @@ var dashboardBuckets = []dashboardBucket{
 		ShowAge:      true,
 		ShowAttempts: true,
 		ShowNext:     true,
-		Empty:        "Ничего не ищется.",
+		Empty:        "В этом списке нет запросов, для которых идёт поиск.",
 	},
 	{
 		Key:   "waiting",
@@ -209,7 +209,7 @@ var dashboardBuckets = []dashboardBucket{
 			storage.StateManual, storage.StateOngoing,
 		},
 		ShowAge: true,
-		Empty:   "Никто не ждёт выбора.",
+		Empty:   "В этом списке нет запросов, ожидающих выбора релиза или новых серий.",
 	},
 }
 

@@ -1,7 +1,7 @@
 # UI/UX Project Plan — `mediad`
 
-**Date:** 2026-11-03; last reconciled with the code on 2026-11-04 (baseline `b0083a3`, plus Phase 3 working-tree changes)
-**Status:** Phases 0–3 implemented; Phases 4–5 deferred. Phase 3 browser checks use fixtures; screen-reader verification remains open.
+**Date:** 2026-11-03; last reconciled with the code on 2026-11-04 (baseline `24b32b0`, Phase 3 merged as PR #13)
+**Status:** Phases 0–3 shipped; Phase 4 implemented; Phase 5 planned, not implemented. Phase 3 browser checks use fixtures; screen-reader verification remains open.
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
@@ -22,10 +22,12 @@ browser checks and usability metrics are not claimed without recorded evidence.
 | Candidate table | Quality, audio/studio, release-specific reason numbers, unknown seeders as «—», best-first order | `internal/web/candidates.go`, `views/request.html`, `internal/release/score.go` |
 | Responsive layout | All data tables use `table-cards` with explicit table roles; narrow events render as a timeline | `internal/web/views/static/style.css`, `views/fragments.html`, `views/request.html` |
 | Theme | Auto/light/dark stored per browser; auto removes `data-theme` | `internal/web/views/layout.html`, `views/settings.html` |
-| Remaining | Phases 4–5 deferred: empty states, shared voice, poll focus/announcements, performance and user validation | §6 and §7.2 |
+| Empty states and web copy | Contextual empty lists, scope-preserving reset, search/season recovery, manual-empty guidance and help vocabulary | Phase 4 below; `internal/web/empty_test.go` |
+| Remaining | Phase 5: poll focus/announcements and measured performance; manual accessibility and user validation remain open | §6, Phase 5 and §7.2 |
 
-**Next planned phase: Phase 4** — empty states and voice consistency.
-Phase 3 is implemented and checked in headless Chrome on rendered fixtures at
+**Next planned phase: Phase 5** — poll robustness and measured performance.
+Phase 4 is implemented and fixture-checked; Telegram remains outside its scope
+(D2). Phase 3 shipped in PR #13 and was checked in headless Chrome on fixtures at
 320 / 375 / 768 / 1024 / 1440 px in both themes, including both desktop sidebar
 states. Screen-reader and measured contrast checks remain open.
 `docs/ui-patterns.md` records the candidate table and Phase 3 mobile patterns.
@@ -770,10 +772,11 @@ regression. **No proposal in this plan touches it.**
 
 ### 5.6 Polling on mobile
 
-The dashboard polls every 3 s and replaces the table's `innerHTML`. On a phone,
-where the user is scrolling that table, a full replacement three times a second
-is worse than on a desktop. Two changes in Phase 5: pause polling when
-`document.hidden`, and slow it when the pointer is over the table.
+The dashboard polls every 3 s. Each response replaces the three table wrappers
+and counts through OOB swaps; bucket disclosures and filter forms stay in place.
+Phase 5 should pause polling when `document.hidden` and verify focus and scroll
+on a phone. Pointer hover is not a mobile interaction; do not add a separate
+hover timer without evidence that it is needed.
 
 ---
 
@@ -854,10 +857,13 @@ current code or a concrete requirement.
 
 ### 6.5 Edge cases and empty states
 
-The current six empty states (`dashboard.html:123,205`;
-`notifications.html:30`; `search.html:28`; `requests.html:35`;
-`seasons.html:24`) are one line of muted text with no way forward. Required
-replacements:
+The original six-state count predates the dashboard split. Current empty
+buckets use `dashboardBuckets` in `views.go` and `bucket_table` in
+`views/fragments.html`; «Недавно» remains in `views/dashboard.html`.
+Notifications, search, requests and seasons still use short messages in their
+respective templates. Phase 4 must review each surface rather than replace a
+fixed count of strings. The table below is the target behaviour, not a list of
+verified current defects; several request/candidate cases already shipped:
 
 | Situation | Content |
 |---|---|
@@ -893,9 +899,10 @@ replacements:
 
 ## 7. Phased Rollout & Handoff Milestones
 
-**Implemented: Phases 0, 1a, 1b, 1c, 2 and 3.** D4 was the original Phase 0–1
-window; Phase 2 subsequently shipped as PR #12. Phases 4–5 remain deferred
-in §7.2. Week numbers below are the original sequencing, not current deadlines.
+**Implemented: Phases 0, 1a, 1b, 1c, 2, 3 and 4.** D4 was the original Phase 0–1
+window; Phase 2 subsequently shipped as PR #12 and Phase 3 as PR #13.
+Phase 4 is implemented; Phase 5 remains planned, as
+summarised in §7.2. Week numbers below are the original sequencing, not current deadlines.
 
 **Every phase ships.** Each ends with something testable in the running app and
 gated by `make test` / `make check-ci`.
@@ -1140,7 +1147,7 @@ because Phase 2 changed which release a rank names.
 
 ---
 
-### Phase 3 — Responsive surfaces and touch targets — **implemented**
+### Phase 3 — Responsive surfaces and touch targets — **shipped (PR #13)**
 
 - Events become a vertical timeline on phones, retaining one DOM and explicit
   table roles. Long paths and event details wrap instead of widening the page.
@@ -1166,17 +1173,88 @@ were not checked; this is implementation/layout verification, not a user study.
 
 ---
 
+### Phase 4 — Empty states and web copy — **implemented**
+
+**Scope:** `views/help.html`, `views.go`, `views/dashboard.html`, `views/fragments.html`,
+`views/search.html`, `views/requests.html`, `views/notifications.html` and
+`views/seasons.html`; reuse existing routes and layout. Review request-page
+copy against §6.5, preserving the existing candidate table and manual form.
+No new component system, dependency, migration or Telegram behaviour change.
+
+- Distinguish an empty result under the current scope/filters from an empty
+  installation. An empty «Мои» list does not prove that nobody has requests;
+  do not add a global count solely to choose copy.
+- Give the dashboard a route to search and help. Filtered lists offer a reset
+  that preserves scope; an administrator remains pinned to «Все».
+- Give zero-result search a useful query hint, notifications an explanation
+  of what will appear, and the season picker a way back to search. Reuse the
+  search form already on the search page.
+- Review all three bucket messages, including «Никто не ждёт выбора.»:
+  `ongoing` shares that bucket but waits automatically for a season update.
+  Copy must not imply that it needs a manual pick.
+- Use the existing Russian state/reason vocabulary. Cross-channel vocabulary
+  comparison may identify drift, but Telegram edits need a separate scope
+  decision under D2; do not schedule a shared package merely for consistency.
+
+**Acceptance:** render each empty branch and populated counterpart; check reset
+URLs under a deployment prefix, scope retention, sibling forms and existing OOB
+ids. Run the relevant `internal/web` render/handler tests and structural a11y
+checks. Inspect changed pages at 320 px and desktop in both themes. Do not
+claim a browser or screen-reader pass unless it was actually performed.
+
+**What shipped:** dashboard guidance links to search/help and states the search
+horizon without inferring whether the whole installation is empty. Reset clears
+filters while retaining `scope`; bucket copy includes automatic season waiting.
+«Недавно» distinguishes filtered results, and the request list distinguishes
+`state=all` from a state-filtered empty list. Search suggests a shorter/original
+title; notifications explain what will appear; missing seasons link back to
+search. Empty manual selection points to the existing form without claiming why
+candidates disappeared. Empty form submission only removes the attached link;
+it does not resume searching. The notification empty state describes unread
+messages only. The manual form no longer exposes “workflow” in its instructions. Help reuses `stateLabel` and explains manual/ongoing states and
+state-dependent cancellation. Telegram and notification delivery are unchanged.
+
+**Validation:** `go test ./internal/web -count=1` passed, including populated
+rendering, structural accessibility, nested-form and OOB guards. New
+`empty_test.go` covers empty branches, reset links for mine/admin under
+`/mediad`, query escaping and manual guidance visibility. Headless Chrome checked
+seven changed page fixtures at 320 / 1440 px in light/dark (28 combinations),
+with no document overflow. The mobile dashboard screenshot is recorded in
+`docs/ui-patterns.md`. Live services, Safari/VoiceOver and measured contrast
+were not checked.
+
+### Phase 5 — Poll robustness and measured performance — **planned**
+
+- Pause requests in a hidden tab and resume on return without a burst of polls.
+- Preserve keyboard focus and scroll when OOB content changes, including when
+  the focused request leaves its bucket. Preserve filters, scope, bucket
+  disclosure state and the one-query-per-bucket contract.
+- Announce meaningful state transitions in a small polite live region; do not
+  announce every progress tick or the entire replaced table.
+- Measure response bytes, request frequency and poster/cache behaviour before
+  choosing further optimisations. Smaller poster sources already shipped.
+  Row-level swaps are an option only if measurements or focus checks justify
+  them; replacing a focused row can still lose focus.
+
+**Acceptance:** exercise focused links, bucket transitions, hidden-tab resume
+and unchanged responses in a browser; add narrow regression coverage for the
+chosen behaviour. Record measurements and manual accessibility results.
+Research in §2 and a second usability round remain unperformed unless evidence
+is recorded; they are not prerequisites for the empty-state copy slice.
+
+---
+
 ### 7.2 Deferred — the backlog, explicitly not cancelled
 
 | Deferred | From | Why it can wait |
 |---|---|---|
 | ~~Full candidate table redesign — audio badge, quality column, soft-override actions~~ | Phase 2 | **Shipped in Phase 2.** The soft-override actions were Phase 1b's |
 | ~~Responsive tables, touch targets, poster sizes~~ | Phase 3 | **Implemented and fixture-verified in Phase 3.** Screen-reader validation remains open |
-| Empty-state system — the six "Пусто." / "Ничего нет." replacements | Phase 4 | No new empty states are introduced by Phase 1 |
-| Voice consistency across web and Telegram | Phase 4 | D2 puts `manual` in the web; no Telegram copy changes now |
-| Poll robustness — pause on hidden tab, row-level swaps, focus preservation, `aria-live` | Phase 5 | Phase 1a does add rows to the polled table, so focus destruction becomes slightly more likely — worth watching, not worth fixing now |
+| ~~Empty states and web copy across current surfaces~~ | Phase 4 | **Implemented and fixture-checked.** Empty scope is not described as an empty installation |
+| Cross-channel vocabulary review | Separate scope decision | D2 excludes Telegram edits; Phase 4 uses the existing web vocabulary |
+| Poll robustness — hidden-tab pause, focus preservation, `aria-live` | Phase 5 | OOB preserves disclosures, but still replaces focused table content |
 | Performance — smaller poll payload and image/cache measurements | Phase 5 | Responsive poster sources already landed in Phase 3; payload and measurements remain |
-| Second usability round and before/after metrics | Phase 5 | The diary study in §2.3 runs in parallel and gives signal sooner |
+| Second usability round and before/after metrics | Phase 5 | No completed study or before/after metrics are recorded |
 
 ### 7.3 The protective slice pulled forward — shipped in Phase 1b
 
@@ -1205,7 +1283,7 @@ artifacts *are* code:
 |---|---|---|
 | Tokens | `style.css` `:root` | Names roles, never literal colours |
 | Components | `internal/web/views/fragments.html` | One partial per component; a comment stating the props in / markup out |
-| Copy | Go string maps in `internal/web/views.go` | Russian user-facing copy, not debug strings — **this is also the seam a future i18n layer would attach to** |
+| Copy | State/reason/audio vocabulary in `internal/web/vocab.go`; page copy in view builders and templates | Russian user-facing copy, not debug strings — **this is also the seam a future i18n layer would attach to** |
 | Patterns | `docs/ui-patterns.md` | A screenshot per pattern, written *after* implementation |
 | Guard | Go a11y-lint test + the existing template test suite | Any new template must pass |
 
@@ -1232,13 +1310,13 @@ artifacts *are* code:
 | **R4** | **Accessibility regresses** — no a11y tooling, no screen-reader pass on every change | The lint test gets skipped | The Go a11y-lint test runs in `make test` as a hard gate; one manual screen-reader pass per phase. |
 | **R5** | **Russian plural/grammar bugs** — «2 ч», «1 мес.», «5 мес.» | Wrong forms appearing in the UI | One `plural()` helper, table-tested. No `fmt.Sprintf("%d ч", n)` anywhere. |
 | **R6** | **The form-in-form constraint bites again** | A new page needs a filter *and* a row action | Forms are siblings by default; `TestNoPageNestsAForm` enforces it. Document the rule in the layout comment. |
-| **R7** | **htmx polling fights the redesign** — the whole table is replaced every 3 s | Rows lose hover/focus; scroll jumps | Move to row-level `hx-swap="outerHTML"` **before** adding any interactive row content. Interactive rows are incompatible with a whole-table swap. |
+| **R7** | **htmx polling fights the redesign** — the whole table is replaced every 3 s | Rows lose hover/focus; scroll jumps | Keep the shipped OOB bucket contract; verify focus and scroll in Phase 5. Choose a smaller swap only if needed; row-level replacement alone does not preserve focus. |
 | **R8** | **Long release names break the layout** | Horizontal scroll on a table | 2-line clamp + `word-break` from day one; test with a real 120-character multi-voice name. |
 | **R9** | **The operator/asker split is wrong** — with several people, maybe everyone *is* an operator | Operators complain the machine data is now buried | The «Расширенное» disclosure is one click away and remembers its state. **Never delete the machine view — hide it behind one click.** D1 confirms the split is real: `is_admin` marks the operators, and the rest are askers. |
-| **R10** | **Two channels drift** — web says «ждёт вас», Telegram says `manual` | A notification using different words | One shared vocabulary map imported by both `internal/web` and `internal/telegram`. |
+| **R10** | **Two channels drift** — web says «ждёт вас», Telegram says `manual` | A notification using different words | Compare the vocabulary first; web labels live in `vocab.go`. Telegram edits or a shared package are not shipped and need a separate scope decision (D2). |
 | **R11** | **Dark mode breaks** — Pico's dark theme is barely used today | Contrast failures in dark | Theme tokens and the picker shipped in Phases 0/1c; a measured contrast pass in both themes remains open. |
 | **R12** | **A two-year promise can't be validated in a short study** | Usability tests say "looks fine" | The 3-week diary and the event-log mining are the only honest validation. Treat the 45-minute test as testing the *representation*, not the *patience*. |
-| **R13** | **Performance** — the 3 s poll ships the whole active table every time | Load time grows with request count | Ship only changed rows (R7); cap the active list. |
+| **R13** | **Performance** — the 3 s poll ships the whole active table every time | Load time grows with request count | Measure payload and request rate first; retain a separate bounded query for each bucket. Change swap granularity only with evidence (R7). |
 | **R14** | **i18n pressure** — every string is hardcoded Russian in templates | Someone asks for English | Out of scope. But keep user-facing strings in Go maps, not inline in templates — that one structural decision makes a future i18n layer near-free. |
 
 ### 8.1 A consequence of D1 + D2 that this plan does not act on
