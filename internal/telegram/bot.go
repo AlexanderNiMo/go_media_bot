@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -234,7 +235,7 @@ func (b *Bot) handleError(err error) {
 // the bot can be told exactly where to grab an invite code rather than
 // fishing for a link.
 func (b *Bot) helpText() string {
-	web := strings.TrimRight(b.cfg.Server.BaseURL, "/")
+	web := b.webURL("")
 	return fmt.Sprintf(`Что я умею.
 
 Пришлите название фильма или сериала — найду на TMDB и покажу варианты.
@@ -975,7 +976,7 @@ func (b *Bot) deliverOnce(ctx context.Context) error {
 
 		params := &tgbot.SendMessageParams{
 			ChatID: chatID,
-			Text:   notificationText(p),
+			Text:   b.notificationText(p),
 		}
 
 		// A manual-mode notification is the one kind that asks the user to
@@ -1021,7 +1022,7 @@ func (b *Bot) deliverOnce(ctx context.Context) error {
 }
 
 // notificationText renders a notification for a chat.
-func notificationText(p storage.PendingTelegram) string {
+func (bot *Bot) notificationText(p storage.PendingTelegram) string {
 	var b strings.Builder
 
 	switch p.Kind {
@@ -1041,7 +1042,9 @@ func notificationText(p storage.PendingTelegram) string {
 		b.WriteString("🔎 ")
 	}
 
-	b.WriteString(p.Title)
+	// Leave room for the request number even when the title alone is too long.
+	title := truncateRunes(p.Title, 256)
+	b.WriteString(title)
 
 	// The request number, for the one notification that asks the user to
 	// do something. "Pick a release" means little without it: the
@@ -1056,7 +1059,12 @@ func notificationText(p storage.PendingTelegram) string {
 		b.WriteString("\n\n")
 		b.WriteString(p.Body)
 	}
-	return b.String()
+	text := b.String()
+	if messageUnits(text) <= telegramMessageLimit && title == p.Title {
+		return text
+	}
+	suffix := "\n\nПолный текст: " + bot.webURL("/notifications")
+	return compactMessage(text, telegramMessageLimit-messageUnits(suffix)) + suffix
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,5 +1187,34 @@ func (b *Bot) join(ctx context.Context, update *models.Update, args string) {
 		return
 	}
 	b.reply(ctx, update, fmt.Sprintf("Аккаунт создан. Логин: %s\nВременный пароль: %s\nВеб-интерфейс: %s\nПри первом входе обязательно смените пароль. Если сообщение потерялось, повторите /join с тем же кодом до смены пароля.",
-		user.Username, password, strings.TrimRight(b.cfg.Server.BaseURL, "/")))
+		user.Username, password, b.webURL("/login")+"?"+url.Values{"username": {user.Username}, "password": {password}}.Encode()))
+}
+
+// webURL includes the reverse proxy mount point used by the web router.
+func (b *Bot) webURL(route string) string {
+	return strings.TrimRight(b.cfg.Server.BaseURL, "/") + b.cfg.Server.BasePath + route
+}
+
+const telegramMessageLimit = 4096
+
+func messageUnits(text string) int {
+	return len(utf16.Encode([]rune(text)))
+}
+
+// Count UTF-16 units so emoji fit without splitting a Unicode character.
+func compactMessage(text string, limit int) string {
+	if messageUnits(text) <= limit {
+		return text
+	}
+	if limit <= 0 {
+		return ""
+	}
+	used := 0
+	for i, r := range text {
+		used += utf16.RuneLen(r)
+		if used > limit-1 {
+			return text[:i] + "…"
+		}
+	}
+	return text
 }

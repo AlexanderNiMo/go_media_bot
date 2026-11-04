@@ -4,10 +4,10 @@
 <form method="post" action="{{path .BasePath "/login"}}" class="stack narrow">
   <input type="hidden" name="csrf_token" value="{{.CSRF}}">
   <label>Имя
-    <input type="text" name="username" autocomplete="username" autofocus required>
+    <input type="text" name="username" value="{{.Username}}" autocomplete="username" autofocus required>
   </label>
   <label>Пароль
-    <input type="password" name="password" autocomplete="current-password" required>
+    <input type="password" name="password" value="{{.Password}}" autocomplete="current-password" required>
   </label>
   <button type="submit">Войти</button>
 </form>
