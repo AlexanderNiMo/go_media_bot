@@ -1258,3 +1258,106 @@ func newTestStore(t *testing.T, adminDSN string) (*storage.Store, *pgxpool.Pool)
 
 	return storage.NewStore(pool, slog.New(slog.DiscardHandler)), pool
 }
+
+func TestJoinCreatesWebAndTelegramAccount(t *testing.T) {
+	for _, command := range []string{"/join ", "/start join_"} {
+		t.Run(strings.Fields(command)[0], func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			admin, err := h.store.CreateAccount(ctx, "admin", "admin-password-long", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, err := h.store.CreateInvite(ctx, admin.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.press(t, h.message(command+code))
+			text := h.stub.last("sendMessage").Text
+			prefix := "Временный пароль: "
+			_, tail, ok := strings.Cut(text, prefix)
+			if !ok {
+				t.Fatalf("missing credentials: %q", text)
+			}
+			password, _, _ := strings.Cut(tail, "\n")
+			u, err := h.store.Authenticate(ctx, "alex", password)
+			if err != nil || !u.MustChangePassword || u.IsAdmin {
+				t.Fatalf("web account: %+v, %v", u, err)
+			}
+			tg, err := h.store.UserByTelegram(ctx, strconv.FormatInt(telegramUserID, 10))
+			if err != nil || tg.ID != u.ID {
+				t.Fatalf("telegram account: %v", err)
+			}
+		})
+	}
+}
+
+func TestJoinLoginChoiceAndPrivateChat(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	admin, err := h.store.CreateAccount(ctx, "alex", "admin-password-long", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := h.store.CreateInvite(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := h.message("/join " + code)
+	group.Message.Chat.Type = "group"
+	h.press(t, group)
+	if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "личный чат") {
+		t.Fatal(got)
+	}
+	for _, username := range []string{"", "alex"} {
+		update := h.message("/join " + code)
+		update.Message.From.Username = username
+		h.press(t, update)
+		if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "/join") {
+			t.Fatal(got)
+		}
+	}
+	h.press(t, h.message("/join "+code+" alice"))
+	if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "Логин: alice") {
+		t.Fatal(got)
+	}
+	h.press(t, h.message("/join "+code))
+	if got := h.stub.last("sendMessage").Text; !strings.Contains(got, "Временный пароль:") {
+		t.Fatal(got)
+	}
+}
+
+func TestJoinRecoversFromFailedCredentialDelivery(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	admin, err := h.store.CreateAccount(ctx, "admin", "admin-password-long", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := h.store.CreateInvite(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.stub.mu.Lock()
+	h.stub.failSend = true
+	h.stub.mu.Unlock()
+	h.press(t, h.message("/join "+code))
+	u, err := h.store.UserByTelegram(ctx, strconv.FormatInt(telegramUserID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.stub.mu.Lock()
+	h.stub.failSend = false
+	h.stub.mu.Unlock()
+	h.press(t, h.message("/join "+code))
+	text := h.stub.last("sendMessage").Text
+	_, tail, ok := strings.Cut(text, "Временный пароль: ")
+	if !ok {
+		t.Fatalf("credentials not redelivered: %q", text)
+	}
+	password, _, _ := strings.Cut(tail, "\n")
+	logged, err := h.store.Authenticate(ctx, "alex", password)
+	if err != nil || logged.ID != u.ID {
+		t.Fatalf("replacement login: %v", err)
+	}
+}
