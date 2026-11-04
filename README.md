@@ -637,7 +637,7 @@ closed and accounts exist only by invite.
 | Dashboard | three buckets — what is downloading, what is still looking, and what is waiting for a person |
 | Search | TMDB search, then a season picker for a series, then a confirmation |
 | Requests | everything, filterable by state |
-| One request | one sentence saying what the bot is doing, then the release, the torrent, the deadlines, the audit trail, and a release you attach by hand |
+| One request | one sentence saying what the bot is doing, then the release, the torrent, the deadlines, the audit trail, the releases you can pick from by hand, and a release you attach by hand |
 | Notifications | the same rows the Telegram bot delivers from |
 | Settings | password change; invites and users for an administrator |
 
@@ -684,10 +684,22 @@ and no Russian audio — the candidate row carries no button, and the endpoint
 refuses the pick too. A release refused only on quality (too few seeders,
 too large) still has one, and it says out loud that it is an overrule.
 
-**On a phone the tables are cards.** Below 768 px the dashboard's tables
-become one block per request, with the column names as the labels of the
-fields. It is the same DOM either way — the stylesheet chooses the rendering
-— so the data is in the page once and a screen reader announces it once.
+**The candidate table says what each release is, not only why it was
+refused.** The refused releases are a menu, and a menu has to say what is on
+it. Every row carries the resolution and the source («1080p · BluRay»), the
+tier of the Russian audio with the studio that decided it, the size, the
+number of seeders, and the reason in Russian with the release's own numbers
+(«мало сидеров: 2»). The list is ordered best first, so the release worth
+overruling the rules for is the one at the top. The facts are read out of the
+release's name at render time, with the same functions the selector used to
+reach its verdict — nothing is stored twice, and the page cannot disagree
+with the bot about what a release is.
+
+**On a phone the tables are cards.** Below 768 px the dashboard's tables and
+the candidate table become one block per row, with the column names as the
+labels of the fields. It is the same DOM either way — the stylesheet chooses
+the rendering — so the data is in the page once and a screen reader announces
+it once.
 
 **Nothing on a render path talks to Temporal.** Every page reads the
 projection. That is not an optimisation: SQL-backed visibility has no

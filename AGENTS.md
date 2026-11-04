@@ -224,6 +224,16 @@ Three things about it are easy to get wrong:
   `saveState` on every state change. They used to be dropped on the floor,
   which left the interface showing nothing about a request that was waiting.
 
+### No seeders is not the same as unknown seeders
+
+`internal/indexer/prowlarr.go` writes `-1` when the indexer reports a null
+count, and the interface shows «—» for it — a release with no seeders is
+dead, and a release whose count was never reported is merely unmeasured.
+
+The zero value of a `storage.Candidate` is therefore **zero seeders**, not
+unknown ones. A fixture that means "unknown" has to say `-1` explicitly, and
+a real release with no seeders must not be shown as «—».
+
 ### qBittorrent runs on 8113, not 8080
 
 Default in the codebase is `8080`. The live deployment is on `:8113`.
@@ -338,12 +348,42 @@ action as a link, the table carries no form at all.
 renderings: `data-label` on every cell becomes the field's label, and
 the explicit `role="table"` / `role="row"` / `role="cell"` /
 `role="columnheader"` keep the table semantics that `display: block`
-takes away in Safari and VoiceOver. The candidate table and the events
-table are **not** cards yet — that is Phase 3.
+takes away in Safari and VoiceOver. The dashboard's two tables and the
+candidate table are cards; the events table is **not** yet — that is
+Phase 3.
 
 **The class is `table-cards`, not `cards`.** `.cards` is already the
 search-results grid (`display: grid`), and a table that inherits it turns
 into a grid of cells. The two were confused once.
+
+### The release facts are read out of the name, not stored
+
+`internal/web/candidates.go`. A candidate row holds the title and the
+indexer, and `release.Parse` + `release.DetectAudio` are pure functions
+of exactly those two — so the page re-derives the resolution, the source,
+the audio tier, the studio and the deciding marker with **the selector's
+own rules**.
+
+A stored copy of those facts would be a second copy of the rules, and the
+two copies would drift. The plan called this "a storage change" and it was
+not one.
+
+### The reason's numbers belong to the release, not to the policy
+
+The reason cell says «мало сидеров: 2» — the release's own count. The
+threshold it missed is the *policy's*, and the policy is on the same page,
+in «Требования». Storing the threshold with the candidate would be a
+second copy of the rule, free to disagree with the first the moment the
+rule changed — a release refused under "three seeders" would go on
+claiming it was refused under "five".
+
+### The candidate list is ordered best first
+
+`internal/release/score.go` scores the releases it refuses, so the menu a
+person picks from has its best item at the top. Before this, the refusals
+were in the indexer's order — a refused release never reached the scorer —
+and the rank said nothing about the quality. `storage.Candidate.Rank`'s
+comment claimed "selector-score order" and the code did not do it.
 
 ### The dashboard is three buckets, and the poll swaps out of band
 
