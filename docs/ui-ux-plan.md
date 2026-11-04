@@ -809,7 +809,9 @@ current code or a concrete requirement.
   but still replaces tables and counts every 3 s through OOB swaps. Verify
   keyboard focus and preserve it when a table contains the focused link.
   Row-level replacement alone does not guarantee focus survives a changed row.
-- [ ] Escape closes the mobile drawer; the drawer traps focus while open.
+- [x] Escape closes the mobile drawer; Tab stays inside while open. Closed
+  mobile navigation is inert; breakpoint changes update its accessibility
+  and return focus to the toggle if the focused navigation becomes hidden.
 - [ ] The notification page's «Выбрать все» / «Снять выбор» are `onclick`-only —
   no-JS users get dead buttons. Make them `<label for>`-driven or add a
   `<noscript>` path (the repo already does this correctly in

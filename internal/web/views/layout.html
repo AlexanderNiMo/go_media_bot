@@ -44,7 +44,7 @@
 </head>
 <body>
   <header class="top">
-    <button type="button" class="hamburger" id="hamburger" aria-label="Переключить сайдбар" onclick="mediadToggleSidebar()"></button>
+    <button type="button" class="hamburger" id="hamburger" aria-controls="sidebar" aria-expanded="false" aria-label="Переключить сайдбар" onclick="mediadToggleSidebar()"></button>
     <a class="brand" href="{{path .BasePath "/"}}">mediad</a>
     {{if .User}}
       <form method="post" action="{{path $.BasePath "/logout"}}" class="who">
@@ -148,13 +148,56 @@
         // 'icons' state keeps the column visible (just narrow) and its
         // links are still reachable.
         var hidden = state === 'icons' && window.matchMedia('(max-width: 768px)').matches;
+        var restoreFocus = hidden && sb.contains(document.activeElement);
         sb.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+        sb.inert = hidden;
+        document.getElementById('hamburger').setAttribute('aria-expanded', state === 'open' ? 'true' : 'false');
+        if (restoreFocus) {
+          document.getElementById('hamburger').focus();
+        }
       }
     }
     function mediadToggleSidebar() {
       var cur = document.documentElement.getAttribute('data-sidebar') || 'icons';
       mediadSetSidebar(cur === 'open' ? 'icons' : 'open');
+      if (!window.matchMedia('(max-width: 768px)').matches) return;
+      if (cur === 'open') document.getElementById('hamburger').focus();
+      else {
+        var items = mediadDrawerItems();
+        if (items.length) items[0].focus();
+      }
     }
+    function mediadDrawerItems() {
+      var sb = document.getElementById('sidebar');
+      return Array.from(sb.querySelectorAll('a[href], button, input, select, textarea, [tabindex]'))
+        .filter(function (item) {
+          return !item.disabled && item.tabIndex >= 0 && item.getClientRects().length > 0;
+        });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (!window.matchMedia('(max-width: 768px)').matches ||
+          document.documentElement.getAttribute('data-sidebar') !== 'open') return;
+      if (e.key === 'Escape') {
+        mediadSetSidebar('icons');
+        document.getElementById('hamburger').focus();
+        e.preventDefault();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      var items = mediadDrawerItems();
+      if (!items.length) return;
+      var first = items[0];
+      var last = items[items.length - 1];
+      var active = document.activeElement;
+      if (!items.includes(active)) {
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && active === first) {
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        first.focus();
+      } else return;
+      e.preventDefault();
+    });
     // On a narrow viewport the sidebar is a drawer over the content; tapping
     // outside it dismisses it. On a wide viewport the sidebar is a column and
     // a tap on the content is a normal click — closing it would be surprising.
@@ -176,11 +219,12 @@
       if (!t || !t.closest || !t.closest('a')) return;
       mediadSetSidebar('icons');
     }
-    // Sync aria-hidden with the state at load, so a collapsed column does
-    // not leave its links in the tab order.
-    (function () {
+    // A drawer becomes a visible column at the breakpoint; update inert too.
+    function mediadSyncSidebar() {
       mediadSetSidebar(document.documentElement.getAttribute('data-sidebar') || 'icons');
-    })();
+    }
+    window.matchMedia('(max-width: 768px)').addEventListener('change', mediadSyncSidebar);
+    mediadSyncSidebar();
   </script>
 </body>
 </html>{{end}}
