@@ -25,17 +25,26 @@ The Makefile is the source of truth. The layers, top to bottom:
 - `make fmt` — `gofmt -w`.
 - `make fmt-check` — verify formatting without changing files.
 - `make build` — the binary.
-- `make test` — unit tests. They skip cleanly without env, so this is
-  the cheap local loop.
-- `make test-db` — DB-backed tests, gated on `MEDIAD_TEST_DSN`. The
-  `mediad` role needs `CREATEDB`; tests create and drop their own
-  throwaway databases.
-- `make check-ci` — what CI runs. Adds `workflowcheck` (replay suite)
-  and live qBittorrent tests gated on `MEDIAD_TEST_QBIT_URL` /
-  `MEDIAD_TEST_QBIT_API_KEY`.
-- `MEDIAD_REQUIRE_REPLAY=1` — turns the replay-corpus-coverage skip
-  into a hard failure. Use it on a developer machine with Temporal
-  reachable; CI sets it.
+- `make test` — the full gate: formatting, module verification, vet, workflowcheck, build and all
+  tests with `-race`. Loads `.env`; requires DB, Node, Chrome/Chromium and
+  `MEDIAD_TEST_QBIT_URL`. Missing dependencies fail instead of silently
+  skipping an integration suite. `MEDIAD_REQUIRE_REPLAY=1` is set automatically.
+- `make test-db`, `make check`, `make check-ci` — aliases for `make test`,
+  without duplicate test runs. The DB uses explicit `MEDIAD_TEST_DSN`, falling
+  back to `MEDIAD_POSTGRES_DSN`; the role needs `CREATEDB` for throwaway DBs.
+- `make check-commit` — hook gate: the same static, DB, replay and browser
+  checks; qBittorrent live tests run only when configured. Missing DB/browser
+  prerequisites still fail. The pre-commit hook calls this target.
+- `make test-db-setup` — start local PostgreSQL and prepare its application role.
+- Direct `go test ./...` — the cheap loop; integrations still skip when their
+  environment is absent. Do not report it as the full gate.
+- Chrome is detected on PATH or at its standard macOS app path;
+  `MEDIAD_TEST_CHROME` overrides it. Live qBittorrent credentials use
+  `MEDIAD_TEST_QBIT_API_KEY` or `MEDIAD_TEST_QBIT_USERNAME` / `MEDIAD_TEST_QBIT_PASSWORD`.
+  Two read tests skip on an empty library; the synthetic stopped-torrent test
+  adds/removes only its test torrent, with files kept.
+- Replay uses committed histories without Temporal. Recapturing a missing
+  history requires reachable Temporal; a missing corpus fails `make test`.
 
 When the user says "tests failed", ask which target they ran — the
 failure mode differs (`go test ./...` skips DB tests silently,

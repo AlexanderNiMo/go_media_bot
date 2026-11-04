@@ -504,7 +504,7 @@ the bot stays quiet and the rest of the system carries on.
 - <http://localhost:8081> — the web UI.
 - <http://localhost:8233> — the Temporal Web UI.
 - `make config` — effective configuration with secrets redacted.
-- `make test` — unit tests (DB-backed ones skip without `MEDIAD_TEST_DSN`).
+- `make test` — all checks, including database, replay, browser and live qBittorrent tests; missing required settings fail the run.
 
 If something is wrong, `make logs` tails the Temporal log and the
 default-level logs from the worker/API; the application itself logs to
@@ -946,18 +946,37 @@ that it grew.
 
 ```bash
 make fmt       # format Go files before staging
-make check     # check formatting, vet, build, test
 make test-db-setup # prepare local Postgres for DB-backed tests
-make test-db   # run tests including those that need Postgres
-make check-ci  # everything CI runs, including the determinism checks
+make test      # formatting, module verification, vet, workflowcheck, build, tests (-race)
+make check-commit # full local checks; live qBittorrent tests optional
+make check     # alias for make test
+make test-db   # alias for make test
+make check-ci  # alias for make test
 ```
 
-Database tests are skipped unless `MEDIAD_TEST_DSN` is set, so `go test ./...`
-stays green on a machine with nothing running. `make test-db` uses an explicit
-`MEDIAD_TEST_DSN`, falling back to `MEDIAD_POSTGRES_DSN` from `.env`. Each of
-those tests creates its own throwaway database
-and drops it afterwards — the `mediad` role is granted `CREATEDB` for exactly
+`make test` loads `.env` and requires all test dependencies. An explicit
+`MEDIAD_TEST_DSN` wins; otherwise it uses `MEDIAD_POSTGRES_DSN`. Set
+`MEDIAD_TEST_QBIT_URL` and the client's credentials (`MEDIAD_TEST_QBIT_API_KEY`
+or `MEDIAD_TEST_QBIT_USERNAME` / `MEDIAD_TEST_QBIT_PASSWORD`) for live tests.
+Install Node.js and Chrome/Chromium; the browser is detected on PATH or at the
+standard macOS Chrome path, or set `MEDIAD_TEST_CHROME` to its executable.
+Missing settings/tools and unreachable services fail the run. Replay corpus
+coverage is required. A running Temporal server is needed only to recapture
+histories, not to replay them. The tests run once, with the race detector.
+
+Direct `go test ./...` remains available for a cheap run: it skips integrations
+whose settings are absent. `make test` always enables DB and browser tests and
+requires a qBittorrent endpoint. Two live read tests may still skip when the
+client's library is empty. Its write test adds a stopped synthetic torrent and
+removes it without deleting files; existing downloads are untouched.
+
+Each database test creates its own throwaway database and drops it afterwards — the `mediad` role is granted `CREATEDB` for exactly
 that reason, so a test run never touches your data.
+
+`make check-commit` runs the same static, DB, replay and browser checks without
+requiring a live qBittorrent endpoint. If its test endpoint is configured, those
+live tests run too. The pre-commit hook uses this target; `make test` still
+requires qBittorrent.
 
 Install the commit hook with `make install-hooks` (repeat after hook updates).
 It checks a temporary copy of the staged files and never stages or reformats

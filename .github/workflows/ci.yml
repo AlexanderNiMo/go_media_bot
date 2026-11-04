@@ -52,6 +52,17 @@ jobs:
           # The module cache is the slowest part of a cold run.
           cache: true
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Enable browser checks
+        run: |
+          chrome="$(command -v google-chrome)"
+          "$chrome" --version
+          echo "MEDIAD_TEST_CHROME=$chrome" >> "$GITHUB_ENV"
+
       - name: Verify dependencies
         run: go mod verify
 
