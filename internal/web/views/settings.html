@@ -131,6 +131,10 @@
           <button type="button" class="small"
                   onclick="navigator.clipboard.writeText(document.getElementById('new-invite-link').value)">Копировать</button>
         </p>
+        {{if .NewTelegramInviteURL}}
+        <p><a href="{{.NewTelegramInviteURL}}">Зарегистрироваться через Telegram</a></p>
+        <input type="text" readonly value="{{.NewTelegramInviteURL}}" aria-label="Ссылка приглашения в Telegram">
+        {{end}}
         <p class="muted">Код: <span class="mono">{{.NewInvite}}</span>. Действует {{.InviteTTL}}, тратится с первого применения.</p>
       </div>
     {{end}}

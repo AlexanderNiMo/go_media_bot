@@ -977,16 +977,17 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, r, "settings", settingsView{
-		page:          s.basePage(w, r, "settings"),
-		Tab:           tab,
-		Invites:       invites,
-		Users:         users,
-		InviteTTL:     humanDuration(storage.InviteTTL),
-		NewInvite:     newInvite,
-		NewInviteURL:  newInviteURL,
-		Telegram:      tg,
-		BotUsername:   s.cfg.Telegram.BotUsername,
-		NotifyOptions: opts,
+		page:                 s.basePage(w, r, "settings"),
+		Tab:                  tab,
+		Invites:              invites,
+		Users:                users,
+		InviteTTL:            humanDuration(storage.InviteTTL),
+		NewInvite:            newInvite,
+		NewInviteURL:         newInviteURL,
+		NewTelegramInviteURL: telegramInviteURL(s.cfg.Telegram.BotUsername, newInvite),
+		Telegram:             tg,
+		BotUsername:          s.cfg.Telegram.BotUsername,
+		NotifyOptions:        opts,
 	})
 }
 
@@ -1065,33 +1066,24 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 
 	user := sessionUser(r)
 
-	// The current password is required even though the session already proves
-	// identity: an unattended browser is the threat, and this is the one form
-	// whose effect is to lock the owner out of their own account.
-	if _, err := s.store.Authenticate(r.Context(), user.Username, r.PostFormValue("current")); err != nil {
-		s.flash(w, r, "Текущий пароль неверен.", "bad")
-		s.seeOther(w, r, "/settings")
+	redirect := "/settings"
+	if user.MustChangePassword {
+		redirect = "/change-password"
+	}
+	err := s.store.ChangePassword(r.Context(), user.ID, r.PostFormValue("current"), r.PostFormValue("password"))
+	if err != nil {
+		if errors.Is(err, storage.ErrUnauthorized) {
+			s.flash(w, r, "Текущий пароль неверен.", "bad")
+		} else if storage.ValidatePassword(r.PostFormValue("password")) != nil || r.PostFormValue("current") == r.PostFormValue("password") {
+			s.flash(w, r, err.Error(), "bad")
+		} else {
+			s.fail(w, r, err)
+			return
+		}
+		s.seeOther(w, r, redirect)
 		return
 	}
 
-	password := r.PostFormValue("password")
-	if err := storage.ValidatePassword(password); err != nil {
-		s.flash(w, r, err.Error(), "bad")
-		s.seeOther(w, r, "/settings")
-		return
-	}
-
-	if err := s.store.SetPassword(r.Context(), user.ID, password); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-
-	// Every session goes, including this one. A password change that leaves
-	// other sessions alive does not do the one thing it is for.
-	if err := s.store.DeleteUserSessions(r.Context(), user.ID); err != nil {
-		s.fail(w, r, err)
-		return
-	}
 	s.clearCookie(w, sessionCookie, r)
 
 	s.log.Info("password changed", "user", user.Username)
@@ -1445,4 +1437,15 @@ func (s *Server) handleEditYear(w http.ResponseWriter, r *http.Request) {
 	}
 	s.flash(w, r, "Год обновлён.", "ok")
 	s.seeOther(w, r, fmt.Sprintf("/requests/%d", id))
+}
+
+func (s *Server) handleChangePasswordForm(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, "change-password", s.basePage(w, r, "change-password"))
+}
+
+func telegramInviteURL(botUsername, code string) string {
+	if botUsername == "" || code == "" {
+		return ""
+	}
+	return "https://t.me/" + url.PathEscape(strings.TrimPrefix(botUsername, "@")) + "?start=join_" + url.QueryEscape(code)
 }

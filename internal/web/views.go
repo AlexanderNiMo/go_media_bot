@@ -383,7 +383,8 @@ type settingsView struct {
 	NewInvite string
 	// NewInviteURL is the absolute path the admin can hand to the
 	// invitee, including the base path. Rendered as a copyable link.
-	NewInviteURL string
+	NewInviteURL         string
+	NewTelegramInviteURL string
 
 	Telegram    []telegramRow
 	NewLinkCode string

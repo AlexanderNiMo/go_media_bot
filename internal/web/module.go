@@ -116,6 +116,8 @@ func (s *Server) routes() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
 
+		r.Get("/change-password", s.handleChangePasswordForm)
+		r.Post("/change-password", s.handlePassword)
 		r.Get("/", s.handleDashboard)
 		r.Get("/fragments/active", s.handleActiveFragment)
 

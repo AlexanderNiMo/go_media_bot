@@ -828,7 +828,8 @@ outright rather than starting a process that does nothing.
 | any title | searches TMDB and offers the matches as buttons |
 | `/list` | what this account is waiting on |
 | `/cancel <id>` | stops one of them |
-| `/link <code>` | attaches the chat to an account |
+| `/join <code> [login]` | creates a Telegram and web account using an invitation |
+| `/link <code>` | attaches the chat to an existing web account |
 | `/help` | the same list |
 
 **Long polling, not webhooks.** The service is self-hosted behind a home
@@ -868,16 +869,21 @@ mid-loop.
 
 ### Linking a chat to an account
 
-A chat is a Telegram identity, which is not the same thing as an account.
-`/link <code>` joins them, and the code is the one an administrator generates
-in the web interface — same table, same single-use semantics as an invite,
-because the mechanism is identical and only the destination differs.
+An administrator issues a registration invitation in the web settings. Send
+`/join <code>` in a private chat, or open the Telegram invitation link.
+Your Telegram username becomes the web login; if it is missing or taken,
+send `/join <code> <another_login>`. The bot sends a temporary web password,
+which must be changed at the first web login. Before changing it, repeat
+`/join` with the same code to issue a replacement if delivery failed.
+The temporary password remains in the Telegram chat history.
 
-Without it, somebody who signed up on the web would get a second, unrelated
-account the moment they talked to the bot: notifications would split between
-two inboxes and `/list` would show half their requests. Until a chat is linked,
-the bot says so rather than guessing, because there is no safe guess — creating
-an account per chat is how the split happens in the first place.
+To attach Telegram to an existing web account, generate a **link code**
+in that account's Telegram settings and send `/link <code>`.
+Link codes and registration invitations are separate, single-use codes,
+valid for seven days. Neither command accepts the other kind of code.
+
+On upgrading to this version, unused legacy codes are expired because their
+purpose was not recorded. Issue new invitations and link codes after migration.
 
 **Cancelling is scoped to the watchers.** Request ids are small numbers, so
 `/cancel 12` is trivially guessable; the handler checks that the account is one

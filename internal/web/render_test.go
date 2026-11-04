@@ -247,9 +247,10 @@ func fixtures(t *testing.T) map[string]any {
 			// exercises the populated case.
 			BotUsername: "mediad_bot",
 		},
-		"login": loginView{page: testPage(), Next: "/requests"},
-		"help":  helpView{page: testPage()},
-		"setup": struct{ page }{testPage()},
+		"change-password": testPage(),
+		"login":           loginView{page: testPage(), Next: "/requests"},
+		"help":            helpView{page: testPage()},
+		"setup":           struct{ page }{testPage()},
 		"join": struct {
 			page
 			Code        string
