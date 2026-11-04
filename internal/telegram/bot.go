@@ -341,11 +341,11 @@ func (b *Bot) handleList(ctx context.Context, api *tgbot.Bot, update *models.Upd
 		return
 	}
 
-	requests, err := b.store.ListRequests(ctx, storage.RequestFilter{
-		States:        storage.ActiveStates(),
-		WatcherUserID: user.ID,
-		Limit:         30,
-	})
+	filter := storage.RequestFilter{States: storage.ActiveStates(), Limit: 30}
+	if !user.IsAdmin {
+		filter.WatcherUserID = user.ID
+	}
+	requests, err := b.store.ListRequests(ctx, filter)
 	if err != nil {
 		b.log.Error("could not list requests", "error", err)
 		b.reply(ctx, update, "Не получилось посмотреть список.")
@@ -370,9 +370,7 @@ func (b *Bot) handleList(ctx context.Context, api *tgbot.Bot, update *models.Upd
 
 // listCandidates shows the releases a request is offering.
 //
-// The same defensive check as handlePick: only somebody watching the
-// request may see what it is offering, because the list is the picker's
-// menu and a pick starts a download.
+// Administrators can inspect every request; other users must be watching it.
 func (b *Bot) listCandidates(ctx context.Context, update *models.Update, user *storage.User, id int64) {
 	watchers, err := b.store.ListWatchers(ctx, id)
 	if err != nil {
@@ -380,7 +378,7 @@ func (b *Bot) listCandidates(ctx context.Context, update *models.Update, user *s
 		b.reply(ctx, update, "Не получилось проверить права на этот запрос.")
 		return
 	}
-	if !watching(watchers, user.ID) {
+	if !user.IsAdmin && !watching(watchers, user.ID) {
 		b.reply(ctx, update, "Это не ваш запрос.")
 		return
 	}
@@ -421,17 +419,8 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), []string{"КБ", "МБ", "ГБ", "ТБ"}[exp])
 }
 
-// handlePick marks a candidate as the user's choice.
-//
-// Called from a chat linked to the request's owner. The workflow
-// polls request_candidates.picked_at on its next tick and treats the
-// first row with a non-null timestamp as the choice.
-//
-// The shape mirrors handleCancel: the chat must be linked to the
-// request's owner, the request must exist, the rank must parse, and
-// the candidate at that rank must still be on the list. A wrong
-// rank returns ErrNoSuchCandidate; a deleted or never-existed list
-// is the same answer from the user's perspective.
+// handlePick records a choice made by a watcher or administrator and wakes
+// the workflow so it can start downloading without waiting for the next poll.
 func (b *Bot) handlePick(ctx context.Context, api *tgbot.Bot, update *models.Update) {
 	user, err := b.user(ctx, update)
 	if err != nil {
@@ -455,17 +444,14 @@ func (b *Bot) handlePick(ctx context.Context, api *tgbot.Bot, update *models.Upd
 		return
 	}
 
-	// Only somebody watching the request may pick from its candidate list.
-	// Same defensive check as handleCancel: the id is a small number,
-	// and without this any chat could /pick 12 rank 1 and start a
-	// download on a stranger's request.
+	// Administrators may manage any request; other users must be watching it.
 	watchers, err := b.store.ListWatchers(ctx, id)
 	if err != nil {
 		b.log.Error("could not list watchers", "request", id, "error", err)
 		b.reply(ctx, update, "Не получилось проверить права на этот запрос.")
 		return
 	}
-	if !watching(watchers, user.ID) {
+	if !user.IsAdmin && !watching(watchers, user.ID) {
 		b.reply(ctx, update, "Это не ваш запрос.")
 		return
 	}
@@ -522,16 +508,14 @@ func (b *Bot) handleCancel(ctx context.Context, api *tgbot.Bot, update *models.U
 		return
 	}
 
-	// Only somebody watching it may cancel it: the id is a small number, and
-	// without this anybody could type /cancel 12 and stop a stranger's
-	// download.
+	// Administrators may manage any request; other users must be watching it.
 	watchers, err := b.store.ListWatchers(ctx, id)
 	if err != nil {
 		b.log.Error("could not list watchers", "request", id, "error", err)
 		b.reply(ctx, update, "Не получилось проверить права на этот запрос.")
 		return
 	}
-	if !watching(watchers, user.ID) {
+	if !user.IsAdmin && !watching(watchers, user.ID) {
 		b.reply(ctx, update, "Это не ваш запрос.")
 		return
 	}
@@ -655,17 +639,14 @@ func (b *Bot) handlePickCandidate(ctx context.Context, api *tgbot.Bot, update *m
 		return
 	}
 
-	// Only somebody watching the request may pick from its candidate
-	// list. Same check as /pick: the id is a small number, and without
-	// it any chat could press the button and start a download on a
-	// stranger's request.
+	// Keep button permissions identical to /pick.
 	watchers, err := b.store.ListWatchers(ctx, requestID)
 	if err != nil {
 		b.log.Error("could not list watchers", "request", requestID, "error", err)
 		b.send(ctx, msg.Chat.ID, "Не получилось проверить права на этот запрос.")
 		return
 	}
-	if !watching(watchers, user.ID) {
+	if !user.IsAdmin && !watching(watchers, user.ID) {
 		b.send(ctx, msg.Chat.ID, "Это не ваш запрос.")
 		return
 	}
