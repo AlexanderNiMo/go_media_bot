@@ -62,34 +62,23 @@ type templates struct {
 
 func newTemplates() (*templates, error) {
 	funcs := template.FuncMap{
-		"percent": percent,
-		"since":   since,
+		"since": since,
 		// path joins a route to the deployment's base path. A leading slash
 		// on the route is required; a missing one is left as-is so a typo
 		// surfaces in the rendered page rather than silently rewriting URLs.
 		"path":      pathFunc,
 		"hasString": hasString,
-		// bytes renders a file size the way a person reads it. The raw
-		// byte count is what the database holds and what a script wants;
-		// the page is read by people.
-		"bytes": humanBytes,
 		// The vocabulary. Machine-readable codes — a state, a rejection
 		// reason, an audio tier — reach the page through these, so that
 		// the interface speaks the reader's language and the codes stay
 		// in the log where they belong.
-		"stateLabel":  stateLabel,
-		"stateClass":  stateClass,
-		"reasonLabel": reasonLabel,
-		"reasonTone":  reasonTone,
-		"audioLabel":  audioLabel,
-		"seeders":     seeders,
-		// seedersUnknown is separate from seeders because the tooltip needs
-		// to say why the count is missing, and the count itself is a dash.
-		"seedersUnknown": seedersUnknown,
-		// candidatePick decides what a candidate row offers. The same
-		// decision the endpoint makes when a pick arrives, so a row with no
-		// button is a row that cannot be picked.
-		"candidatePick": candidatePick,
+		//
+		// Only the words a template asks for are registered: the ones it
+		// does not are computed in Go and handed over in the view model,
+		// and a second copy of a word in a template is a copy that can
+		// disagree with the first.
+		"stateLabel": stateLabel,
+		"stateClass": stateClass,
 		// scopeLabel names the scope of the request list.
 		"scopeLabel": scopeLabel,
 	}

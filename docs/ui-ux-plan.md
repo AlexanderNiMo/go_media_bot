@@ -1,7 +1,7 @@
 # UI/UX Project Plan — `mediad`
 
-**Date:** 2026-11-03 (Phase 1b and D5 added 2026-11-04)
-**Status:** Phase 0 and Phase 1 (a, b and c) shipped; Phases 2–5 are not implemented
+**Date:** 2026-11-03 (Phase 1b and D5 added 2026-11-04; Phase 2 added 2026-11-04)
+**Status:** Phase 0, Phase 1 (a, b and c) and Phase 2 shipped; Phases 3–5 are not implemented
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
@@ -289,6 +289,15 @@ data it would need is also the data §3.4's «Качество» and «Ауди�
 need, so the table is worth having — but it belongs with Phase 2's candidate
 table, not with a scope filter.
 
+> **Phase 2 corrected this.** The candidate table reads the release facts out
+> of the name at render time rather than storing them, and that is the right
+> answer for the table — but it means the catalogue's data was **not**
+> captured. It could not have been: the candidate list is replaced on every
+> fruitless search and deleted after a pick, so storing the facts on the
+> candidate rows would not have made a catalogue possible anyway. The
+> catalogue needs a log of every release the installation has ever seen,
+> which grows with every search and is a decision of its own.
+
 **What the rule is.** The scope is resolved from the role, not from the URL
 alone:
 
@@ -413,6 +422,10 @@ action set must follow the reason.
 > reason labels, and no action button on a hard rejection. **Shipped in
 > Phase 1b** — plus one thing the plan did not ask for: the endpoint refuses
 > the pick as well, because a hidden button is not a rule.
+>
+> **The rest of the table shipped in Phase 2**: the quality column, the audio
+> badge, the reason with the release's own numbers, the list ordered best
+> first, and the card layout on a phone. See "Phase 2" in §7.
 
 ### 3.5 Reason vocabulary — the full mapping
 
@@ -1074,12 +1087,55 @@ Everything in this sub-phase follows from D1 (several people) and D3 (theme).
 
 ---
 
+### Phase 2 — The candidate table (Week 5) — **shipped**
+
+The first phase that is not about the horizon. It is about the one place in
+the product where a person decides whether the bot understood them.
+
+- **The table redesigned** (§3.4): `Релиз │ Качество │ Аудио │ Размер │
+  Сидеры │ Причина │ действие`.
+- **The audio badge** — the tier of the release's Russian audio, the studio
+  that decided it, and the word in the name that settled it.
+- **The quality column** — resolution and source.
+- **The reason with the release's own numbers** — «мало сидеров: 2».
+- **The list ordered best first.**
+- **The candidate table as a card on a phone** (§5.3).
+
+#### What Phase 2 actually shipped
+
+| Planned | Shipped | Why it differs |
+|---|---|---|
+| The release facts stored on the candidate row — "a storage change" | **Read out of the name at render time** | The plan called this a storage change, and it is not one. A candidate row already holds the title and the indexer, and `release.Parse` and `release.DetectAudio` are pure functions of exactly those two — so the facts are re-derived with the selector's own rules instead of being kept in a second copy that could drift from them |
+| «Причина» — the Russian label | The label **and the release's own numbers** | The threshold a release missed is the policy's, and the policy is one screen above, in «Требования». A threshold stored with the candidate would be a second copy of the rule, and it would go stale the moment the rule changed — a release refused under "three seeders" would go on claiming it was refused under "five" |
+| The list ordered by the selector's score | Shipped — **and the refusals are scored now** | Refused releases never reached the scorer: `verdict.Rejected` was appended in the indexer's order, so the rank said nothing about the quality. The storage comment claimed "selector-score order" and the code did not do it |
+| The candidate table as a card on a phone (§5.3) | Shipped, and **pulled forward from Phase 3** | Phase 2 made the table two columns wider, and §7.2 had deferred the card layout to Phase 3 — which would have shipped exactly the regression §7.3 exists to prevent |
+| — | The episode count of a season pack | The count comes from the pack's name, never from the torrent's file list (`AGENTS.md`). A pack of eight episodes and a single episode are told apart by what the release calls itself, and J3 is exactly that choice |
+| — | The audio of a release that says English | A Russian tracker is weak evidence of Russian audio, and no evidence at all when the name says `ENG`. The tooltip says so instead of implying the tracker had vouched for it |
+| — | The refusals are ordered **inside the selector**, so the Telegram keyboard follows | The order is the menu's order, and the bot's menu is the same menu |
+
+**Two things the plan did not ask for.** The reason's numbers were the one
+piece of Phase 0's debt that Phase 1b left behind; they turned out to need no
+storage at all, because the numbers a reader wants are the release's own. And
+the season pack's episode count was not on the list — but a person choosing
+between a pack of eight episodes and a single episode needs it, and that
+choice is the J3 journey.
+
+**One consequence worth knowing.** The Telegram buttons carry the candidate's
+rank, so a list replaced between the message and the press points at a
+different release. That hazard is not new — the indexer's order varied between
+searches too — and Phase 2 did not change its kind. It is recorded here
+because Phase 2 changed which release a rank names.
+
+> Commit: `web: phase 2 — the candidate table`.
+
+---
+
 ### 7.2 Deferred — the backlog, explicitly not cancelled
 
 | Deferred | From | Why it can wait |
 |---|---|---|
-| Full candidate table redesign — audio badge, quality column, soft-override actions | Phase 2 | Phase 1b already removes the harmful part (raw codes, action on hard rejections) |
-| Responsive work beyond the dashboard table — candidate table, events table, touch targets, poster sizes | Phase 3 | Only the dashboard got worse; the rest is unchanged |
+| ~~Full candidate table redesign — audio badge, quality column, soft-override actions~~ | Phase 2 | **Shipped in Phase 2.** The soft-override actions were Phase 1b's |
+| Responsive work beyond the dashboard and candidate tables — events table, touch targets, poster sizes | Phase 3 | Only the two tables got worse; the rest is unchanged |
 | Empty-state system — the six "Пусто." / "Ничего нет." replacements | Phase 4 | No new empty states are introduced by Phase 1 |
 | Voice consistency across web and Telegram | Phase 4 | D2 puts `manual` in the web; no Telegram copy changes now |
 | Poll robustness — pause on hidden tab, row-level swaps, focus preservation, `aria-live` | Phase 5 | Phase 1a does add rows to the polled table, so focus destruction becomes slightly more likely — worth watching, not worth fixing now |
@@ -1205,7 +1261,7 @@ Taken 2026-11-03. Each answer changed something specific in this document.
 | D2 | Should `manual` get a Telegram prompt, or stay web-only? | **Web-only** | No Telegram work in this plan; the existing manual notification and candidate buttons (#6) are untouched. One consequence recorded in §8.1 and deliberately not acted on. |
 | D3 | Theme — auto/light/dark, or dark only? | **auto / light / dark** | Dark mode becomes a Phase 0 constraint rather than a Phase 4 polish item (§4.2): the token layer must be built entirely on `--pico-*` variables so `prefers-color-scheme` works for free. The tri-state toggle is pulled forward into Phase 1c. |
 | D4 | Phase 1 only, or the whole roadmap? | **Phase 0 and Phase 1 only** | §7 is resequenced around four weeks, split 1a / 1b / 1c so it can be cut at a week boundary. Phases 2–5 move to the §7.2 backlog. Two protective slices are pulled forward (§7.3) because Phase 1 would otherwise make things worse. |
-| D5 | "The admin must see all releases" — which reading? | **The scope rule** | The administrator's scope is «Все» and cannot be narrowed; everybody else starts on «Мои» and can widen it (§3.2.2). The other reading — a catalogue of every release the installation has seen — is a storage change, not a page, and is deferred to Phase 2's candidate table with the data it needs. |
+| D5 | "The admin must see all releases" — which reading? | **The scope rule** | The administrator's scope is «Все» and cannot be narrowed; everybody else starts on «Мои» and can widen it (§3.2.2). The other reading — a catalogue of every release the installation has seen — is a storage change, not a page, and is **still deferred**: Phase 2 read the release facts out of the name instead of storing them, and the catalogue needs a log of every release ever seen, which the candidate list cannot be. |
 
 **Open, and deliberately not blocking:** whether the §8.1 notification-mask
 issue should be scheduled, and whether the diary study (§2.3) is worth
@@ -1325,3 +1381,33 @@ Added while implementing Phase 1c:
   `prefers-color-scheme` when it is not** — so "auto" is the *absence* of
   the attribute, not a third value of it. The theme script therefore
   removes the attribute for "auto" and sets it for the other two.
+
+Added while implementing Phase 2:
+
+- **The release facts do not need to be stored.** A candidate row holds the
+  title and the indexer, and `release.Parse` and `release.DetectAudio` are
+  pure functions of exactly those two — so the page can re-derive the
+  resolution, the source, the audio tier, the studio and the deciding marker
+  with the selector's own rules. The plan's "storage change" was a
+  misreading of what the candidate row already holds.
+- **`storage.Candidate.Rank`'s comment was wrong.** It said "in
+  selector-score order", but a refused release never reached the scorer:
+  `verdict.Rejected` was appended in the indexer's order
+  (`internal/release/score.go`), so the rank said nothing about the quality.
+- **The audio tier does not depend on the configuration.** The marker tables
+  live in the profile, but they are code and not settings — `ProfileFromConfig`
+  overrides only the thresholds — so a title parsed today is parsed the same
+  way as it was on the day it was refused.
+- **The seeders are `-1` when the count was never reported**, and `-1` is
+  what `internal/indexer/prowlarr.go` writes for a null count. The zero value
+  of a `storage.Candidate` is therefore *zero seeders*, not unknown ones: a
+  fixture that means "unknown" has to say `-1` explicitly.
+- **The reason's numbers belong to the release.** The threshold a release
+  missed is the policy's, and the policy is on the same page, in
+  «Требования». Storing the threshold with the candidate would be a second
+  copy of the rule, free to disagree with the first the moment the rule
+  changed.
+- **The refusals are the menu, and the menu has an order.** `StoreCandidates`
+  replaces the list on every fruitless search, so the rank of a candidate is
+  only meaningful within the list it was shown in — which is the same window
+  the Telegram buttons live in.

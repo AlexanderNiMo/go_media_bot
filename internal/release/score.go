@@ -69,6 +69,21 @@ type Rejection struct {
 	Release domain.Release
 	Reason  Reason
 	Detail  string
+
+	// Parsed and Audio describe the refused release the way they describe
+	// an accepted one: what its name says it is, and what its Russian
+	// audio turned out to be.
+	//
+	// They are kept because the refused releases are not a log — they are
+	// the menu a person picks from when the selector found nothing. A
+	// choice needs the facts of the release, not only the verdict on it.
+	Parsed Parsed
+	Audio  AudioTrack
+
+	// Score rates the refused release, so the list can be shown best
+	// first. It is the selector's own score: how good the release is,
+	// ignoring why it was refused.
+	Score float64
 }
 
 // Verdict is the outcome of evaluating a set of releases.
@@ -185,11 +200,16 @@ func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, black
 		if reason != "" {
 			verdict.Rejected = append(verdict.Rejected, Rejection{
 				Release: rel, Reason: reason, Detail: detail,
+				Parsed: parsed, Audio: audio,
 			})
 			continue
 		}
 		accepted = append(accepted, scored{release: rel, parsed: parsed, audio: audio})
 	}
+
+	// The refusals are scored and ordered before anything else looks at
+	// them, so that the list is a menu with the best of it first.
+	s.scoreRefusals(verdict.Rejected)
 
 	// The most complete pack on offer. A tracker publishes both a season
 	// pack and the episodes of a season it has finished, and the one with
@@ -256,6 +276,44 @@ func (s selector) Select(spec domain.MediaSpec, releases []domain.Release, black
 	}
 
 	return verdict
+}
+
+// scoreRefusals rates every refused release and puts the best of them first.
+//
+// The refusals are not a log — they are the menu a person chooses from when
+// the selector found nothing acceptable. A menu whose first item is a cam
+// rip and whose last is the best release the tracker has is a menu nobody
+// can use.
+//
+// The score is the selector's own: how good the release is, ignoring why it
+// was refused. The episode bonus is the same one the accepted packs get,
+// because a pack that carries more of the season is closer to what the
+// request asked for than a single episode of it.
+//
+// The order is stable, so two releases of the same quality keep the order
+// the indexer returned them in.
+func (s selector) scoreRefusals(rejected []Rejection) {
+	// The most complete pack among the refusals. The bonus goes to the
+	// releases that carry it, which is the same rule the accepted packs
+	// are scored by.
+	mostEpisodes := 0
+	for _, r := range rejected {
+		if n := r.Parsed.Episodes.Count(); n > mostEpisodes {
+			mostEpisodes = n
+		}
+	}
+
+	for i := range rejected {
+		r := &rejected[i]
+		r.Score = s.score(r.Release, r.Parsed, r.Audio)
+		if mostEpisodes > 0 && r.Parsed.Episodes.Count() == mostEpisodes {
+			r.Score += bonusEpisodes
+		}
+	}
+
+	sort.SliceStable(rejected, func(i, j int) bool {
+		return rejected[i].Score > rejected[j].Score
+	})
 }
 
 // scored is a release that passed the hard filters, with what the selector

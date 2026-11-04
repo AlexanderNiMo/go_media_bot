@@ -660,12 +660,13 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	detail := detailFor(req, watchers, events, len(candidates), time.Now(), s.cfg.Server.BasePath)
 	detail.RequestedBy = s.requesterName(r.Context(), req.RequestedBy)
-	detail.Requirements = requirementsFor(release.ProfileFromConfig(s.cfg), req.Media)
+	profile := release.ProfileFromConfig(s.cfg)
+	detail.Requirements = requirementsFor(profile, req.Media)
 
 	s.render(w, r, "request", requestView{
 		page:       s.basePage(w, r, "dashboard"),
 		Request:    detail,
-		Candidates: candidates,
+		Candidates: candidateRows(candidates, profile),
 	})
 }
 

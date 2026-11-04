@@ -153,6 +153,57 @@ func reasonTone(stored string) string {
 	}
 }
 
+// reasonText is why this release was refused, in Russian, with the release's
+// own numbers.
+//
+// The numbers are the release's: "2 сидера" is what this release has, and
+// "720p" is what its name calls it. The threshold it missed belongs to the
+// policy, and the policy is one screen above, in «Требования».
+//
+// A threshold stored with the candidate would be a second copy of the rule,
+// and it would go stale the moment the rule changed — a request refused
+// under "three seeders" would go on claiming it was refused under "five".
+// The stored reason keeps the numbers for the operator, in the tooltip, in
+// the language it was decided in.
+//
+// A reason with nothing to count is the plain label: "в чёрном списке" has
+// no number in it.
+func reasonText(stored string, c storage.Candidate, parsed release.Parsed) string {
+	code, _ := splitReason(stored)
+	label, ok := reasonLabels[code]
+	if !ok {
+		return reasonLabel(stored)
+	}
+
+	switch code {
+	case "excluded_source":
+		return label + ": " + sourceLabel(parsed.Source)
+	case "resolution_too_low":
+		return label + ": " + qualityLabel(parsed.Quality)
+	case "too_few_seeders":
+		// A release refused for having too few seeders always has a count:
+		// the selector refuses an unknown count for nothing.
+		return label + ": " + seeders(c.Seeders)
+	case "too_small", "too_large":
+		return label + ": " + humanBytes(c.SizeBytes)
+	case "implausible_size":
+		return label + ": " + humanBytes(c.SizeBytes) + " при " + qualityLabel(parsed.Quality)
+	case "wrong_season":
+		if parsed.HasSeason {
+			return label + ": " + strconv.Itoa(parsed.Season)
+		}
+	case "single_episode":
+		if parsed.HasEpisode {
+			return label + " (" + strconv.Itoa(parsed.Episode) + ")"
+		}
+	case "wrong_year":
+		if parsed.Year > 0 {
+			return label + ": " + strconv.Itoa(parsed.Year)
+		}
+	}
+	return label
+}
+
 // reasonAllowsOverride reports whether a refused release may still be picked.
 //
 // The hard reasons are refusals the selector makes on principle — a camrip, a
@@ -249,6 +300,72 @@ func audioLabel(t release.AudioTier) string {
 	default:
 		return "не определён"
 	}
+}
+
+// audioTone is the severity of an audio tier.
+//
+// The tiers are a ladder, and the badge says where on it the release sits: a
+// professional dub is good, an amateur reading is a compromise, and Russian
+// subtitles with no Russian audio is the failure the whole detection exists
+// to prevent.
+//
+// "none" is neutral rather than bad: a release with no marker at all may
+// well have Russian audio, and the page says it does not know.
+func audioTone(t release.AudioTier) string {
+	switch {
+	case t >= release.AudioMulti:
+		return "ok"
+	case t >= release.AudioVoiceOver:
+		return "warn"
+	case t == release.AudioSubsOnly:
+		return "danger"
+	default:
+		return "neutral"
+	}
+}
+
+// qualityLabel is the resolution of a release, as a person reads it.
+//
+// An unknown resolution is a dash and not the word "unknown": the cell says
+// what could not be determined, and the reason cell says why.
+func qualityLabel(q release.Quality) string {
+	if q == release.QualityUnknown {
+		return "—"
+	}
+	return q.String()
+}
+
+// sourceLabel is where the video came from.
+//
+// The names are the ones the trackers write — CAM, TS, BluRay, BDRemux —
+// because a Russian reader of release names knows them by exactly those
+// spellings. An unknown source is a dash, for the same reason an unknown
+// resolution is.
+func sourceLabel(s release.Source) string {
+	if s == release.SourceUnknown {
+		return "—"
+	}
+	return s.String()
+}
+
+// episodeLabel is how many episodes a release's name claims to carry.
+//
+// The count comes from the name and never from the torrent's file list: a
+// pack of eight episodes and a single episode are told apart by what the
+// release calls itself.
+//
+// The total is shown when the name carries one ("1-8 из 10"), because that
+// is the difference between a pack that finishes the season and one that
+// leaves two episodes behind.
+func episodeLabel(span release.Span) string {
+	n := span.Count()
+	if n == 0 {
+		return ""
+	}
+	if span.Total > 0 && span.Total != n {
+		return nounEpisode.count(n) + " из " + strconv.Itoa(span.Total)
+	}
+	return nounEpisode.count(n)
 }
 
 // seeders is the number of seeders, as a person reads it.
@@ -354,6 +471,11 @@ var (
 	nounDay    = ruNoun{nom: [3]string{"день", "дня", "дней"}, acc: "день"}
 	nounMonth  = ruNoun{nom: [3]string{"месяц", "месяца", "месяцев"}, acc: "месяц"}
 	nounYear   = ruNoun{nom: [3]string{"год", "года", "лет"}, acc: "год"}
+
+	// The noun of the episode count. "8 эпизодов" and not "8 серий":
+	// "серий" in Russian reads as "of TV series", which is a different
+	// thing from a count of episodes.
+	nounEpisode = ruNoun{nom: [3]string{"эпизод", "эпизода", "эпизодов"}, acc: "эпизод"}
 
 	// The nouns of the status line. "Раз" has an unusual shape: the third
 	// form is the same as the first, because five times is "пять раз", not
