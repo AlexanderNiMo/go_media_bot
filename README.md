@@ -945,16 +945,28 @@ that it grew.
 ## Development
 
 ```bash
-make check     # format, vet, build, test
-make test-db   # the same, including the tests that need Postgres
+make fmt       # format Go files before staging
+make check     # check formatting, vet, build, test
+make test-db-setup # prepare local Postgres for DB-backed tests
+make test-db   # run tests including those that need Postgres
 make check-ci  # everything CI runs, including the determinism checks
 ```
 
 Database tests are skipped unless `MEDIAD_TEST_DSN` is set, so `go test ./...`
-stays green on a machine with nothing running. `make test-db` reads the DSN out
-of `.env` and runs them. Each of those tests creates its own throwaway database
+stays green on a machine with nothing running. `make test-db` uses an explicit
+`MEDIAD_TEST_DSN`, falling back to `MEDIAD_POSTGRES_DSN` from `.env`. Each of
+those tests creates its own throwaway database
 and drops it afterwards — the `mediad` role is granted `CREATEDB` for exactly
 that reason, so a test run never touches your data.
+
+Install the commit hook with `make install-hooks` (repeat after hook updates).
+It checks a temporary copy of the staged files and never stages or reformats
+working files. Run `make fmt` and stage any formatting fixes yourself. Without
+an explicit `MEDIAD_TEST_DSN`, the hook starts local PostgreSQL and runs the
+existing `mediad-db-setup` service to initialise the role/database from `.env`.
+This may start Docker containers and creates the local application database;
+it does not start Temporal or the application. A supplied `MEDIAD_TEST_DSN`
+skips local setup. Missing infrastructure or failed checks block the commit.
 
 ## Changing workflow code
 

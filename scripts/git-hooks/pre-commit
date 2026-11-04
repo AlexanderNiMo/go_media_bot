@@ -1,23 +1,30 @@
 #!/bin/sh
-# Pre-commit hook: format the tree and run the same checks CI runs before
-# letting a commit go through. A green commit should land green in CI
-# without a follow-up fixup; this hook is the wall between "I think this
-# works" and "this is what CI will see".
-#
-# Install: `make install-hooks` (or copy this file to .git/hooks/pre-commit
-# and chmod +x it). The Makefile target is the supported path.
+# Check the staged tree without changing the index or working files.
+# Install with `make install-hooks` after pulling changes to this file.
 set -eu
+umask 077
 
-echo "→ make fmt"
-make fmt
+cd "$(git rev-parse --show-toplevel)"
+check_dir=$(mktemp -d "${TMPDIR:-/tmp}/mediad-pre-commit.XXXXXX")
+trap 'rm -rf "$check_dir"' EXIT
+trap 'exit 1' HUP INT TERM
 
-# Re-stage anything the formatter changed. git commit snapshots the
-# index, not the working tree; without re-staging, a gofmt fix would
-# not be part of the commit even though it sits on disk. -u stages
-# updates to tracked files only, which is exactly what fmt produces.
-git add -u
+git checkout-index --all --prefix="$check_dir/"
+# .env is ignored, but the local checks need the same connection settings.
+if [ -f .env ]; then
+    cp .env "$check_dir/.env"
+fi
 
-echo "→ make check-ci"
+# An explicitly supplied test database needs no local Docker setup.
+if [ -z "${MEDIAD_TEST_DSN:-}" ]; then
+    echo "→ make test-db-setup"
+    make test-db-setup
+fi
+
+# Git's hook environment must not redirect commands in the snapshot back here.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
+cd "$check_dir"
+echo "→ make check-ci (staged files)"
 make check-ci
 
 echo "pre-commit checks passed"

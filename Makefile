@@ -16,7 +16,7 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-db tidy fmt vet workflowcheck replay capture inspect-histories check check-ci install-hooks
+.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-db test-db-setup tidy fmt fmt-check vet workflowcheck replay capture inspect-histories check check-ci install-hooks
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -86,16 +86,29 @@ build: ## Compile the binary into ./bin
 test: ## Run the tests (database tests are skipped without a server)
 	go test ./... -count=1
 
-test-db: ## Run the tests including those that need Postgres
+# An explicit test DSN wins; otherwise use the same local DSN as the app.
+test-db: export MEDIAD_TEST_DSN ?= $(MEDIAD_POSTGRES_DSN)
+
+test-db-setup: ## Start local Postgres and initialise the application's test role
 	@test -f .env || { echo "no .env — copy .env.example and fill it in"; exit 1; }
-	MEDIAD_TEST_DSN="$$(grep -E '^MEDIAD_POSTGRES_DSN=' .env | cut -d= -f2- | tr -d '\"')" \
-		go test ./... -count=1
+	docker compose up -d --wait postgresql
+	docker compose run --rm mediad-db-setup
+
+test-db: ## Run the tests including those that need Postgres
+	@test -n "$$MEDIAD_TEST_DSN" || { echo "set MEDIAD_TEST_DSN or MEDIAD_POSTGRES_DSN in .env"; exit 1; }
+	go test ./... -count=1
 
 tidy: ## Sync go.mod / go.sum
 	go mod tidy
 
 fmt: ## Format the tree
 	gofmt -l -w ./cmd ./internal
+
+fmt-check: ## Check Go formatting without modifying files
+	@unformatted="$$(gofmt -l ./cmd ./internal)"; \
+		if [ -n "$$unformatted" ]; then \
+			printf 'Run make fmt and stage the formatted files:\n%s\n' "$$unformatted"; exit 1; \
+		fi
 
 vet: ## Run go vet
 	go vet ./...
@@ -116,7 +129,7 @@ capture: ## Record histories into the replay corpus (pass ids: make capture IDS=
 inspect-histories: ## Decode the corpus so it can be reviewed before committing
 	./scripts/inspect-history.sh 'internal/request/testdata/histories/*.json'
 
-check: fmt vet build test ## Format, vet, build and test
+check: fmt-check vet build test ## Check formatting, vet, build and test
 	@echo "all checks passed"
 
 check-ci: workflowcheck check test-db ## What CI runs: determinism, build, tests
