@@ -140,6 +140,7 @@ func newBot(cfg *config.Config, store *storage.Store, req requestStarter,
 		tgbot.WithDefaultHandler(b.handleDefault),
 		tgbot.WithMessageTextHandler("start", tgbot.MatchTypeCommand, b.handleStart),
 		tgbot.WithMessageTextHandler("help", tgbot.MatchTypeCommand, b.handleHelp),
+		tgbot.WithMessageTextHandler("join", tgbot.MatchTypeCommand, b.handleJoin),
 		tgbot.WithMessageTextHandler("link", tgbot.MatchTypeCommand, b.handleLink),
 		tgbot.WithMessageTextHandler("list", tgbot.MatchTypeCommand, b.handleList),
 		tgbot.WithMessageTextHandler("cancel", tgbot.MatchTypeCommand, b.handleCancel),
@@ -242,15 +243,19 @@ func (b *Bot) helpText() string {
 
 /list — что сейчас качается
 /cancel <номер> — отменить запрос
-/link <код> — привязать этот чат к аккаунту
+/join <код> — создать аккаунт по приглашению
+/link <код> — привязать этот чат к существующему веб-аккаунту
 /help — эта справка
 
 Код для привязки выдаётся в веб-интерфейсе, в настройках: %s/settings?tab=telegram
-Без него можно пользоваться ботом, но уведомления придут только сюда, а
-не в общий аккаунт.`, web)
+Для нового аккаунта попросите приглашение у администратора и отправьте /join <код>.`, web)
 }
 
 func (b *Bot) handleStart(ctx context.Context, api *tgbot.Bot, update *models.Update) {
+	if args := commandArgs(update); strings.HasPrefix(args, "join_") {
+		b.join(ctx, update, strings.TrimPrefix(args, "join_"))
+		return
+	}
 	b.reply(ctx, update, "Привет. Пришлите название фильма или сериала — найду и поставлю запрос.\n\n"+b.helpText())
 }
 
@@ -321,7 +326,7 @@ func (b *Bot) handleLink(ctx context.Context, api *tgbot.Bot, update *models.Upd
 func (b *Bot) handleList(ctx context.Context, api *tgbot.Bot, update *models.Update) {
 	user, err := b.user(ctx, update)
 	if err != nil {
-		b.reply(ctx, update, "Сначала привяжите чат: /link <код>. Код есть в веб-интерфейсе.")
+		b.reply(ctx, update, "Создайте аккаунт: /join <код приглашения>. Или привяжите существующий: /link <код из настроек веба>.")
 		return
 	}
 
@@ -429,7 +434,7 @@ func humanBytes(n int64) string {
 func (b *Bot) handlePick(ctx context.Context, api *tgbot.Bot, update *models.Update) {
 	user, err := b.user(ctx, update)
 	if err != nil {
-		b.reply(ctx, update, "Сначала привяжите чат: /link <код>.")
+		b.reply(ctx, update, "Создайте аккаунт: /join <код приглашения>. Или привяжите существующий: /link <код из настроек веба>.")
 		return
 	}
 
@@ -494,7 +499,7 @@ func (b *Bot) handlePick(ctx context.Context, api *tgbot.Bot, update *models.Upd
 func (b *Bot) handleCancel(ctx context.Context, api *tgbot.Bot, update *models.Update) {
 	user, err := b.user(ctx, update)
 	if err != nil {
-		b.reply(ctx, update, "Сначала привяжите чат: /link <код>.")
+		b.reply(ctx, update, "Создайте аккаунт: /join <код приглашения>. Или привяжите существующий: /link <код из настроек веба>.")
 		return
 	}
 
@@ -565,7 +570,7 @@ func (b *Bot) handleSelect(ctx context.Context, api *tgbot.Bot, update *models.U
 	user, err := b.store.UserByTelegram(ctx, telegramID)
 	if err != nil {
 		b.send(ctx, query.Message.Message.Chat.ID,
-			"Сначала привяжите чат: /link <код>. Код есть в веб-интерфейсе.")
+			"Создайте аккаунт: /join <код приглашения>. Или привяжите существующий: /link <код из настроек веба>.")
 		return
 	}
 
@@ -626,7 +631,7 @@ func (b *Bot) handlePickCandidate(ctx context.Context, api *tgbot.Bot, update *m
 	user, err := b.store.UserByTelegram(ctx, telegramID)
 	if err != nil {
 		b.send(ctx, msg.Chat.ID,
-			"Сначала привяжите чат: /link <код>. Код есть в веб-интерфейсе.")
+			"Создайте аккаунт: /join <код приглашения>. Или привяжите существующий: /link <код из настроек веба>.")
 		return
 	}
 
@@ -703,7 +708,7 @@ func (b *Bot) handlePickCandidate(ctx context.Context, api *tgbot.Bot, update *m
 func (b *Bot) search(ctx context.Context, update *models.Update, query string) {
 	user, err := b.user(ctx, update)
 	if err != nil {
-		b.reply(ctx, update, "Сначала привяжите чат: /link <код>. Код есть в веб-интерфейсе.")
+		b.reply(ctx, update, "Создайте аккаунт: /join <код приглашения>. Или привяжите существующий: /link <код из настроек веба>.")
 		return
 	}
 
@@ -1143,4 +1148,36 @@ func telegramHTTPClient(proxyURL string) (*http.Client, error) {
 	default:
 		return nil, fmt.Errorf("telegram.proxy: unsupported scheme %q (want http, https, or socks5)", u.Scheme)
 	}
+}
+
+func (b *Bot) handleJoin(ctx context.Context, api *tgbot.Bot, update *models.Update) {
+	b.join(ctx, update, commandArgs(update))
+}
+
+func (b *Bot) join(ctx context.Context, update *models.Update, args string) {
+	if update.Message == nil || update.Message.From == nil {
+		return
+	}
+	if update.Message.Chat.Type != "private" {
+		b.reply(ctx, update, "Для регистрации откройте личный чат с ботом.")
+		return
+	}
+	fields := strings.Fields(args)
+	if len(fields) < 1 || len(fields) > 2 {
+		b.reply(ctx, update, "Пришлите /join <код> или /join <код> <логин>.")
+		return
+	}
+	username := update.Message.From.Username
+	if len(fields) == 2 {
+		username = fields[1]
+	}
+	user, password, err := b.store.RedeemTelegramInvite(ctx, fields[0],
+		telegramIDString(update.Message.From.ID), username)
+	if err != nil {
+		b.log.Info("telegram registration failed", "telegram_id", update.Message.From.ID, "error", err)
+		b.reply(ctx, update, "Не получилось: "+err.Error())
+		return
+	}
+	b.reply(ctx, update, fmt.Sprintf("Аккаунт создан. Логин: %s\nВременный пароль: %s\nВеб-интерфейс: %s\nПри первом входе обязательно смените пароль. Если сообщение потерялось, повторите /join с тем же кодом до смены пароля.",
+		user.Username, password, strings.TrimRight(b.cfg.Server.BaseURL, "/")))
 }

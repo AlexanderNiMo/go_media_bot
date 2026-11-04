@@ -398,9 +398,10 @@ func (s *Store) IsBlacklisted(ctx context.Context, identities []string) (map[str
 
 // User is an account.
 type User struct {
-	ID       int64
-	Username string
-	IsAdmin  bool
+	ID                 int64
+	Username           string
+	IsAdmin            bool
+	MustChangePassword bool
 }
 
 // EnsureUserByTelegram finds or creates the user behind a Telegram account.
@@ -605,6 +606,7 @@ func (s *Store) LinkTelegramByCode(ctx context.Context, code, telegramID, userna
 			UPDATE invite_codes
 			   SET used_by = created_by, used_at = now()
 			 WHERE code = $1
+			   AND purpose = 'telegram_link'
 			   AND used_by IS NULL
 			   AND expires_at > now()
 			RETURNING created_by`
@@ -651,10 +653,10 @@ func (s *Store) LinkTelegramByCode(ctx context.Context, code, telegramID, userna
 
 // CreateLinkCode issues a code for attaching a Telegram account.
 //
-// It reuses the invite table because the mechanism is identical: one code, one
-// use, an expiry. The difference is only what the code is handed to.
+// Link codes share the invite table, but their purpose prevents registration
+// invitations from attaching a chat to the inviter.
 func (s *Store) CreateLinkCode(ctx context.Context, userID int64) (string, error) {
-	return s.CreateInvite(ctx, userID)
+	return s.createCode(ctx, userID, "telegram_link")
 }
 
 // UserByTelegram finds the account behind a chat, without creating one.

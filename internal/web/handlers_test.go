@@ -843,6 +843,7 @@ func TestNotificationsCannotBeMarkedReadAcrossUsers(t *testing.T) {
 
 func TestInviteFlow(t *testing.T) {
 	s, store := newTestServer(t)
+	s.cfg.Telegram.BotUsername = "mediad_test_bot"
 	admin := signedIn(t, s)
 	ctx := context.Background()
 
@@ -857,6 +858,10 @@ func TestInviteFlow(t *testing.T) {
 		t.Fatalf("want one invite, got %d", len(invites))
 	}
 	code := invites[0].Code
+	invitePage := admin.body("/settings?tab=invites&new_invite=" + code)
+	if !strings.Contains(invitePage, "https://t.me/mediad_test_bot?start=join_"+code) {
+		t.Fatal("missing Telegram invitation link")
+	}
 
 	// A stranger registers with it.
 	bob := newClient(t, s)
@@ -1671,5 +1676,70 @@ func TestManualReleaseAcceptsAMagnet(t *testing.T) {
 	}
 	if req.SelectedLink != magnet {
 		t.Errorf("selected_link = %q, want %q", req.SelectedLink, magnet)
+	}
+}
+
+func TestTelegramAccountMustChangePassword(t *testing.T) {
+	for _, prefix := range []string{"", "/mediad"} {
+		t.Run(prefix, func(t *testing.T) {
+			s, store := newTestServer(t)
+			s.cfg.Server.BasePath = prefix
+			ctx := context.Background()
+			admin, err := store.CreateAccount(ctx, "admin", "admin-password-long", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, err := store.CreateInvite(ctx, admin.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, password, err := store.RedeemTelegramInvite(ctx, code, "777", "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := newClient(t, s)
+			c.get(prefix + "/login").Body.Close()
+			resp := c.post(prefix+"/login", url.Values{"username": {"alice"}, "password": {password}})
+			resp.Body.Close()
+			if got := resp.Request.URL.Path; got != prefix+"/change-password" {
+				t.Fatalf("login landed on %s", got)
+			}
+			for _, path := range []string{"/", "/settings", "/fragments/active", "/search"} {
+				resp := c.get(prefix + path)
+				resp.Body.Close()
+				if got := resp.Request.URL.Path; got != prefix+"/change-password" {
+					t.Fatalf("%s landed on %s", path, got)
+				}
+			}
+			resp = c.post(prefix+"/settings/invites", url.Values{})
+			resp.Body.Close()
+			if got := resp.Request.URL.Path; got != prefix+"/change-password" {
+				t.Fatalf("POST bypass: %s", got)
+			}
+			secondToken, err := store.CreateSession(ctx, u.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, next := range []string{"short", password} {
+				resp = c.post(prefix+"/change-password", url.Values{"current": {password}, "password": {next}})
+				resp.Body.Close()
+				if got := resp.Request.URL.Path; got != prefix+"/change-password" {
+					t.Fatalf("invalid password accepted: %s", got)
+				}
+			}
+			resp = c.post(prefix+"/change-password", url.Values{"current": {password}, "password": {"permanent-password"}})
+			resp.Body.Close()
+			if got := resp.Request.URL.Path; got != prefix+"/login" {
+				t.Fatalf("password change landed on %s", got)
+			}
+			if _, err := store.SessionUser(ctx, secondToken); err == nil {
+				t.Fatal("other session survived")
+			}
+			resp = c.post(prefix+"/login", url.Values{"username": {"alice"}, "password": {"permanent-password"}})
+			resp.Body.Close()
+			if got := resp.Request.URL.Path; got != prefix+"/" {
+				t.Fatalf("permanent login landed on %s", got)
+			}
+		})
 	}
 }

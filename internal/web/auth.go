@@ -128,7 +128,11 @@ func (s *Server) sessions(next http.Handler) http.Handler {
 // instance has no accounts yet.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if sessionUser(r) != nil {
+		if user := sessionUser(r); user != nil {
+			if user.MustChangePassword && r.URL.Path != "/change-password" {
+				s.seeOther(w, r, "/change-password")
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -278,7 +282,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.store.Authenticate(r.Context(),
+	user, token, err := s.store.Login(r.Context(),
 		r.PostFormValue("username"), r.PostFormValue("password"))
 	if err != nil {
 		if !errors.Is(err, storage.ErrUnauthorized) {
@@ -296,12 +300,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.startSession(w, r, user.ID); err != nil {
-		s.fail(w, r, err)
-		return
-	}
+	s.setSessionCookie(w, token)
 
 	s.log.Info("login", "user", user.Username, "remote", r.RemoteAddr)
+	if user.MustChangePassword {
+		s.seeOther(w, r, "/change-password")
+		return
+	}
 	s.seeOther(w, r, safeNext(r.PostFormValue("next")))
 }
 
@@ -322,6 +327,11 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID int
 		return err
 	}
 
+	s.setSessionCookie(w, token)
+	return nil
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:  sessionCookie,
 		Value: token,
@@ -334,7 +344,6 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID int
 		Secure:   isTLS(s.cfg.Server.BaseURL),
 		MaxAge:   int(storage.SessionTTL.Seconds()),
 	})
-	return nil
 }
 
 // handleSetupForm is the first-run wizard.

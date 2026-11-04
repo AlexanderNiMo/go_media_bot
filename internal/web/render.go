@@ -44,6 +44,7 @@ var pageNames = []string{
 	"login",
 	"setup",
 	"join",
+	"change-password",
 }
 
 /*
