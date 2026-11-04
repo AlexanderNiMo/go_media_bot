@@ -98,7 +98,7 @@
   <tbody>
   {{range $.Candidates}}
     {{/* The action follows the reason: a release refused on principle gets
-         no button at all, and the row is dimmed to say so. A release refused
+         no button at all. A release refused
          on quality gets a button that says it is an overrule. */}}
     <tr role="row"{{if .Refused}} class="refused"{{end}}>
       <td role="cell" class="release" data-label="">

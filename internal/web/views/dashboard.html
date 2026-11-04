@@ -111,7 +111,6 @@
   who has collapsed one keeps it collapsed, and a reader typing in the
   search box keeps what they typed.
 */}}
-<p id="dashboard-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
 <div id="dashboard-poll" hx-get="{{path .BasePath "/fragments/active"}}{{.Filter.ActiveFragmentQS}}"
      hx-trigger="every 3s[!document.hidden]"
      hx-sync="this:drop"
@@ -187,28 +186,16 @@
     } catch (e) {}
 
     var poll = document.getElementById("dashboard-poll");
-    var status = document.getElementById("dashboard-status");
-    var snapshot, focus, scroll, announcement;
+    var swapping = false, focus, scroll;
 
     function rows() {
       return Array.from(document.querySelectorAll('[id^="table-"] tr[data-request]'));
-    }
-    function states() {
-      var result = new Map();
-      rows().forEach(function (row) {
-        result.set(row.dataset.request, {
-          state: row.dataset.state,
-          title: row.querySelector(".what a").textContent,
-          label: row.querySelector(".state").textContent
-        });
-      });
-      return result;
     }
     poll.addEventListener("htmx:beforeRequest", function (event) {
       if (document.hidden) event.preventDefault();
     });
     poll.addEventListener("htmx:beforeSwap", function () {
-      snapshot = states();
+      swapping = true;
       var active = document.activeElement;
       var row = active.closest("tr[data-request]");
       focus = row ? {
@@ -227,18 +214,7 @@
       }
     });
     poll.addEventListener("htmx:afterRequest", function () {
-      if (!snapshot) return;
-      var current = states();
-      var messages = [];
-      current.forEach(function (value, key) {
-        var previous = snapshot.get(key);
-        if (!previous || previous.state !== value.state) {
-          messages.push(value.title + ": " + value.label + ".");
-        }
-      });
-      snapshot.forEach(function (value, key) {
-        if (!current.has(key)) messages.push(value.title + ": больше нет в активном списке.");
-      });
+      if (!swapping) return;
       if (focus && !focus.element.isConnected && document.activeElement === document.body) {
         var row = rows().find(function (item) { return item.dataset.request === focus.request; });
         var target = focus.block.querySelector("summary");
@@ -251,15 +227,7 @@
         target.focus({preventScroll: true});
       }
       window.scrollTo(scroll[0], scroll[1]);
-      if (messages.length) {
-        clearTimeout(announcement);
-        status.textContent = "";
-        announcement = setTimeout(function () {
-          status.textContent = messages.slice(0, 3).join(" ") +
-            (messages.length > 3 ? " Других изменений: " + (messages.length - 3) + "." : "");
-        }, 100);
-      }
-      snapshot = null;
+      swapping = false;
       focus = null;
     });
 

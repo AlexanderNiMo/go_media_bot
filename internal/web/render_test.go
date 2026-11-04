@@ -258,6 +258,45 @@ func fixtures(t *testing.T) map[string]any {
 	}
 }
 
+func TestNotificationBulkControlsAreHiddenWithoutJS(t *testing.T) {
+	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
+	rec := httptest.NewRecorder()
+	s.render(rec, httptest.NewRequest(http.MethodGet, "/notifications", nil), "notifications", fixtures(t)["notifications"])
+	doc, err := html.Parse(strings.NewReader(rec.Body.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bulk, submit, checks int
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			if n.Data == "button" && (textOf(n) == "Выбрать все" || textOf(n) == "Снять выбор") {
+				bulk++
+				hidden := false
+				for _, a := range n.Attr {
+					hidden = hidden || a.Key == "hidden"
+				}
+				if !hidden {
+					t.Errorf("JS-only button %q is visible without JS", textOf(n))
+				}
+			}
+			if n.Data == "button" && attrForTest(n, "type") == "submit" && strings.Contains(textOf(n), "Отметить выбранные") {
+				submit++
+			}
+			if n.Data == "input" && attrForTest(n, "class") == "notif-check" {
+				checks++
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if bulk != 2 || submit != 1 || checks != 1 {
+		t.Fatalf("controls: bulk=%d submit=%d checkboxes=%d", bulk, submit, checks)
+	}
+}
+
 // TestEveryPageRenders is the guard.
 func TestEveryPageRenders(t *testing.T) {
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
@@ -805,7 +844,7 @@ func TestCandidateRowsOfferNoActionOnAHardRefusal(t *testing.T) {
 		t.Errorf("a release refused on principle offers %v; it offers nothing at all", rows[2].buttons)
 	}
 	if !strings.Contains(rows[2].class, "refused") {
-		t.Errorf("a refused row has class %q; it is dimmed", rows[2].class)
+		t.Errorf("a refused row has class %q; want refused", rows[2].class)
 	}
 }
 
