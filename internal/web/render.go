@@ -66,8 +66,9 @@ func newTemplates() (*templates, error) {
 		// path joins a route to the deployment's base path. A leading slash
 		// on the route is required; a missing one is left as-is so a typo
 		// surfaces in the rendered page rather than silently rewriting URLs.
-		"path":      pathFunc,
-		"hasString": hasString,
+		"path":         pathFunc,
+		"hasString":    hasString,
+		"mobilePoster": mobilePoster,
 		// The vocabulary. Machine-readable codes — a state, a rejection
 		// reason, an audio tier — reach the page through these, so that
 		// the interface speaks the reader's language and the codes stay

@@ -59,6 +59,19 @@ func posterPath(path, size string) string {
 		url.PathEscape(path), "%2F", "/")
 }
 
+// mobilePoster keeps the deployment prefix and escaped image path intact.
+func mobilePoster(posterURL string) string {
+	prefix, rest, ok := strings.Cut(posterURL, "/poster/")
+	if !ok {
+		return posterURL
+	}
+	_, image, ok := strings.Cut(rest, "/")
+	if !ok {
+		return posterURL
+	}
+	return prefix + "/poster/w185/" + image
+}
+
 // handlePoster streams a poster image from TMDB.
 //
 // It streams rather than buffering: an "original" poster is a few megabytes,

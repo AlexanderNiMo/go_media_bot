@@ -1,14 +1,34 @@
 # UI/UX Project Plan — `mediad`
 
-**Date:** 2026-11-03 (Phase 1b and D5 added 2026-11-04; Phase 2 added 2026-11-04)
-**Status:** Phase 0, Phase 1 (a, b and c) and Phase 2 shipped; Phases 3–5 are not implemented
+**Date:** 2026-11-03; last reconciled with the code on 2026-11-04 (baseline `b0083a3`, plus Phase 3 working-tree changes)
+**Status:** Phases 0–3 implemented; Phases 4–5 deferred. Phase 3 browser checks use fixtures; screen-reader verification remains open.
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
-This plan is written against the code as it stands today. Every finding in §1
-and §2 cites a `file:line` so it can be re-verified or falsified in one step —
-a design decision that rests on a misreading of the code is worse than no
-decision at all.
+This document retains the original audit and design proposals as context.
+The implementation status below and §7 describe the current code; original
+`file:line` references are historical and may have moved. Research outcomes,
+browser checks and usability metrics are not claimed without recorded evidence.
+
+### Current implementation status — 2026-11-04
+
+| Area | Current state | Evidence |
+|---|---|---|
+| Foundation | Russian state/reason/audio vocabulary, theme tokens, working accessible progress bar, structural accessibility guard | `internal/web/vocab.go`, `views/static/style.css`, `views/fragments.html`, `a11y_test.go` |
+| Dashboard | Three buckets, one query per bucket; age, attempts and next check; OOB polling preserves bucket disclosures | `internal/web/views.go`, `handlers.go`, `views/dashboard.html`, `views/fragments.html` |
+| Scope | Admin pinned to «Все»; others default to «Мои» and may widen | `internal/web/handlers.go` (`applyScope`) |
+| Safety | State-dependent GET → POST cancel confirmation; hard candidate rejections blocked in the page and endpoint | `internal/web/views/cancel.html`, `handlers.go`, `vocab.go` |
+| Request page | Requester from `requested_by` (migration 00012), status sentence, requirements, persisted «Расширенное» disclosure | `internal/web/views/request.html`, `views.go` |
+| Candidate table | Quality, audio/studio, release-specific reason numbers, unknown seeders as «—», best-first order | `internal/web/candidates.go`, `views/request.html`, `internal/release/score.go` |
+| Responsive layout | All data tables use `table-cards` with explicit table roles; narrow events render as a timeline | `internal/web/views/static/style.css`, `views/fragments.html`, `views/request.html` |
+| Theme | Auto/light/dark stored per browser; auto removes `data-theme` | `internal/web/views/layout.html`, `views/settings.html` |
+| Remaining | Phases 4–5 deferred: empty states, shared voice, poll focus/announcements, performance and user validation | §6 and §7.2 |
+
+**Next planned phase: Phase 4** — empty states and voice consistency.
+Phase 3 is implemented and checked in headless Chrome on rendered fixtures at
+320 / 375 / 768 / 1024 / 1440 px in both themes, including both desktop sidebar
+states. Screen-reader and measured contrast checks remain open.
+`docs/ui-patterns.md` records the candidate table and Phase 3 mobile patterns.
 
 Two things are **out of scope by construction** and are not revisited anywhere
 below:
@@ -39,7 +59,7 @@ distinguishing claim is **the horizon**: a request lives two years, is re-checke
 on a backoff ladder, and "a proper dub finally appeared" is an event that can
 arrive months later.
 
-**Diagnosis of the current UI.** The web front-end (13 templates, Pico v2.0.6 +
+**Original diagnosis (before Phase 0; resolved items remain here as context).** The web front-end (13 templates, Pico v2.0.6 +
 htmx + an 18.5 KB `style.css`) is a competent *download manager*. It is not yet
 a product that embodies the horizon.
 
@@ -192,7 +212,7 @@ conventions for "waiting" assume a wait short enough that a spinner suffices.
 
 ## 3. Information Architecture & User Flows
 
-### 3.1 Current IA (from `internal/web/module.go:92–154`)
+### 3.1 Original IA, before Phase 1 (from `internal/web/module.go:92–154`)
 
 ```
 /                         dashboard: «Что качается» + «Недавно»
@@ -217,9 +237,9 @@ is what "Запросы" contains.
 |---|---|---|---|
 | **Качается** | `downloading`, `adding` | seconds → hours | Live progress bar, byte counts, ETA |
 | **Ищет** | `searching`, `pending` | hours → 2 years | Age, next check, attempts count, no progress bar |
-| **Ждёт выбора** | `manual`, `ongoing` | unbounded — needs a human | Distinct callout treatment, "choose a candidate" action |
+| **Ждёт выбора** | `manual`, `ongoing` | manual needs a human; ongoing waits for season updates | Choose action for `manual` only; `ongoing` remains automatic |
 
-Today all six live in one table under «Что качается», which is a category error:
+Before Phase 1a, all six lived in one table under «Что качается», which is a category error:
 `searching` for four months and `downloading` at 90% are not the same kind of
 thing, and mixing them makes both unreadable.
 
@@ -236,27 +256,14 @@ year ago that are still quietly running.
 
 ### 3.2.1 The scope filter: «Все» / «Мои»
 
-A request has no owner column. It is a global object — one media, one workflow —
-and users attach to it through `request_watchers`. The requester is recorded
-only in the event log (`request_events.detail["requested_by"]`,
-`internal/storage/requests.go:371`), never as a column.
+A request is global and users attach through `request_watchers`.
+`requested_by` now records who asked (migration 00012); it does not define
+ownership or scope. «Мои» means watched requests, using
+`RequestFilter.WatcherUserID`.
 
-The consequence for the UI: **every web user currently sees every request.** The
-storage layer already knows how to filter — `RequestFilter.WatcherUserID`
-(`internal/storage/requests.go:399`) restricts to requests a user is watching —
-but the only caller is the Telegram bot (`internal/telegram/bot.go:340`). The web
-dashboard never sets it.
-
-So the dashboard gains a scope toggle:
-
-| Scope | Meaning | Default |
-|---|---|---|
-| **Все** | Every request in the installation — what the household shares | ✅ default |
-| **Мои** | Requests I watch (`WatcherUserID`) | |
-
-«Все» stays the default because the installation is shared: knowing that the
-household is downloading a season matters to everyone. «Мои» is one click away
-for the person who wants their own list.
+The shipped rule (§3.2.2) supersedes the original proposal of «Все» for everyone:
+administrators always see «Все», without a scope control; everybody else starts
+on «Мои» and can switch to «Все». The polled fragment carries the same scope.
 
 The creator is added as a watcher on creation
 (`internal/request/module.go:396`), so "Мои" is a good proxy for "asked for by
@@ -329,7 +336,7 @@ same thing, and the copy must not claim it is.
 
 ### 3.3 Request detail page — proposed hierarchy
 
-Currently: a `<dl class="facts">` of 14 rows mixing story and machinery
+Before Phase 1c: a `<dl class="facts">` of 14 rows mixing story and machinery
 (workflow ID, infohash, content path), then candidates, then a manual-release
 form, then the events table.
 
@@ -338,11 +345,10 @@ Proposed order, with the *first screen* being the story:
 **1. Header** — poster, title, state pill, **age** («4 мес. 12 дн.»), and
 **«Запросил»** — the username of whoever asked for it.
 
-«Запросил» is recoverable today but buried: it lives in the create event's
-`requested_by` detail (`internal/storage/requests.go:371`), which the events
-table renders as raw JSON. Promoting it to the header is what makes a shared
-installation legible — «Кто просил» and «Кто смотрит» are different questions,
-and in a household both have answers.
+«Запросил» is shipped from `requests.requested_by`, resolved to a username.
+The original assumption that a create event held it was false: creation writes
+no such event. Migration `00012_requested_by.sql` added the column and rebuilt
+the projection view, retaining the three ongoing-season columns.
 
 **1a. Watchers** — the existing «Кто смотрит» list, kept. In a shared install it
 is the closest thing the product has to "who cares about this".
@@ -725,9 +731,9 @@ the DOM order is already the logical order.
 data in the DOM, doubles the template work, and duplicates every screen-reader
 announcement. One DOM, one rendering mode, chosen by CSS.
 
-### 5.3 Per-surface adaptation rules
+### 5.3 Per-surface adaptation rules — implemented through Phase 3
 
-| Surface | ≥768px | <768px |
+| Surface | Wide content | Narrow content |
 |---|---|---|
 | Dashboard request rows | 5-column table | Card: 48×72 poster, title, state pill, one line of status, 44px action |
 | Candidate table | 7 columns | Card: release name (2-line clamp), quality + audio badges, reason, action |
@@ -735,18 +741,23 @@ announcement. One DOM, one rendering mode, chosen by CSS.
 | Filter pills | Wrapped row | Horizontally scrollable row, `scroll-snap`, edge fade |
 | Filter selects | Inline | Full-width stacked |
 | Request header | Poster 9rem beside title | Poster above title, title at `--m-text-2xl` |
-| Poster source | `w342` | `w185` (the poster endpoint already takes a `{size}`) |
+| Poster source | Existing `w342` / `w500` fallback | `<picture>` selects `w185` at ≤767px through the same proxy |
 
-### 5.4 Touch targets
+The table mode now follows **available content width** (`@container
+(max-width: 60rem)` on `main`), rather than just viewport width. Browser checks
+found that the candidate table overflowed at both 768 and 1024 px, and an open
+sidebar also reduces the usable width on a large screen. The sidebar's own
+768 px threshold is unchanged. Header/filter/touch adaptations apply at ≤768 px.
 
-`button.link.small` — the dashboard's "отменить" — is `0.75em` text in a
-link-styled button: roughly 24 px tall. **Below the 44×44 minimum.** Fix:
-`min-height: 32px` on desktop, `44px` under 768 px; on mobile the cancel action
-becomes a full-width 44 px button, or a 44 px icon button with an `aria-label`.
+### 5.4 Touch targets — implemented in Phase 3
 
-The state pills are `<label>` wrappers around checkboxes — the pill is the touch
-target and it is large enough. But the hidden checkbox means the **native focus
-ring is invisible**: the pill needs its own `:focus-within` ring.
+Compact link actions have a 32 px minimum on desktop and a 44 px minimum
+on mobile. Icon controls keep their small glyph inside a 44×44 target; the
+notification checkbox has a wrapping 44×44 label. Pills, theme/notification
+options, tabs and disclosures also have 44 px mobile targets.
+
+A shared `:focus-visible` outline and label `:focus-within` outlines preserve
+keyboard focus visibility. The native checkbox remains visible.
 
 ### 5.5 The sidebar (unchanged, deliberately)
 
@@ -776,36 +787,31 @@ current code or a concrete requirement.
 - [ ] **Contrast** — verify ≥4.5:1 for state-pill text in all 10 states, in
   light and dark. The muted color at `0.85em` on small text is the likeliest
   failure.
-- [ ] **Never colour alone** — every state pill carries its label as text.
-  (Today it carries the English code — legible, but it leaks jargon into a
-  Russian UI.)
+- [x] **Never colour alone** — state pills carry Russian labels (Phase 0).
 - [ ] `prefers-reduced-motion` — the only motion today is the htmx swap; any
   skeleton shimmer or bar animation must respect it.
-- [ ] `prefers-color-scheme` — Pico already supports it; Phase 0's token layer
+- [x] `prefers-color-scheme` — Pico already supports it; Phase 0's token layer
   makes it work, and Phase 1c adds the explicit auto/light/dark toggle (D3).
 
 ### 6.2 Operable
 
-- [ ] **Focus visible** on every interactive element, including `.pill` labels
-  and `.link` buttons. Add a global `:focus-visible` ring on the accent token.
+- [x] **Focus styling** — a global `:focus-visible` ring and label
+  `:focus-within` rings use the accent token (Phase 3). Manual screen-reader
+  and exhaustive keyboard navigation checks remain open.
   *(Corrected: the pills do **not** hide their checkbox — `.pill
   input[type="checkbox"]` only sets a margin — so the native ring survives
   there and needs no replacement.)*
-- [ ] **Touch targets ≥44×44** — the `.link.small` cancel button violates this
-  today.
-- [ ] **The sidebar's `aria-hidden="true"` is hard-coded in the HTML**
-  (`internal/web/views/layout.html:34`). Before JS runs — and permanently, for
-  any user with JS disabled — the entire navigation is hidden from assistive tech
-  **and removed from the tab order**, on desktop. Fix: don't render
-  `aria-hidden="true"` in the HTML at all; let JS manage it, and use `inert` for
-  the off-screen mobile drawer only.
-- [ ] **Focus destruction on poll.** `hx-swap="innerHTML"` on the table body
-  replaces the focused element every 3 s. If the user has tabbed to "отменить",
-  focus is destroyed and jumps to `<body>` — the user loses their place and
-  their next keystroke goes nowhere. This is a WCAG 2.4.3 (Focus Order) failure
-  and a genuine usability bug. Fix: row-level `hx-swap="outerHTML"` with
-  `hx-target="closest tr"`, so only changed rows are replaced.
-- [ ] Escape closes the mobile drawer; the drawer traps focus while open.
+- [x] **Mobile control targets ≥44×44** — link actions, icon buttons, tabs,
+  labelled options and disclosures checked on fixtures in Chrome (Phase 3).
+- [x] **Sidebar visibility** — no hard-coded `aria-hidden` on the navigation;
+  JS follows visual availability on desktop/mobile (`views/layout.html`).
+- [ ] **Focus preservation on poll.** Phase 1a preserves the bucket disclosures,
+  but still replaces tables and counts every 3 s through OOB swaps. Verify
+  keyboard focus and preserve it when a table contains the focused link.
+  Row-level replacement alone does not guarantee focus survives a changed row.
+- [x] Escape closes the mobile drawer; Tab stays inside while open. Closed
+  mobile navigation is inert; breakpoint changes update its accessibility
+  and return focus to the toggle if the focused navigation becomes hidden.
 - [ ] The notification page's «Выбрать все» / «Снять выбор» are `onclick`-only —
   no-JS users get dead buttons. Make them `<label for>`-driven or add a
   `<noscript>` path (the repo already does this correctly in
@@ -813,22 +819,24 @@ current code or a concrete requirement.
 
 ### 6.3 Understandable
 
-- [ ] `lang="ru"` — present (`internal/web/views/layout.html:2`). ✓
-- [ ] **State pills show English codes in a Russian UI.** Replace with Russian
-  labels; keep the code in a `title` for the operator.
-- [ ] **Every destructive action states its consequence.** Cancelling does **not**
-  delete downloaded files (season packs survive by design, `AGENTS.md`). The
-  confirm dialog must say so.
+- [x] `lang="ru"` — present (`internal/web/views/layout.html`).
+- [x] **Russian state labels** — shipped in Phase 0.
+- [x] **Cancellation states its consequence** — confirmation and flash follow
+  the state: `downloading` deletes files, `ongoing` keeps files, other states
+  have nothing to delete. GET confirms; POST performs the cancellation.
 
 ### 6.4 Robust
 
 - [ ] **Status messages (4.1.3).** On a state transition, announce it in an
   `aria-live="polite"` region — but not the whole table. Debounce, and announce
   only meaningful transitions («Загрузка завершена: …»).
-- [ ] **`role="progressbar"`** with `aria-valuenow` / `aria-valuemin` /
+- [x] **`role="progressbar"`** with `aria-valuenow` / `aria-valuemin` /
   `aria-valuemax` and an accessible name on the progress element.
-- [ ] The `role="table"` decision (see §5.2) made explicitly.
-- [ ] **Automated regression guard.** The repo already proves that a rendered
+- [x] Explicit table roles on dashboard and candidate cards (§5.2). Events
+  use the same roles in Phase 3's timeline layout.
+- [x] **Automated regression guard** — `TestRenderedPagesAreAccessible` in
+  `internal/web/a11y_test.go` implements the structural checks below.
+  Original specification: The repo already proves that a rendered
   page can be correct to the eye and wrong to the parser
   (`TestNoPageNestsAForm`). Extend that pattern: a Go test that renders every
   page and asserts, using `golang.org/x/net/html`:
@@ -885,8 +893,9 @@ replacements:
 
 ## 7. Phased Rollout & Handoff Milestones
 
-**Current window: Phase 0 and Phase 1 only (D4)** — four weeks. Everything
-below Phase 1 is deferred to §7.2, not deleted.
+**Implemented: Phases 0, 1a, 1b, 1c, 2 and 3.** D4 was the original Phase 0–1
+window; Phase 2 subsequently shipped as PR #12. Phases 4–5 remain deferred
+in §7.2. Week numbers below are the original sequencing, not current deadlines.
 
 **Every phase ships.** Each ends with something testable in the running app and
 gated by `make test` / `make check-ci`.
@@ -959,8 +968,8 @@ than the plan:
   `code: english-detail` — `too_few_seeders: 2 seeders, minimum is 3`. The
   label map splits on the first `": "`, and the detail is preserved whole in
   the cell's tooltip. **The numbers are not yet visible in the cell**, which
-  is a Phase 1b item: doing it properly means carrying the reason's parameters
-  separately from its prose, which is a storage change.
+  was initially assigned to Phase 1b and assumed to need stored parameters.
+  Phase 2 resolved it using the release's own values without a migration.
 > Commit: `design: tokens and vocabulary`.
 
 ---
@@ -1003,7 +1012,7 @@ speaker would notice.
 
 > Commit: `web: the horizon — three buckets and a status line`.
 
-#### Phase 1b — Safety slices (Week 3)
+#### Phase 1b — Safety slices (Week 3) — **shipped**
 
 Everything here exists because **Phase 1a would otherwise make things worse**.
 None of it is additive; each one removes a risk that 1a introduces.
@@ -1015,8 +1024,9 @@ None of it is additive; each one removes a risk that 1a introduces.
   for the dashboard table only, with explicit `role="table"` / `role="row"` /
   `role="cell"`. Phase 1a adds columns; on a 375 px screen the table is already
   the worst surface in the product and would get worse.
-- **Cancel confirmation** (§6.6): a small confirm page stating that already
-  downloaded files stay on disk. Implemented as a GET → POST pair, which also
+- **Cancel confirmation** (§6.6): a small confirm page stating the consequence for the current
+  state: downloading deletes files, ongoing keeps files, other states have
+  nothing to delete. Implemented as a GET → POST pair, which also
   sidesteps the form-in-form constraint entirely — the cancel form currently
   lives inside the dashboard table.
 
@@ -1026,7 +1036,7 @@ None of it is additive; each one removes a risk that 1a introduces.
 |---|---|---|
 | Russian reason labels on the candidate table | Already in Phase 0's vocabulary | The labels were never the hard part; the *action* was |
 | No action button on a hard rejection | Shipped, **and the endpoint refuses the pick too** | A hidden button is not a rule: one POST would have downloaded the camrip the selector refused. The button and the endpoint now ask the same question — `candidatePick` / `canPick` in `internal/web/vocab.go` — and a refused row is dimmed |
-| Dashboard table → card on mobile | Shipped for **both** dashboard tables | The «Недавно» table is on the same page and was the same width. The card layout is `table.cards` with `data-label` on every cell and explicit `role="table"` / `role="row"` / `role="cell"` / `role="columnheader"`, because `display: block` takes the table semantics away in Safari and VoiceOver |
+| Dashboard table → card on mobile | Shipped for **both** dashboard tables | The «Недавно» table is on the same page and was the same width. The card layout is `table.table-cards` with `data-label` on every cell and explicit `role="table"` / `role="row"` / `role="cell"` / `role="columnheader"`, because `display: block` takes the table semantics away in Safari and VoiceOver |
 | Cancel confirmation | Shipped as a GET → POST pair — `GET /requests/{id}/cancel` states the consequence, `POST` does it | See the correction below: **the copy this plan specified was wrong** |
 | — | The dashboard's table now holds **no form at all** | The cancel action became a link. The form-in-form constraint is not "handled" here, it is gone: there is nothing left to swallow |
 
@@ -1130,24 +1140,50 @@ because Phase 2 changed which release a rank names.
 
 ---
 
+### Phase 3 — Responsive surfaces and touch targets — **implemented**
+
+- Events become a vertical timeline on phones, retaining one DOM and explicit
+  table roles. Long paths and event details wrap instead of widening the page.
+- Requests, notifications and all three settings tables reuse `table-cards`.
+- Table/card mode follows the available content width (60 rem), so both sidebar
+  states fit; a viewport-only 768 px rule left tablet candidates overflowing.
+- Mobile headers place the poster above the title; facts stack, search/season
+  grids can shrink to 320 px, selects stack, state pills scroll horizontally,
+  and the invitation input/copy action wraps.
+- Mobile controls have 44 px targets, including hamburger/logout, link actions,
+  notification selection and labelled options. Focus outlines use existing tokens.
+- Search and header posters use `<picture>` with a `w185` mobile source and the
+  existing desktop fallback; deployment prefixes and escaped paths survive.
+
+**Validation:** `go test ./internal/web -count=1`; structural table-label/role
+and responsive-poster tests in `responsive_test.go`. Headless Chrome checked
+17 fixture pages/tab variants across 320 / 375 / 768 / 1024 / 1440 px, both
+light/dark and both desktop sidebar states (238 combinations). The fixtures
+include long paths/event details and a long invitation URL. No document overflow
+or undersized checked mobile control targets remained. Screenshots are recorded
+in `docs/ui-patterns.md`. Live services, Safari/VoiceOver and measured contrast
+were not checked; this is implementation/layout verification, not a user study.
+
+---
+
 ### 7.2 Deferred — the backlog, explicitly not cancelled
 
 | Deferred | From | Why it can wait |
 |---|---|---|
 | ~~Full candidate table redesign — audio badge, quality column, soft-override actions~~ | Phase 2 | **Shipped in Phase 2.** The soft-override actions were Phase 1b's |
-| Responsive work beyond the dashboard and candidate tables — events table, touch targets, poster sizes | Phase 3 | Only the two tables got worse; the rest is unchanged |
+| ~~Responsive tables, touch targets, poster sizes~~ | Phase 3 | **Implemented and fixture-verified in Phase 3.** Screen-reader validation remains open |
 | Empty-state system — the six "Пусто." / "Ничего нет." replacements | Phase 4 | No new empty states are introduced by Phase 1 |
 | Voice consistency across web and Telegram | Phase 4 | D2 puts `manual` in the web; no Telegram copy changes now |
 | Poll robustness — pause on hidden tab, row-level swaps, focus preservation, `aria-live` | Phase 5 | Phase 1a does add rows to the polled table, so focus destruction becomes slightly more likely — worth watching, not worth fixing now |
-| Performance — poster sizes, smaller poll payload | Phase 5 | The payload grows only by the new row fields |
+| Performance — smaller poll payload and image/cache measurements | Phase 5 | Responsive poster sources already landed in Phase 3; payload and measurements remain |
 | Second usability round and before/after metrics | Phase 5 | The diary study in §2.3 runs in parallel and gives signal sooner |
 
-### 7.3 The one slice that cannot be deferred
+### 7.3 The protective slice pulled forward — shipped in Phase 1b
 
 **The candidate table's minimum slice belongs in Phase 1b**, and the reasoning
 is short enough to state:
 
-> Today every candidate row offers «Скачать это», whatever the rejection
+> Before Phase 1b, every candidate row offered «Скачать это», whatever the rejection
 > reason. Phase 1a promotes `manual` requests from a row buried in a mixed
 > table to a named bucket with its own treatment — which makes that button more
 > visible and more tempting. A user who trusts the bucket will press it on a
@@ -1200,7 +1236,7 @@ artifacts *are* code:
 | **R8** | **Long release names break the layout** | Horizontal scroll on a table | 2-line clamp + `word-break` from day one; test with a real 120-character multi-voice name. |
 | **R9** | **The operator/asker split is wrong** — with several people, maybe everyone *is* an operator | Operators complain the machine data is now buried | The «Расширенное» disclosure is one click away and remembers its state. **Never delete the machine view — hide it behind one click.** D1 confirms the split is real: `is_admin` marks the operators, and the rest are askers. |
 | **R10** | **Two channels drift** — web says «ждёт вас», Telegram says `manual` | A notification using different words | One shared vocabulary map imported by both `internal/web` and `internal/telegram`. |
-| **R11** | **Dark mode breaks** — Pico's dark theme is barely used today | Contrast failures in dark | Phase 4, *after* the token layer exists, with a contrast pass in both themes. Not before. |
+| **R11** | **Dark mode breaks** — Pico's dark theme is barely used today | Contrast failures in dark | Theme tokens and the picker shipped in Phases 0/1c; a measured contrast pass in both themes remains open. |
 | **R12** | **A two-year promise can't be validated in a short study** | Usability tests say "looks fine" | The 3-week diary and the event-log mining are the only honest validation. Treat the 45-minute test as testing the *representation*, not the *patience*. |
 | **R13** | **Performance** — the 3 s poll ships the whole active table every time | Load time grows with request count | Ship only changed rows (R7); cap the active list. |
 | **R14** | **i18n pressure** — every string is hardcoded Russian in templates | Someone asks for English | Out of scope. But keep user-facing strings in Go maps, not inline in templates — that one structural decision makes a future i18n layer near-free. |
@@ -1229,7 +1265,13 @@ which is the exact situation the comment says should not happen. With N people
 and M requests in `manual`, that is N×M messages about other people's release
 lists.
 
-**This plan does not change it.** It is a shipped feature (#6), D2 says the
+**Current correction:** Settings already exposes a per-user Telegram notification
+mask (`views/settings.html`, `handleSettings`, `handleNotificationSettings`,
+`Store.SetTelegramNotifyMask`). Do not schedule a second settings control.
+The stale `NotificationManual` comment remains; verify how account and watcher
+masks interact in delivery before proposing any notification behaviour change.
+
+**Original scope decision:** It is a shipped feature (#6), D2 says the
 `manual` flow is web-only, and changing the notification mask is outside the
 Phase 0–1 window. But it is recorded here because D1 makes it visible, and
 because the fix is small and already implied by the code's own intent: a
@@ -1264,10 +1306,14 @@ Taken 2026-11-03. Each answer changed something specific in this document.
 | D5 | "The admin must see all releases" — which reading? | **The scope rule** | The administrator's scope is «Все» and cannot be narrowed; everybody else starts on «Мои» and can widen it (§3.2.2). The other reading — a catalogue of every release the installation has seen — is a storage change, not a page, and is **still deferred**: Phase 2 read the release facts out of the name instead of storing them, and the catalogue needs a log of every release ever seen, which the candidate list cannot be. |
 
 **Open, and deliberately not blocking:** whether the §8.1 notification-mask
-issue should be scheduled, and whether the diary study (§2.3) is worth
+delivery audit should be scheduled (the settings control already exists), and whether the diary study (§2.3) is worth
 recruiting 6 people for — both are answerable later without changing Phase 0–1.
 
-## Appendix B — Verification notes
+## Appendix B — Historical verification notes
+
+These observations were made before or during the named phase. Pre-Phase-0
+claims below describe the old interface, not unresolved defects. The current
+status table and §6 take precedence; later notes correct earlier assumptions.
 
 Claims in this plan that were checked against the code rather than assumed:
 

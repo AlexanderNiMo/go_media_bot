@@ -64,3 +64,27 @@ share a line, the reason takes a line of its own, and the pick is a
 full-width button a thumb can reach. One DOM either way — the stylesheet
 chooses the rendering — so the data is in the page once and a screen
 reader announces it once.
+
+
+## Narrow tables and the event timeline (Phase 3)
+
+![Events on a phone, with long detail text](patterns/events-mobile.png)
+
+![Invitations and settings on a phone](patterns/settings-mobile.png)
+
+All data tables retain one DOM with explicit table/row/cell/header roles and
+`data-label` on cells. The existing `table-cards` layout now follows the width
+of `main` through a 60 rem container query: an open sidebar and a tablet both
+leave less room than the viewport suggests. On phones, event entries have a
+vertical rule and their full detail wraps; machine codes remain in «Расширенное».
+
+Headers stack the poster above the title at ≤768 px. Facts, selects and the
+invitation copy row stack; state pills scroll horizontally. Controls have
+44 px mobile targets, and visible focus follows both controls and wrapping
+labels. Search/header pictures select `w185` at ≤767 px through the same poster
+proxy, retaining the existing desktop fallback and deployment prefix.
+
+Screenshots use rendered fixtures at 375 px. Layout checks in headless Chrome
+covered 320 / 375 / 768 / 1024 / 1440 px, light/dark and both desktop sidebar
+states, including deliberately long paths and event details. These checks do
+not substitute for Safari/VoiceOver or a user study.

@@ -22,7 +22,8 @@ re-checked on a backoff schedule. Single Go module, single binary at
 
 The Makefile is the source of truth. The layers, top to bottom:
 
-- `make fmt` — `gofmt -w` and `go mod tidy`.
+- `make fmt` — `gofmt -w`.
+- `make fmt-check` — verify formatting without changing files.
 - `make build` — the binary.
 - `make test` — unit tests. They skip cleanly without env, so this is
   the cheap local loop.
@@ -342,15 +343,16 @@ cosmetic: the filter forms and the table were siblings, and a form
 inside the table was the form-in-form bug from `b57d037`. With the
 action as a link, the table carries no form at all.
 
-### Below 768 px the dashboard's tables are cards
+### Tables become cards when the content column is narrow
 
 `table.table-cards` in `internal/web/views/static/style.css`. One DOM, two
 renderings: `data-label` on every cell becomes the field's label, and
 the explicit `role="table"` / `role="row"` / `role="cell"` /
 `role="columnheader"` keep the table semantics that `display: block`
-takes away in Safari and VoiceOver. The dashboard's two tables and the
-candidate table are cards; the events table is **not** yet — that is
-Phase 3.
+takes away in Safari and VoiceOver. All data tables use this pattern,
+including requests, notifications and settings. Phase 3 added the events table, rendered as a vertical timeline
+on phones. Table/card mode follows the available width of `main` through
+`@container (max-width: 60rem)`, so an open sidebar also gets a layout that fits.
 
 **The class is `table-cards`, not `cards`.** `.cards` is already the
 search-results grid (`display: grid`), and a table that inherits it turns

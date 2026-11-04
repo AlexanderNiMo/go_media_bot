@@ -13,7 +13,7 @@
 */}}
 {{with .Request}}
 <div class="confirm">
-  {{if .PosterURL}}<img src="{{.PosterURL}}" alt="" loading="lazy">{{end}}
+  {{if .PosterURL}}{{template "responsive_poster" .PosterURL}}{{end}}
   <div>
     <h1>Отменить запрос?</h1>
     <p class="muted">{{.Title}}</p>
