@@ -1,7 +1,7 @@
 # UI/UX Project Plan — `mediad`
 
-**Date:** 2026-11-03; last reconciled with the code on 2026-11-04 (baseline `3b4947a`, Phase 4 merged as PR #14)
-**Status:** Phases 0–4 shipped; Phase 5 implemented and reviewed. Browser checks use fixtures; screen-reader verification remains open.
+**Date:** 2026-11-03; last reconciled with the code on 2026-11-04 (baseline `f03c47d`, Phase 5 merged as PR #15)
+**Status:** Phases 0–5 shipped; Phase 5 merged as PR #15. Browser checks use fixtures; screen-reader verification remains open.
 **Scope:** the web front-end (`internal/web`), plus the vocabulary it shares with Telegram
 **Author:** Lead UI/UX Engineer / Product Designer (solo)
 
@@ -26,7 +26,8 @@ browser checks and usability metrics are not claimed without recorded evidence.
 | Poll robustness and performance | Hidden-tab pause, no queued polls, unchanged DOM retention, focus/scroll restoration and bounded polite announcements; fixture payload/cache measurements recorded | `views/dashboard.html`, `poll_test.go`, `testdata/poll.mjs`; Phase 5 below |
 | Remaining | Manual accessibility, live performance and user validation | §6 and §7.2 |
 
-**Phase 5 is implemented and reviewed.** Remaining validation is listed in §7.2.
+**Phase 5 shipped in PR #15.** All planned implementation phases are merged;
+remaining validation and separately scoped work are listed in §7.2.
 Phase 4 shipped in PR #14 and is fixture-checked; Telegram remains outside its scope
 (D2). Phase 3 shipped in PR #13 and was checked in headless Chrome on fixtures at
 320 / 375 / 768 / 1024 / 1440 px in both themes, including both desktop sidebar
@@ -49,7 +50,7 @@ below:
 | D1 | **Several people use the installation** | The dashboard is a shared wall, not a personal list. Adds a «Все / Мои» scope filter (§3.2), renames «Ждёт вас» → «Ждёт выбора» (§3.2), adds «Запросил» to the request page (§3.3). The operator/asker split is real: `is_admin` marks the operators. |
 | D2 | **`manual` handling stays web-only** | No Telegram work in this plan. The existing Telegram manual notification and candidate buttons (shipped in #6) are left untouched. One consequence is flagged in §8.1 — it is not acted on here. |
 | D3 | **Ship auto / light / dark** | Dark mode comes free from `prefers-color-scheme` as soon as every token maps to a `--pico-*` variable (Phase 0). The tri-state toggle is pulled forward from Phase 4 into Phase 1 (§4.2). |
-| D4 | **Only Phase 0 and Phase 1 now** | §7 is resequenced around Phase 0–1. Phases 2–5 are deferred, not deleted, and §7.2 lists what is being deferred and one item that **cannot** be deferred. |
+| D4 | **Initially only Phase 0 and Phase 1** | Historical scope decision, subsequently expanded: Phases 2–5 have shipped (PRs #12–#15). §7.2 now lists remaining validation and separately scoped work. |
 | D5 | **The administrator sees everything** | The requirement arrived as "the admin must see all releases". It is implemented as the **scope rule**: the administrator's scope is «Все» and cannot be narrowed, everybody else starts on «Мои» and can widen it in one click. See §3.2.2 — the reading of "releases" that was rejected is recorded there, because a global catalogue of releases is a different product and needs a different data model. |
 
 ---
@@ -905,10 +906,11 @@ it does not reopen the shipped copy as a new phase.
 
 ## 7. Phased Rollout & Handoff Milestones
 
-**Implemented: Phases 0, 1a, 1b, 1c, 2, 3 and 4.** D4 was the original Phase 0–1
-window; Phase 2 subsequently shipped as PR #12, Phase 3 as PR #13
-and Phase 4 as PR #14. Phase 5 is implemented and reviewed, as
-summarised in §7.2. Week numbers below are the original sequencing, not current deadlines.
+**Shipped: Phases 0, 1a, 1b, 1c, 2, 3, 4 and 5.** D4 was the original Phase 0–1
+window; Phase 2 subsequently shipped as PR #12, Phase 3 as PR #13,
+Phase 4 as PR #14 and Phase 5 as PR #15. §7.2 lists what remains outside
+these merged implementations. Week numbers below are the original sequencing,
+not current deadlines.
 
 **Every phase ships.** Each ends with something testable in the running app and
 gated by `make test` / `make check-ci`.
@@ -1229,7 +1231,7 @@ with no document overflow. The mobile dashboard screenshot is recorded in
 `docs/ui-patterns.md`. Live services, Safari/VoiceOver and measured contrast
 were not checked.
 
-### Phase 5 — Poll robustness and measured performance — **implemented and reviewed**
+### Phase 5 — Poll robustness and measured performance — **shipped (PR #15)**
 
 **What changed:** the existing 3 s htmx poll skips hidden ticks and drops triggers
 while a request is in flight. Return to the tab waits for the next regular tick,
@@ -1296,18 +1298,64 @@ a row may leave the visible list because of that cap, not because it completed.
 
 ---
 
-### 7.2 Deferred — the backlog, explicitly not cancelled
+### 7.2 Remaining validation and separately scoped work
 
-| Deferred | From | Why it can wait |
+Phases 0–5 are complete as implementation work. Their fixture checks and
+measurements are recorded above; they do not establish WCAG conformance,
+live performance or user comprehension. No new implementation phase is scheduled.
+
+| Remaining | Next check / scope | Completion evidence |
 |---|---|---|
-| ~~Full candidate table redesign — audio badge, quality column, soft-override actions~~ | Phase 2 | **Shipped in Phase 2.** The soft-override actions were Phase 1b's |
-| ~~Responsive tables, touch targets, poster sizes~~ | Phase 3 | **Implemented and fixture-verified in Phase 3.** Screen-reader validation remains open |
-| ~~Empty states and web copy across current surfaces~~ | Phase 4 | **Shipped in PR #14 and fixture-checked.** Empty scope is not described as an empty installation |
-| Cross-channel vocabulary review | Separate scope decision | D2 excludes Telegram edits; Phase 4 uses the existing web vocabulary |
-| ~~Poll robustness — hidden-tab pause, focus preservation, `aria-live`~~ | Phase 5 | **Implemented and Chrome fixture-checked.** Spoken announcements still need a screen-reader check |
-| ~~Fixture payload, request-rate and poster/cache measurements~~ | Phase 5 | **Recorded above.** Live latency/load measurements remain open; no row-diff protocol was added |
-| Manual accessibility and live performance | Validation backlog | Safari/VoiceOver, contrast, physical phones and live service/load measurements are not claimed |
-| Second usability round and before/after metrics | Phase 5 | No completed study or before/after metrics are recorded |
+| Manual accessibility | Safari/VoiceOver, keyboard flows and spoken poll announcements; measure state/text contrast in both themes; review reduced motion and notification bulk controls without JS (§6) | Recorded results and any concrete defects; automated structural checks alone do not close this item |
+| Physical phones | Check narrow layouts, touch targets and mobile drawer on real devices | Device/browser and observed results; Chrome fixtures remain the existing layout evidence |
+| Live performance | Measure DB/HTTP latency, concurrent visible dashboards, network traffic and actual poster/cache behaviour | Recorded live measurements before proposing row diffs, compression or further poster changes |
+| User validation | T3 (legibility of waiting) and T5 (cancellation consequences) first; other journeys and before/after metrics from §2 as needed | Completed sessions and results; no study or improvement percentage is currently recorded |
+| Cross-channel vocabulary / notification delivery | Separate scope decision under D2; audit §8.1 if scheduled | Web/Telegram comparison and delivery evidence; existing notification settings are not missing UI |
+| Global release catalogue | Separate product/storage scope under D5, still deferred | Explicit scope decision before implementation; transient candidate lists cannot supply a durable catalogue |
+
+Research proposals in §2, including event-log mining and the diary study, remain
+unperformed unless results are recorded. They are not prerequisites retroactively
+claimed for the shipped phases.
+
+#### Accessibility check — 2026-11-04
+
+This was a targeted automated rerun and source review, **not a completed
+manual Safari/VoiceOver audit**. No production requests were modified.
+
+- Chrome fixture check `TestDashboardPollBrowser` passed: native Tab after
+  restored title/pick focus, focus across bucket moves and closed/removed
+  destinations, unchanged DOM, scroll retention, bounded status text and
+  hidden-tab pause. Observed 2 requests in 6.5 s visible, 0 hidden and 1 in
+  3.5 s after return. Spoken announcements were not tested.
+- `TestRenderedPagesAreAccessible` passed for all 13 page fixtures.
+  Cancel-route/form checks, populated request pages, status vocabulary and
+  sidebar handler checks passed. The sidebar test uses a DOM stub; it does
+  not establish Safari keyboard behaviour.
+- `TestCancelAsksBeforeItCancels` skipped because `MEDIAD_TEST_DSN` was unset.
+  Neither a live cancellation nor the user's comprehension of its consequence
+  was tested. Payload checks reproduced the Phase 5 fixture sizes.
+- Safari WebDriver could not create a session: Safari requires **Allow remote
+  automation** in Settings → Developer. Safari and VoiceOver are installed,
+  but no Safari navigation or VoiceOver speech result is claimed. The driver
+  was stopped after the probe; browser settings were not changed.
+
+**Finding fixed after this check:** candidate pick buttons in
+`internal/web/views/request.html` previously had only `{{.Pick.Label}}` as
+their accessible name. Several rows therefore exposed identical «Скачать всё
+равно» buttons without the release title when navigating by button. Each now
+has `aria-label="{{.Pick.Label}}: {{.Title}}"`, retaining the visible action
+text. `TestCandidateRowsOfferNoActionOnAHardRefusal` checks the names on a
+multi-row fixture, including two soft overrides with different titles and a
+hard refusal without a button. That test, the 13-page structural accessibility
+guard and populated request render tests passed after the change. The full
+gate was not rerun for this template change. This fixes the source-confirmed
+ambiguity; actual VoiceOver navigation remains unverified.
+
+The existing no-JS notification bulk-control issue (§6.2) was also confirmed
+in the template: both buttons rely solely on `onclick`. Individual checkboxes
+and the submit form still work without JS. The candidate button names were the only implementation change following
+this audit. Contrast, physical phones, live services and manual task completion
+remain unverified.
 
 ### 7.3 The protective slice pulled forward — shipped in Phase 1b
 
@@ -1433,12 +1481,12 @@ Taken 2026-11-03. Each answer changed something specific in this document.
 | D1 | Operator / asker split — one person, or a household where someone configures and others just request? | **Several people** | The dashboard becomes a shared wall with a «Все / Мои» scope filter (§3.2.1); the bucket is renamed «Ждёт выбора» because picking is not owner-restricted (§3.2); «Запросил» is promoted to the request header (§3.3); «Расширенное» stays a disclosure, with admin surfaces admin-gated (§7, Phase 1c). |
 | D2 | Should `manual` get a Telegram prompt, or stay web-only? | **Web-only** | No Telegram work in this plan; the existing manual notification and candidate buttons (#6) are untouched. One consequence recorded in §8.1 and deliberately not acted on. |
 | D3 | Theme — auto/light/dark, or dark only? | **auto / light / dark** | Dark mode becomes a Phase 0 constraint rather than a Phase 4 polish item (§4.2): the token layer must be built entirely on `--pico-*` variables so `prefers-color-scheme` works for free. The tri-state toggle is pulled forward into Phase 1c. |
-| D4 | Phase 1 only, or the whole roadmap? | **Phase 0 and Phase 1 only** | §7 is resequenced around four weeks, split 1a / 1b / 1c so it can be cut at a week boundary. Phases 2–5 move to the §7.2 backlog. Two protective slices are pulled forward (§7.3) because Phase 1 would otherwise make things worse. |
+| D4 | Phase 1 only, or the whole roadmap? | **Initially Phase 0 and Phase 1 only** | Original sequencing split Phase 1 into 1a / 1b / 1c and pulled protective slices forward (§7.3). Scope was subsequently expanded; Phases 2–5 shipped as PRs #12–#15. Remaining work is in §7.2. |
 | D5 | "The admin must see all releases" — which reading? | **The scope rule** | The administrator's scope is «Все» and cannot be narrowed; everybody else starts on «Мои» and can widen it (§3.2.2). The other reading — a catalogue of every release the installation has seen — is a storage change, not a page, and is **still deferred**: Phase 2 read the release facts out of the name instead of storing them, and the catalogue needs a log of every release ever seen, which the candidate list cannot be. |
 
 **Open, and deliberately not blocking:** whether the §8.1 notification-mask
 delivery audit should be scheduled (the settings control already exists), and whether the diary study (§2.3) is worth
-recruiting 6 people for — both are answerable later without changing Phase 0–1.
+recruiting 6 people for — both are answerable later without reopening the shipped phases.
 
 ## Appendix B — Historical verification notes
 

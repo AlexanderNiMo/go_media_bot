@@ -26,9 +26,10 @@ The Makefile is the source of truth. The layers, top to bottom:
 - `make fmt-check` — verify formatting without changing files.
 - `make build` — the binary.
 - `make test` — the full gate: formatting, module verification, vet, workflowcheck, build and all
-  tests with `-race`. Loads `.env`; requires DB, Node, Chrome/Chromium and
-  `MEDIAD_TEST_QBIT_URL`. Missing dependencies fail instead of silently
-  skipping an integration suite. `MEDIAD_REQUIRE_REPLAY=1` is set automatically.
+  tests with `-race`. Loads `.env`; requires DB, Node and Chrome/Chromium.
+  qBittorrent mock tests always run; live tests run additionally when
+  `MEDIAD_TEST_QBIT_URL` is set. Missing required dependencies fail instead of
+  silently skipping an integration suite. `MEDIAD_REQUIRE_REPLAY=1` is set automatically.
 - `make test-db`, `make check`, `make check-ci` — aliases for `make test`,
   without duplicate test runs. The DB uses explicit `MEDIAD_TEST_DSN`, falling
   back to `MEDIAD_POSTGRES_DSN`; the role needs `CREATEDB` for throwaway DBs.

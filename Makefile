@@ -16,7 +16,7 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-env test-live-env check-commit test-db test-db-setup tidy fmt fmt-check verify vet workflowcheck replay capture inspect-histories check check-ci install-hooks
+.PHONY: help up up-all down clean logs ui psql psql-temporal worker api bot all migrate config build test test-env check-commit test-db test-db-setup tidy fmt fmt-check verify vet workflowcheck replay capture inspect-histories check check-ci install-hooks
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -93,10 +93,7 @@ test-env:
 	@command -v node >/dev/null || { echo "install Node.js for browser checks"; exit 1; }
 	@test -n "$$MEDIAD_TEST_CHROME" && test -x "$$MEDIAD_TEST_CHROME" || { echo "set MEDIAD_TEST_CHROME to a Chrome/Chromium executable"; exit 1; }
 
-test-live-env:
-	@test -n "$$MEDIAD_TEST_QBIT_URL" || { echo "set MEDIAD_TEST_QBIT_URL in .env for live qBittorrent tests"; exit 1; }
-
-test: test-live-env check-commit ## Run every check, including database, replay, browser and live qBittorrent tests
+test: check-commit ## Run every check; qBittorrent uses mocks unless a live test URL is configured
 
 check-commit: test-env fmt-check verify vet workflowcheck build ## Run commit checks; live qBittorrent tests are optional
 	go test ./... -count=1 -race -timeout 10m

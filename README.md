@@ -954,19 +954,20 @@ make test-db   # alias for make test
 make check-ci  # alias for make test
 ```
 
-`make test` loads `.env` and requires all test dependencies. An explicit
+`make test` loads `.env` and requires DB, Node.js and Chrome/Chromium. An explicit
 `MEDIAD_TEST_DSN` wins; otherwise it uses `MEDIAD_POSTGRES_DSN`. Set
 `MEDIAD_TEST_QBIT_URL` and the client's credentials (`MEDIAD_TEST_QBIT_API_KEY`
 or `MEDIAD_TEST_QBIT_USERNAME` / `MEDIAD_TEST_QBIT_PASSWORD`) for live tests.
 Install Node.js and Chrome/Chromium; the browser is detected on PATH or at the
 standard macOS Chrome path, or set `MEDIAD_TEST_CHROME` to its executable.
-Missing settings/tools and unreachable services fail the run. Replay corpus
+Missing required settings/tools and unreachable configured services fail the run. Replay corpus
 coverage is required. A running Temporal server is needed only to recapture
 histories, not to replay them. The tests run once, with the race detector.
 
 Direct `go test ./...` remains available for a cheap run: it skips integrations
 whose settings are absent. `make test` always enables DB and browser tests and
-requires a qBittorrent endpoint. Two live read tests may still skip when the
+uses the existing mock qBittorrent tests when `MEDIAD_TEST_QBIT_URL` is absent.
+When the URL is set, live tests run in addition to mocks. Two live read tests may still skip when the
 client's library is empty. Its write test adds a stopped synthetic torrent and
 removes it without deleting files; existing downloads are untouched.
 
