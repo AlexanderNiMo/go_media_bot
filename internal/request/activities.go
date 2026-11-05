@@ -519,6 +519,27 @@ func (a *Activities) AddTorrent(ctx context.Context, in AddTorrentInput) (AddTor
 			"request", in.RequestID, "type", in.Spec.Ref.Type, "save_path", savePath)
 	}
 
+	// Prowlarr may take longer than the heartbeat timeout to serve the torrent.
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	heartbeatDone := make(chan struct{})
+	defer func() {
+		stopHeartbeat()
+		<-heartbeatDone
+	}()
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				activity.RecordHeartbeat(ctx)
+			}
+		}
+	}()
+
 	hash, already, err := a.qbit.Add(ctx, qbit.AddSpec{
 		Link:     link,
 		Category: "mediad",
