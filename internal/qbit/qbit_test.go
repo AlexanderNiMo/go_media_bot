@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/alex/mediad/internal/config"
@@ -310,6 +311,55 @@ func TestAddErrorsWhenTorrentNeverAppears(t *testing.T) {
 	_, _, err := c.Add(ctx, AddSpec{Link: "magnet:?xt=1", Tags: []string{TagFor(11)}})
 	if err == nil {
 		t.Fatal("expected an error when the torrent is accepted but never appears")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestAddDiscoveryWithFakeTime(t *testing.T) {
+	for _, appears := range []bool{true, false} {
+		t.Run(fmt.Sprintf("appears=%t", appears), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				fake := newFakeQBittorrent()
+				cfg := &config.Config{}
+				cfg.QBittorrent.URL = "http://qbittorrent"
+				c := New(cfg, slog.New(slog.DiscardHandler))
+				c.qb.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					w := httptest.NewRecorder()
+					fake.ServeHTTP(w, r)
+					return w.Result(), nil
+				})})
+				if err := c.Start(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				tag := TagFor(21)
+				if appears {
+					go func() {
+						time.Sleep(31 * time.Second)
+						fake.mu.Lock()
+						defer fake.mu.Unlock()
+						fake.torrents["abc123"] = torrent("abc123", "Release", "downloading", 0, tag)
+					}()
+				}
+				start := time.Now()
+				hash, already, err := c.Add(context.Background(), AddSpec{Link: "http://prowlarr/download", Tags: []string{tag}})
+				elapsed := time.Since(start)
+				if appears {
+					if err != nil || hash != "abc123" || already {
+						t.Fatalf("Add = (%q, %t, %v)", hash, already, err)
+					}
+					if elapsed < 31*time.Second || elapsed > 32*time.Second {
+						t.Fatalf("discovery took %s, want 31–32s", elapsed)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "within 2m0s") || elapsed < 2*time.Minute || elapsed > 2*time.Minute+time.Second {
+					t.Fatalf("Add error = %v after %s, want discovery timeout after 2m", err, elapsed)
+				}
+			})
+		})
 	}
 }
 
