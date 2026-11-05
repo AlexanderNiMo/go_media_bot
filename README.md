@@ -540,6 +540,9 @@ Settings come from four places, later ones winning:
 3. `config_dev.yaml` in the working directory, layered on top of the file above
 4. environment variables, `MEDIAD_<SECTION>_<KEY>`
 
+Environment values are trimmed of surrounding whitespace. Empty values are
+ignored, preserving the file setting or built-in default.
+
 `config_dev.yaml` is the per-developer override: a committed
 `config_dev.yaml.example` ships the dev-tuned timings (seconds instead of
 hours for the search ladder, a one-minute download deadline, `quality.russian_audio: false`)
