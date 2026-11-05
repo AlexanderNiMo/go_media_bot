@@ -6,6 +6,10 @@ const chrome = spawn(chromePath, ['--headless', '--disable-gpu', '--no-first-run
   '--no-default-browser-check', '--remote-debugging-port=0', '--user-data-dir='+profile, 'about:blank']);
 const timeout = setTimeout(() => { chrome.kill(); process.exitCode = 1; }, 60000);
 let ws;
+const phases = {};
+let report = {checks:'failed', phases};
+let phaseStart = performance.now();
+const mark = name => { const now = performance.now(); phases[name] = Math.round(now-phaseStart); phaseStart = now; };
 try {
   const endpoint = await new Promise((resolve, reject) => {
     chrome.stderr.on('data', b => { const m = b.toString().match(/DevTools listening on (ws:\/\/\S+)/); if (m) resolve(m[1]); });
@@ -19,9 +23,15 @@ try {
   await new Promise(r => ws.addEventListener('open', r, {once:true}));
   let seq = 0;
   const pending = new Map();
+  const events = new Map();
+  const nextEvent = method => new Promise(resolve => events.set(method, resolve));
   ws.addEventListener('message', e => {
     const m = JSON.parse(e.data);
-    if (!m.id) return;
+    if (!m.id) {
+      const resolve = events.get(m.method);
+      if (resolve) { events.delete(m.method); resolve(m.params); }
+      return;
+    }
     const p = pending.get(m.id); pending.delete(m.id);
     m.error ? p.reject(Error(JSON.stringify(m.error))) : p.resolve(m.result);
   });
@@ -34,6 +44,18 @@ try {
     return r.result.value;
   };
   const delay = ms => new Promise(r => setTimeout(r,ms));
+  const advance = async (budget, policy='pauseIfNetworkFetchesPending') => {
+    const done = nextEvent('Emulation.virtualTimeBudgetExpired');
+    await send('Emulation.setVirtualTimePolicy', {policy,budget});
+    await done;
+  };
+  const activate = async (targetId, hidden) => {
+    await evaluate(`window.visibilityChange = document.hidden === ${hidden} ? Promise.resolve() :
+      new Promise(resolve => document.addEventListener('visibilitychange', resolve, {once:true})); void 0`);
+    await send('Target.activateTarget',{targetId});
+    await evaluate('visibilityChange');
+    await check(`document.hidden === ${hidden}`, 'real tab visibility');
+  };
   await send('Page.enable');
   await send('Network.enable');
   await send('Emulation.setDeviceMetricsOverride', {width:1440,height:900,deviceScaleFactor:1,mobile:false});
@@ -57,8 +79,15 @@ try {
   const check = async (expression, label) => assert.equal(await evaluate(expression), true, label);
   await check(`!document.querySelector('#dashboard-status, [aria-live], [role="status"]')`, 'dashboard has no live announcements');
   const stage = async n => { await fetch(origin+'/stage?n='+n); };
-  const refresh = async n => { await stage(n); await evaluate('refresh()'); await delay(150); };
+  const refresh = async n => {
+    await stage(n);
+    await evaluate(`new Promise(resolve => {
+      poll.addEventListener('htmx:afterRequest', resolve, {once:true});
+      refresh();
+    })`);
+  };
 
+  mark('startup');
   for (const width of [320,769,1440]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height:400,deviceScaleFactor:1,mobile:false});
     for (const theme of ['light','dark']) {
@@ -87,6 +116,7 @@ try {
   await send('Emulation.setDeviceMetricsOverride',{width:1440,height:900,deviceScaleFactor:1,mobile:false});
   await evaluate(`document.documentElement.removeAttribute('data-theme'); scrollTo(0,0)`);
 
+  mark('keyboard');
   await evaluate(`window.original = titleLink(); original.focus(); window.originalBucket = original.closest('[id^="table-"]');`);
   await refresh(0);
   await check('titleLink() === original && original.closest("[id^=table-]") === originalBucket && document.activeElement === original', 'unchanged response keeps DOM and focus');
@@ -123,36 +153,42 @@ try {
   await evaluate('refresh().catch(() => {})');
   await check('document.getElementById("table-searching") === beforeError', 'HTTP error leaves DOM alone');
   await refresh(0);
+  mark('swaps');
+  await send('Emulation.setVirtualTimePolicy', {policy:'pause'});
   await evaluate('window.count = 0; window.requestTimes = []');
-  await delay(6500);
+  await advance(6500);
   const visibleRequests = await evaluate('count');
   assert.ok(visibleRequests >= 2 && visibleRequests <= 3, 'visible tab polls every 3 seconds');
   // A second real tab changes document.hidden, rather than mocking the property.
   const other = await send('Target.createTarget',{url:'about:blank'});
-  await send('Target.activateTarget',{targetId:other.targetId});
-  await delay(200);
-  await check('document.hidden', 'real background tab is hidden');
+  await activate(other.targetId, true);
   const hiddenStart = await evaluate('count');
-  await delay(6500);
+  await advance(6500);
   assert.equal(await evaluate('count'), hiddenStart, 'no hidden-tab requests');
-  await send('Target.activateTarget',{targetId:tab.id});
-  await delay(3500);
+  await activate(tab.id, false);
+  await advance(6500);
   const resumeTimes = await evaluate('requestTimes.slice('+hiddenStart+')');
-  assert.ok(resumeTimes.length >= 1 && resumeTimes.length <= 2, 'return resumes normal polling');
+  assert.ok(resumeTimes.length >= 2 && resumeTimes.length <= 3, 'return resumes normal polling');
   const resumeIntervals = resumeTimes.slice(1).map((time, i) => time - resumeTimes[i]);
   assert.ok(resumeIntervals.every(ms => ms >= 2800), 'return does not burst queued polls');
   await send('Target.closeTarget',{targetId:other.targetId});
+  mark('polling');
   await evaluate(`poll.setAttribute('hx-trigger', 'manual'); htmx.process(poll);`);
   await stage(6);
   await evaluate(`window.slowStart = count; window.busy = false; window.overlap = false;
     poll.addEventListener('htmx:beforeRequest', () => { if (busy) overlap = true; busy = true; });
     poll.addEventListener('htmx:afterRequest', () => { busy = false; });
     window.slow = refresh(); void 0;`);
-  await delay(250);
+  await fetch(origin+'/slow-started');
   await evaluate(`document.querySelector('[name=q]').focus(); refresh(); refresh(); void 0;`);
-  await delay(3900);
+  // Advance even with the intentionally held HTTP response outstanding.
+  await advance(4000, 'advance');
   await check(`!overlap && count === slowStart + 1 && document.activeElement === document.querySelector('[name=q]')`, 'slow poll does not queue or steal newly moved focus');
   await stage(0);
+  await fetch(origin+'/release-slow');
+  await evaluate('slow');
+  await check(`!busy && count === slowStart + 1 && document.activeElement === document.querySelector('[name=q]')`, 'slow poll finishes without queued requests or stolen focus');
+  mark('slowResponse');
   const images = await evaluate(`performance.getEntriesByType('resource').filter(e=>e.name.includes('/poster/')).map(e=>({path:new URL(e.name).pathname,transfer:e.transferSize,bytes:e.decodedBodySize}))`);
   for (const width of [320,1440]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
@@ -162,9 +198,20 @@ try {
     }
   }
   await check('failures.length === 0','no JavaScript errors');
-  console.log(JSON.stringify({checks:'passed',visibleRequestsIn6500ms:visibleRequests,hiddenRequestsIn6500ms:0,resumeRequestsIn3500ms:resumeTimes.length,resumeIntervalsMs:resumeIntervals,posters:images}));
+  mark('layout');
+  report = {checks:'passed',phases,visibleRequestsIn6500VirtualMs:visibleRequests,hiddenRequestsIn6500VirtualMs:0,resumeRequestsIn6500VirtualMs:resumeTimes.length,resumeIntervalsMs:resumeIntervals,posters:images};
 } finally {
-  clearTimeout(timeout);
-  if (ws) ws.close();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    const closed = new Promise(resolve => ws.addEventListener('close', resolve, {once:true}));
+    ws.close();
+    await closed;
+  }
+  mark('websocketClose');
+  const exited = chrome.exitCode !== null || chrome.signalCode !== null ? Promise.resolve() :
+    new Promise(resolve => chrome.once('close', resolve));
   chrome.kill();
+  await exited;
+  clearTimeout(timeout);
+  mark('chromeExit');
+  console.log(JSON.stringify(report));
 }

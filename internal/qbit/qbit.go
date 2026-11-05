@@ -63,7 +63,7 @@ const (
 	// It is a wait rather than an instant read because `torrents/add` is
 	// asynchronous: it returns as soon as the client has accepted the payload,
 	// and the torrent shows up in the list a moment later.
-	hashDiscoveryTimeout = 30 * time.Second
+	hashDiscoveryTimeout = 2 * time.Minute
 
 	hashPollInterval = time.Second
 )

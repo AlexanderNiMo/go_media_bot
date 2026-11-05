@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -280,6 +281,9 @@ func newHarness(t *testing.T) *harness {
 	if adminDSN == "" {
 		t.Skipf("%s is not set; run `make up` and export it to run telegram tests", testDSNEnv)
 	}
+
+	// The database and every service stub belong to this test alone.
+	t.Parallel()
 
 	store, _ := newTestStore(t, adminDSN)
 
@@ -1233,7 +1237,7 @@ func newTestStore(t *testing.T, adminDSN string) (*storage.Store, *pgxpool.Pool)
 	t.Helper()
 
 	ctx := context.Background()
-	name := fmt.Sprintf("mediad_tg_%d", time.Now().UnixNano())
+	name := "mediad_tg_" + rand.Text()
 
 	admin, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
@@ -1271,7 +1275,7 @@ func newTestStore(t *testing.T, adminDSN string) (*storage.Store, *pgxpool.Pool)
 		t.Fatalf("migrate: %v", err)
 	}
 
-	return storage.NewStore(pool, slog.New(slog.DiscardHandler)), pool
+	return storage.NewStoreForTesting(pool, slog.New(slog.DiscardHandler)), pool
 }
 
 func TestJoinCreatesWebAndTelegramAccount(t *testing.T) {
