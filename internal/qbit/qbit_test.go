@@ -302,7 +302,7 @@ func TestAddErrorsWhenTorrentNeverAppears(t *testing.T) {
 	fake := newFakeQBittorrent()
 	c := newTestClient(t, fake)
 
-	// hashDiscoveryTimeout is 30s, which is far too long for a test; the
+	// hashDiscoveryTimeout is 2m, which is far too long for a test; the
 	// context deadline is what ends the wait.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
