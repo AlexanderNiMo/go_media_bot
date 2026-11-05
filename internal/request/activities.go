@@ -528,16 +528,7 @@ func (a *Activities) AddTorrent(ctx context.Context, in AddTorrentInput) (AddTor
 	}()
 	go func() {
 		defer close(heartbeatDone)
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-heartbeatCtx.Done():
-				return
-			case <-ticker.C:
-				activity.RecordHeartbeat(ctx)
-			}
-		}
+		heartbeatUntilCancelled(heartbeatCtx, func() { activity.RecordHeartbeat(ctx) })
 	}()
 
 	hash, already, err := a.qbit.Add(ctx, qbit.AddSpec{
@@ -937,4 +928,17 @@ func (a *Activities) GetPickedCandidate(ctx context.Context, requestID int64) (s
 			storage.ErrNoSuchCandidate.Error(), "NoSuchCandidate", err)
 	}
 	return c, err
+}
+
+func heartbeatUntilCancelled(ctx context.Context, beat func()) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			beat()
+		}
+	}
 }
