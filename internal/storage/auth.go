@@ -67,7 +67,7 @@ func (s *Store) CreateAccount(ctx context.Context, username, password string, is
 		return nil, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.passwordCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash the password: %w", err)
 	}
@@ -195,7 +195,7 @@ func (s *Store) changePassword(ctx context.Context, userID int64, current, passw
 	if err := ValidatePassword(password); err != nil {
 		return err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.passwordCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
@@ -499,7 +499,7 @@ func (s *Store) RedeemInvite(ctx context.Context, code, username, password strin
 		return nil, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.passwordCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash the password: %w", err)
 	}
