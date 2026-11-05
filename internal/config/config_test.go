@@ -57,6 +57,52 @@ func TestEnvVarWithUnderscoreInKey(t *testing.T) {
 	}
 }
 
+func TestEnvValuesAreTrimmedAndEmptyValuesPreserveFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	const body = "plex:\n  url: http://plex:32400\n  token: file-token\nquality:\n  russian_audio: true\n  min_seeders: 3\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, url, token, wantURL, wantToken string
+	}{
+		{"empty", "", "", "http://plex:32400", "file-token"},
+		{"whitespace", " \t\n", " \t\n", "http://plex:32400", "file-token"},
+		{"override", " http://other:32400\t", "\n env-token ", "http://other:32400", "env-token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MEDIAD_PLEX_URL", tc.url)
+			t.Setenv("MEDIAD_PLEX_TOKEN", tc.token)
+			t.Setenv("MEDIAD_QUALITY_RUSSIAN_AUDIO", " false ")
+			t.Setenv("MEDIAD_QUALITY_MIN_SEEDERS", " 0 ")
+			cfg, err := Load(Flags{ConfigFile: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Plex.URL != tc.wantURL || cfg.Plex.Token != tc.wantToken {
+				t.Error("Plex settings do not match the expected file/env precedence")
+			}
+			if cfg.Quality.RequireRussianAudio || cfg.Quality.MinSeeders != 0 {
+				t.Error("false and zero must override file values")
+			}
+		})
+	}
+}
+
+func TestEmptyEnvPreservesDefaultsWithoutFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("MEDIAD_PLEX_URL", " \t\n")
+	t.Setenv("MEDIAD_PLEX_TOKEN", "")
+	cfg, err := Load(Flags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := defaults()
+	if cfg.Plex.URL != want.Plex.URL || cfg.Plex.Token != want.Plex.Token {
+		t.Error("empty env must preserve defaults")
+	}
+}
+
 // TestFileDurationsAndLists checks that a config file can express the values
 // the defaults express in Go: durations as strings and lists as sequences.
 func TestFileDurationsAndLists(t *testing.T) {

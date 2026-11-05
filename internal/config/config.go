@@ -260,7 +260,8 @@ type Flags struct {
 // file was named explicitly: that is the dev override file, layered on top
 // of config.yaml and the defaults. The env provider still wins over
 // everything, which is how a developer keeps API keys out of YAML and the
-// rest of the dev setup in version control.
+// rest of the dev setup in version control. Environment values are trimmed;
+// empty values leave file settings and defaults intact.
 func Load(flags Flags) (*Config, error) {
 	k := koanf.New(".")
 
@@ -299,8 +300,12 @@ func Load(flags Flags) (*Config, error) {
 	// nothing, and the setting would silently keep its default. Every key in
 	// this configuration is exactly two levels deep, so splitting on the first
 	// separator is unambiguous.
-	if err := k.Load(env.Provider("MEDIAD_", ".", func(s string) string {
-		return strings.Replace(strings.ToLower(strings.TrimPrefix(s, "MEDIAD_")), "_", ".", 1)
+	if err := k.Load(env.ProviderWithValue("MEDIAD_", ".", func(s, value string) (string, interface{}) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", nil
+		}
+		return strings.Replace(strings.ToLower(strings.TrimPrefix(s, "MEDIAD_")), "_", ".", 1), value
 	}), nil); err != nil {
 		return nil, fmt.Errorf("load environment: %w", err)
 	}
