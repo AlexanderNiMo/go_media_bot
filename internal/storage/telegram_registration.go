@@ -26,7 +26,7 @@ func (s *Store) RedeemTelegramInvite(ctx context.Context, code, telegramID, user
 		return nil, "", fmt.Errorf("generate temporary password: %w", err)
 	}
 	password := base64.RawURLEncoding.EncodeToString(raw)
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.passwordCost)
 	if err != nil {
 		return nil, "", fmt.Errorf("hash temporary password: %w", err)
 	}

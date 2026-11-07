@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/alex/mediad/internal/domain"
 )
@@ -34,13 +35,21 @@ var ErrNotFound = errors.New("not found")
 // interface would only be useful for mocking in tests that are better served
 // by a real database anyway.
 type Store struct {
-	pool *pgxpool.Pool
-	log  *slog.Logger
+	pool         *pgxpool.Pool
+	log          *slog.Logger
+	passwordCost int
 }
 
 // NewStore builds the repository layer.
 func NewStore(pool *pgxpool.Pool, log *slog.Logger) *Store {
-	return &Store{pool: pool, log: log.With("component", "store")}
+	return &Store{pool: pool, log: log.With("component", "store"), passwordCost: bcrypt.DefaultCost}
+}
+
+// NewStoreForTesting uses cheap bcrypt hashes for throwaway test databases only.
+func NewStoreForTesting(pool *pgxpool.Pool, log *slog.Logger) *Store {
+	s := NewStore(pool, log)
+	s.passwordCost = bcrypt.MinCost
+	return s
 }
 
 // Pool exposes the connection pool for callers that need a transaction of

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/alex/mediad/internal/domain"
 )
@@ -43,8 +45,11 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 		t.Skipf("%s is not set; run `make up` and export it to run database tests", testDSNEnv)
 	}
 
+	// Each test has its own database, so setup and assertions can overlap.
+	t.Parallel()
+
 	ctx := context.Background()
-	name := fmt.Sprintf("mediad_test_%d_%s", time.Now().UnixNano(), sanitize(t.Name()))
+	name := fmt.Sprintf("mediad_test_%s_%s", rand.Text(), sanitize(t.Name()))
 
 	admin, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
@@ -328,7 +333,7 @@ func TestMigrationResolvesDuplicateActiveRows(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	name := fmt.Sprintf("mediad_test_%d_%s", time.Now().UnixNano(), sanitize(t.Name()))
+	name := fmt.Sprintf("mediad_test_%s_%s", rand.Text(), sanitize(t.Name()))
 
 	admin, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
@@ -590,7 +595,35 @@ func newStoreFor(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
 
 	pool := newTestDB(t)
-	return NewStore(pool, slog.New(slog.DiscardHandler)), pool
+	return NewStoreForTesting(pool, slog.New(slog.DiscardHandler)), pool
+}
+
+func TestStorePasswordCost(t *testing.T) {
+	pool := newTestDB(t)
+	log := slog.New(slog.DiscardHandler)
+	for _, tc := range []struct {
+		name  string
+		store *Store
+		want  int
+	}{
+		{"production", NewStore(pool, log), bcrypt.DefaultCost},
+		{"test", NewStoreForTesting(pool, log), bcrypt.MinCost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user, err := tc.store.CreateAccount(context.Background(), tc.name, "test-password-long", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var hash string
+			if err := pool.QueryRow(context.Background(), "SELECT password_hash FROM users WHERE id = $1", user.ID).Scan(&hash); err != nil {
+				t.Fatal(err)
+			}
+			cost, err := bcrypt.Cost([]byte(hash))
+			if err != nil || cost != tc.want {
+				t.Fatalf("password cost = %d, error = %v; want %d", cost, err, tc.want)
+			}
+		})
+	}
 }
 
 // failedRequest returns a request left in the state a retry has to clean up.

@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,8 +51,11 @@ func newTestServer(t *testing.T) (*Server, *storage.Store) {
 		t.Skipf("%s is not set; run `make up` and export it to run web tests", testDSNEnv)
 	}
 
+	// The database, server and service stubs belong to this test alone.
+	t.Parallel()
+
 	ctx := context.Background()
-	name := fmt.Sprintf("mediad_web_%d", time.Now().UnixNano())
+	name := "mediad_web_" + rand.Text()
 
 	admin, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
@@ -84,7 +89,7 @@ func newTestServer(t *testing.T) (*Server, *storage.Store) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	store := storage.NewStore(pool, slog.New(slog.DiscardHandler))
+	store := storage.NewStoreForTesting(pool, slog.New(slog.DiscardHandler))
 
 	s := &Server{
 		cfg: &config.Config{
@@ -601,7 +606,7 @@ func TestCreateRequestShowsWorkflowError(t *testing.T) {
 // Each call gets its own tmdb id, because media is unique on it: a test that
 // seeds two requests would otherwise fail on a constraint rather than on the
 // thing it was checking.
-var seedCounter int64
+var seedCounter atomic.Int64
 
 func seedRequest(t *testing.T, store *storage.Store, state storage.State) int64 {
 	t.Helper()
@@ -609,8 +614,7 @@ func seedRequest(t *testing.T, store *storage.Store, state storage.State) int64 
 	ctx := context.Background()
 	pool := store.Pool()
 
-	seedCounter++
-	tmdbID := 600 + seedCounter
+	tmdbID := 600 + seedCounter.Add(1)
 
 	var mediaID int64
 	err := pool.QueryRow(ctx, `

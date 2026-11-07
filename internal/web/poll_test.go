@@ -23,6 +23,8 @@ func TestDashboardPollBrowser(t *testing.T) {
 	}
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
 	var stage atomic.Int32
+	slowStarted := make(chan struct{}, 1)
+	slowRelease := make(chan struct{})
 	now := time.Now()
 	wall := func(n int) buckets {
 		var result buckets
@@ -68,11 +70,28 @@ func TestDashboardPollBrowser(t *testing.T) {
 		}
 		stage.Store(int32(n))
 	})
+	mux.HandleFunc("/slow-started", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-slowStarted:
+		case <-r.Context().Done():
+		}
+	})
+	mux.HandleFunc("/release-slow", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case slowRelease <- struct{}{}:
+		case <-r.Context().Done():
+		}
+	})
 	mux.HandleFunc("/mediad/fragments/active", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if stage.Load() == 6 {
 			select {
-			case <-time.After(4 * time.Second):
+			case slowStarted <- struct{}{}:
+			case <-r.Context().Done():
+				return
+			}
+			select {
+			case <-slowRelease:
 			case <-r.Context().Done():
 				return
 			}
