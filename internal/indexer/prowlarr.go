@@ -153,6 +153,9 @@ func (p *Prowlarr) Search(ctx context.Context, req SearchRequest) ([]domain.Rele
 	for _, r := range raw {
 		rel := r.toRelease()
 		rel.Comment, rel.ThreadID = extractThreadID(r.Description, threadPatterns, p.fallbackPattern)
+		if rel.ThreadID == "" {
+			_, rel.ThreadID = extractThreadID(r.InfoURL, threadPatterns, p.fallbackPattern)
+		}
 		releases = append(releases, rel)
 	}
 	return releases, nil
@@ -188,6 +191,7 @@ type prowlarrRelease struct {
 	Leechers    *int               `json:"leechers"`
 	DownloadURL string             `json:"downloadUrl"`
 	Description string             `json:"description"`
+	InfoURL     string             `json:"infoUrl"`
 	MagnetURL   string             `json:"magnetUrl"`
 	InfoHash    string             `json:"infoHash"`
 	Indexer     string             `json:"indexer"`
