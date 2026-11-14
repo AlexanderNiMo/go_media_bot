@@ -84,7 +84,8 @@ func (a *Activities) CheckPlex(ctx context.Context, in CheckPlexInput) (CheckPle
 		return CheckPlexResult{}, err
 	}
 
-	if !in.Force && media.PlexCheckedAt != nil && in.MaxAge > 0 {
+	// Old season cache entries only prove presence, not completeness.
+	if !in.Spec.Ref.IsSeason() && !in.Force && media.PlexCheckedAt != nil && in.MaxAge > 0 {
 		if age := time.Since(*media.PlexCheckedAt); age < in.MaxAge {
 			return CheckPlexResult{
 				InPlex:  media.InPlex,
@@ -152,7 +153,19 @@ func (a *Activities) findInPlex(ctx context.Context, spec domain.MediaSpec) (*pl
 
 	if spec.Ref.IsSeason() {
 		season := spec.Ref.SeasonNumber()
-		return a.plex.FindSeasonByTitle(ctx, candidates, spec.Year, season)
+		match, err := a.plex.FindSeasonByTitle(ctx, candidates, spec.Year, season)
+		if err != nil || match == nil {
+			return match, err
+		}
+		facts, err := a.SeasonFacts(ctx, SeasonFactsInput{TMDBID: spec.Ref.TMDBID, Season: season})
+		if err != nil {
+			return nil, err
+		}
+		expected := max(facts.AiredCount, facts.PlannedCount)
+		if expected == 0 || match.LeafCount < expected {
+			return nil, nil
+		}
+		return match, nil
 	}
 	return a.plex.FindMovieByTitle(ctx, candidates, spec.Year)
 }
