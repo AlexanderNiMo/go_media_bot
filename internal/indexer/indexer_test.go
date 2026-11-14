@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/alex/mediad/internal/config"
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/release"
 )
 
 func newTestTorznab(t *testing.T, handler http.HandlerFunc) *Torznab {
@@ -330,6 +332,48 @@ const prowlarrBody = `[
     "publishDate": "not a date"
   }
 ]`
+
+func TestProwlarrSearchTracksThreadFromInfoURL(t *testing.T) {
+	const title = "Гангстерленд / MobLand / S2E1-8 of 10 [2026, Великобритания, США, криминал, драма, WEB-DL 1080p] MVO + Dub (Red Head Sound) + DVO + Original + )"
+	for _, tc := range []struct {
+		name        string
+		description any
+		wantThread  string
+	}{
+		{"null description", nil, "6911148"},
+		{"empty description", "", "6911148"},
+		{"plain description", "Season pack", "6911148"},
+		{"description takes precedence", "https://rutracker.org/forum/viewtopic.php?t=12345", "12345"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestProwlarr(t, func(w http.ResponseWriter, _ *http.Request) {
+				if err := json.NewEncoder(w).Encode([]map[string]any{{
+					"title": title, "description": tc.description,
+					"infoUrl": "https://rutracker.org/forum/viewtopic.php?t=6911148",
+				}}); err != nil {
+					t.Error(err)
+				}
+			})
+			releases, err := c.Search(context.Background(), SearchRequest{Query: "mobland"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(releases) != 1 {
+				t.Fatalf("got %d releases, want 1", len(releases))
+			}
+			got := releases[0]
+			if got.ThreadID != tc.wantThread {
+				t.Fatalf("ThreadID = %q, want %q", got.ThreadID, tc.wantThread)
+			}
+			if tc.description != nil && got.Comment != tc.description {
+				t.Errorf("Comment = %q, want %q", got.Comment, tc.description)
+			}
+			if !release.IsUpdateOf(got, release.Tracked{ThreadID: tc.wantThread, Episodes: 6}) {
+				t.Error("eight-episode release was not recognised as an update of the six-episode pack")
+			}
+		})
+	}
+}
 
 func TestProwlarrSearchParsesReleases(t *testing.T) {
 	c := newTestProwlarr(t, func(w http.ResponseWriter, r *http.Request) {
