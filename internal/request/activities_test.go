@@ -2,15 +2,69 @@ package request
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/alex/mediad/internal/config"
 	"github.com/alex/mediad/internal/domain"
 	"github.com/alex/mediad/internal/indexer"
+	"github.com/alex/mediad/internal/plex"
 	"github.com/alex/mediad/internal/release"
+	"github.com/alex/mediad/internal/tmdb"
 )
+
+func TestFindInPlexRequiresCompleteSeason(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		count, planned int
+		want           bool
+	}{
+		{"partial", 1, 2, false},
+		{"complete", 2, 2, true},
+		{"future episodes", 2, 3, false},
+		{"unknown size", 2, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/library/sections":
+					fmt.Fprint(w, `{"MediaContainer":{"Directory":[{"key":"2","type":"show"}]}}`)
+				case "/library/sections/2/all":
+					fmt.Fprint(w, `{"MediaContainer":{"Metadata":[{"ratingKey":"30","title":"Show","year":2020}]}}`)
+				case "/library/metadata/30/children":
+					fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"index":1,"leafCount":%d}]}}`, tc.count)
+				case "/3/tv/1/season/1":
+					fmt.Fprint(w, `{"season_number":1,"episodes":[]}`)
+				case "/3/tv/1":
+					fmt.Fprintf(w, `{"id":1,"seasons":[{"season_number":1,"episode_count":%d}]}`, tc.planned)
+				default:
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			cfg := &config.Config{}
+			cfg.Plex.URL, cfg.Plex.Token = srv.URL, "test"
+			tmdbClient, err := tmdb.NewForTest(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acts := &Activities{plex: plex.New(cfg, slog.New(slog.DiscardHandler)), tmdb: tmdbClient}
+			match, err := acts.findInPlex(context.Background(), domain.MediaSpec{Ref: domain.SeasonRef(1, 1), TitleRU: "Show", Year: 2020})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (match != nil) != tc.want {
+				t.Fatalf("match = %v, want present %v", match, tc.want)
+			}
+		})
+	}
+}
 
 // The search activity and the candidate list.
 //
