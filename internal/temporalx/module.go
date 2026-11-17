@@ -42,6 +42,9 @@ const (
 	TaskQueueNotify = "notify"
 	// TaskQueueDB carries projection writes and other fast database work.
 	TaskQueueDB = "db"
+
+	// TaskQueueDownloadWait isolates long waits from short database operations.
+	TaskQueueDownloadWait = "download-wait"
 )
 
 // Workflow type names.

@@ -126,13 +126,13 @@ func TestDashboardPollBrowser(t *testing.T) {
 
 func TestActiveFragmentPayload(t *testing.T) {
 	s := &Server{tmpl: mustTemplates(t), log: discardLogger()}
-	for _, perBucket := range []int{0, 1, fragmentLimit} {
+	for _, perBucket := range []int{0, 1, dashboardLimit} {
 		wall := sampleBuckets(t)
 		for i := range wall.List {
 			row := wall.List[i].Rows[0]
 			wall.List[i].Rows = nil
 			for j := 0; j < perBucket; j++ {
-				row.Href = fmt.Sprintf("/requests/%d", i*fragmentLimit+j)
+				row.Href = fmt.Sprintf("/requests/%d", i*dashboardLimit+j)
 				row.CancelHref = row.Href + "/cancel"
 				wall.List[i].Rows = append(wall.List[i].Rows, row)
 			}

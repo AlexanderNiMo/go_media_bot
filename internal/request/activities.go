@@ -721,27 +721,43 @@ func (a *Activities) SeasonFacts(ctx context.Context, in SeasonFactsInput) (Seas
 // Download state
 // ---------------------------------------------------------------------------
 
-// CheckDownload reports how the current torrent is doing.
-//
-// It reads the local projection rather than asking the torrent client. The
-// client is polled by a single download watcher that writes progress here, and
-// the workflow reading its own row is what keeps a two-day download from
-// costing a history event per poll — and what keeps the client's session
-// cookie used by exactly one caller, given that qBittorrent bans an IP after
-// repeated failed logins.
+// CheckDownload waits on the projection maintained by WatchDownloads.
+// Polling and heartbeats stay inside the activity, outside workflow history.
 func (a *Activities) CheckDownload(ctx context.Context, in CheckDownloadInput) (CheckDownloadResult, error) {
-	p, err := a.store.ReadDownloadProgress(ctx, in.RequestID)
-	if err != nil {
-		return CheckDownloadResult{}, err
+	return waitDownload(ctx, in, func(ctx context.Context) (storage.DownloadProgress, error) {
+		return a.store.ReadDownloadProgress(ctx, in.RequestID)
+	}, func(progress float64) { activity.RecordHeartbeat(ctx, progress) })
+}
+
+func waitDownload(ctx context.Context, in CheckDownloadInput, read func(context.Context) (storage.DownloadProgress, error), heartbeat func(float64)) (CheckDownloadResult, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return CheckDownloadResult{}, err
+		}
+		p, err := read(ctx)
+		if err != nil {
+			return CheckDownloadResult{}, err
+		}
+		heartbeat(p.Progress)
+		result := interpretDownload(p, time.Now(), in.StallAfter, in.MissingGrace)
+		if !in.Deadline.IsZero() && time.Now().After(in.Deadline) {
+			return CheckDownloadResult{State: DownloadStalled, Hash: p.QbitHash, Detail: "the download did not finish before its deadline", Blacklist: true}, nil
+		}
+		if result.State != DownloadRunning || in.PollInterval <= 0 {
+			return result, nil
+		}
+		delay := in.PollInterval
+		if !in.Deadline.IsZero() && time.Until(in.Deadline) < delay {
+			delay = time.Until(in.Deadline)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return CheckDownloadResult{}, ctx.Err()
+		case <-timer.C:
+		}
 	}
-
-	result := interpretDownload(p, time.Now(), in.StallAfter, in.MissingGrace)
-
-	// Heartbeat so that a cancellation reaches this activity promptly. Without
-	// it a cancelled workflow would wait for the full start-to-close timeout.
-	activity.RecordHeartbeat(ctx, p.Progress)
-
-	return result, nil
 }
 
 // interpretDownload turns what the watcher recorded into what the request
