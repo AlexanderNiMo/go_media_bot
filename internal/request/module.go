@@ -157,6 +157,10 @@ func registerWorker(lc fx.Lifecycle, c client.Client, cfg *config.Config, acts *
 			maxConcurrentActivities: 2,
 		},
 		{
+			name:                    temporalx.TaskQueueDownloadWait,
+			maxConcurrentActivities: 1000,
+		},
+		{
 			// Short database work. The concurrency is generous because each
 			// call is a single indexed statement.
 			name:                    temporalx.TaskQueueDB,

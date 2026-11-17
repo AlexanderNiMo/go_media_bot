@@ -416,6 +416,10 @@ type AddTorrentResult struct {
 
 // CheckDownloadInput asks how the current torrent is doing.
 type CheckDownloadInput struct {
+	// PollInterval enables long polling; zero preserves previously scheduled activities.
+	PollInterval time.Duration
+	Deadline     time.Time
+
 	RequestID int64
 	// StallAfter is how long a download may go without progress before the
 	// release is abandoned.

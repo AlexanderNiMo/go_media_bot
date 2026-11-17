@@ -26,14 +26,8 @@ import (
 // Dashboard
 // ---------------------------------------------------------------------------
 
-// dashboardLimit caps the lists on the front page.
+// dashboardLimit caps both the page and its polled lists so polling cannot hide rows.
 const dashboardLimit = 50
-
-// fragmentLimit caps the lists in the polled fragment.
-//
-// It is smaller than the page's: the fragment is fetched every three seconds
-// by every open browser, and nobody scrolls a live table.
-const fragmentLimit = 20
 
 // dashboardFilter is the parsed query string for the dashboard. It carries
 // both the values used to query storage and the same values formatted back for
@@ -335,7 +329,7 @@ func (s *Server) handleActiveFragment(w http.ResponseWriter, r *http.Request) {
 
 	// A shorter list than the page's: this is fetched every three seconds by
 	// every open browser, and nobody scrolls a live table.
-	wall, err := s.bucketsFor(r, filter, now, fragmentLimit)
+	wall, err := s.bucketsFor(r, filter, now, dashboardLimit)
 	if err != nil {
 		s.fail(w, r, err)
 		return

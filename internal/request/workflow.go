@@ -938,17 +938,30 @@ func pollDownload(ctx workflow.Context, in *Input, state *State) (*Result, error
 			return cancelRequest(ctx, in, state)
 		}
 
-		// The workflow never talks to the torrent client. It reads its own row,
-		// which the download watcher keeps current — and that is what keeps a
-		// two-day download from costing a history event per progress poll.
-		actCtx := withOptions(ctx, dbOptions())
-
-		var status CheckDownloadResult
-		if err := workflow.ExecuteActivity(actCtx, (*Activities).CheckDownload, CheckDownloadInput{
+		// Version the new activity contract so existing histories still replay.
+		input := CheckDownloadInput{
 			RequestID:    in.RequestID,
 			StallAfter:   in.Policy.ZeroStallAfter,
 			MissingGrace: in.Policy.MissingGrace,
-		}).Get(actCtx, &status); err != nil {
+		}
+		opts := dbOptions()
+		if workflow.GetVersion(ctx, "download-long-poll", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			input.PollInterval = in.Policy.PollInterval
+			if input.PollInterval <= 0 {
+				input.PollInterval = 5 * time.Second
+			}
+			input.Deadline = state.DownloadDeadline
+			opts.TaskQueue = temporalx.TaskQueueDownloadWait
+			opts.StartToCloseTimeout = in.Policy.DownloadDeadline + time.Hour
+			if remaining := state.DownloadDeadline.Sub(workflow.Now(ctx)) + time.Hour; remaining > opts.StartToCloseTimeout {
+				opts.StartToCloseTimeout = remaining
+			}
+			opts.HeartbeatTimeout = input.PollInterval * 3
+			opts.WaitForCancellation = true
+		}
+		actCtx := withOptions(ctx, opts)
+		var status CheckDownloadResult
+		if err := workflow.ExecuteActivity(actCtx, (*Activities).CheckDownload, input).Get(actCtx, &status); err != nil {
 			if cancellationIsDue(ctx, err) {
 				return cancelRequest(ctx, in, state)
 			}
