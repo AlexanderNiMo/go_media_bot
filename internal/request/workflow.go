@@ -1970,8 +1970,8 @@ func withOptions(ctx workflow.Context, opts workflow.ActivityOptions) workflow.C
 func indexerOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		TaskQueue:           temporalx.TaskQueueIndexer,
-		StartToCloseTimeout: 2 * time.Minute,
-		HeartbeatTimeout:    30 * time.Second,
+		StartToCloseTimeout: 4 * time.Minute,
+		HeartbeatTimeout:    60 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    5 * time.Second,
 			BackoffCoefficient: 2,
