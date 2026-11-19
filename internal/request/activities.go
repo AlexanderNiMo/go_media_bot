@@ -226,6 +226,16 @@ func (a *Activities) RefreshPlex(ctx context.Context, in RefreshPlexInput) error
 // break the replay of every request already running, and those last two years.
 func (a *Activities) SearchReleases(ctx context.Context, in SearchInput) (SearchResult, error) {
 	log := a.log.With("request", in.RequestID, "media", in.Spec.Ref.String())
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	heartbeatDone := make(chan struct{})
+	defer func() {
+		stopHeartbeat()
+		<-heartbeatDone
+	}()
+	go func() {
+		defer close(heartbeatDone)
+		heartbeatUntilCancelled(heartbeatCtx, func() { activity.RecordHeartbeat(ctx) })
+	}()
 
 	req := indexer.ForMedia(in.Spec, categoriesFor(in.Spec), in.Limit)
 

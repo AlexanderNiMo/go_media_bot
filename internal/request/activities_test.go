@@ -6,7 +6,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/testsuite"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -72,6 +78,34 @@ func TestFindInPlexRequiresCompleteSeason(t *testing.T) {
 // searches, and the releases it refused are what the user picks from when
 // the auto-selector cannot help. These tests pin that the list is written,
 // that it says how many there are, and that it says so only once.
+
+func TestSearchReleasesHeartbeatsDuringSearch(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	var heartbeats atomic.Int32
+	env.SetOnActivityHeartbeatListener(func(_ *activity.Info, _ converter.EncodedValues) {
+		heartbeats.Add(1)
+	})
+	acts := &Activities{indexer: &slowSearchIndexer{}, log: slog.New(slog.DiscardHandler)}
+	env.RegisterActivity(acts.SearchReleases)
+	if _, err := env.ExecuteActivity(acts.SearchReleases, SearchInput{Spec: movieSpec()}); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeats.Load() == 0 {
+		t.Fatal("no heartbeat sent while the indexer was searching")
+	}
+}
+
+type slowSearchIndexer struct{ fakeIndexer }
+
+func (*slowSearchIndexer) Search(ctx context.Context, _ indexer.SearchRequest) ([]domain.Release, error) {
+	select {
+	case <-time.After(11 * time.Second):
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 func TestSearchReleasesStoresTheRejectedCandidates(t *testing.T) {
 	store, pool := newTestStore(t)
