@@ -351,6 +351,23 @@ func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPre
 	return hash, false, nil
 }
 
+// RateLimitError asks the activity caller to retry after the server's cooldown.
+type RateLimitError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string { return "download torrent file: HTTP 429 (rate limited)" }
+
+func torrentRetryAfter(value string, now time.Time) time.Duration {
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && seconds > 0 && seconds <= int64((1<<63-1)/time.Second) {
+		return time.Duration(seconds) * time.Second
+	}
+	if date, err := http.ParseTime(value); err == nil && date.After(now) {
+		return date.Sub(now)
+	}
+	return time.Minute
+}
+
 // addPayload downloads HTTP releases in the worker, where the indexer is reachable.
 func (c *Client) addPayload(ctx context.Context, link string, options map[string]string) (*qbittorrent.TorrentAddResponse, error) {
 	u, err := url.Parse(link)
@@ -373,6 +390,9 @@ func (c *Client) addPayload(ctx context.Context, link string, options map[string
 		return nil, errors.New("download torrent file failed (network error or timeout)")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, &RateLimitError{RetryAfter: torrentRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download torrent file: HTTP %d", resp.StatusCode)
 	}

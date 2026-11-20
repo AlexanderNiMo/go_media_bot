@@ -599,6 +599,12 @@ func (a *Activities) AddTorrent(ctx context.Context, in AddTorrentInput) (AddTor
 			return AddTorrentResult{}, temporal.NewNonRetryableApplicationError(
 				"qBittorrent is out of disk space", "NoDiskSpace", err)
 		}
+		var rateLimit *qbit.RateLimitError
+		if errors.As(err, &rateLimit) {
+			return AddTorrentResult{}, temporal.NewApplicationErrorWithOptions(
+				"torrent download rate limited", "TorrentDownloadRateLimited",
+				temporal.ApplicationErrorOptions{Cause: err, NextRetryDelay: rateLimit.RetryAfter})
+		}
 		return AddTorrentResult{}, fmt.Errorf("add torrent to the client: %w", err)
 	}
 
