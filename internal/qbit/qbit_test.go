@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -804,5 +805,73 @@ func TestAddDoesNotFlagNoSpaceWhenFreeSpaceIsPlenty(t *testing.T) {
 	})
 	if errors.Is(err, ErrNoSpace) {
 		t.Fatalf("err = %v, want a generic rejection, not ErrNoSpace", err)
+	}
+}
+
+func TestAddDownloadsTorrentAndUploadsFile(t *testing.T) {
+	const payload = "d4:infod6:lengthi1e4:name1:xee"
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer source.Close()
+	fake := newFakeQBittorrent()
+	fake.addedIDs = []string{"uploaded"}
+	var uploaded string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/torrents/add" {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			file, _, err := r.FormFile("torrents")
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			defer file.Close()
+			data, _ := io.ReadAll(file)
+			uploaded = string(data)
+			if r.FormValue("tags") != TagFor(38) || r.FormValue("category") != "mediad" {
+				t.Error("missing upload options")
+			}
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	cfg := &config.Config{}
+	cfg.QBittorrent.URL = server.URL
+	c := New(cfg, slog.New(slog.DiscardHandler))
+	hash, _, err := c.Add(context.Background(), AddSpec{Link: source.URL, Tags: []string{TagFor(38)}, Category: "mediad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != "uploaded" || uploaded != payload {
+		t.Fatalf("hash=%q payload=%q", hash, uploaded)
+	}
+}
+
+func TestAddRejectsFailedTorrentDownload(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusOK} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("<html>not a torrent</html>"))
+			}))
+			defer source.Close()
+			fake := newFakeQBittorrent()
+			c := newTestClient(t, fake)
+			_, _, err := c.Add(context.Background(), AddSpec{Link: source.URL + "?apikey=secret", Tags: []string{TagFor(38)}})
+			if err == nil {
+				t.Fatal("expected download error")
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Fatal("error exposes API key")
+			}
+			if len(fake.addCalls) != 0 {
+				t.Fatal("invalid download reached qBittorrent")
+			}
+		})
 	}
 }
