@@ -22,7 +22,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +35,7 @@ import (
 
 	"github.com/alex/mediad/internal/config"
 	"github.com/alex/mediad/internal/domain"
+	"github.com/alex/mediad/internal/torrentfile"
 )
 
 // Module wires the qBittorrent client into the fx graph.
@@ -76,6 +80,7 @@ const (
 // how that happens.
 type Client struct {
 	qb      *qbittorrent.Client
+	http    *http.Client
 	cfg     *config.Config
 	log     *slog.Logger
 	version string
@@ -96,7 +101,7 @@ func New(cfg *config.Config, log *slog.Logger) *Client {
 		Timeout:  timeout,
 	})
 
-	return &Client{qb: qb, cfg: cfg, log: log.With("component", "qbit")}
+	return &Client{qb: qb, http: &http.Client{Timeout: 2 * time.Minute}, cfg: cfg, log: log.With("component", "qbit")}
 }
 
 // Start logs in and records the server version. It is registered as an fx
@@ -306,9 +311,13 @@ func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPre
 		options["flacp"] = "true"
 	}
 
-	resp, err := c.qb.AddTorrentFromUrlCtx(ctx, spec.Link, options)
+	resp, err := c.addPayload(ctx, spec.Link, options)
 	if err != nil {
 		return "", false, fmt.Errorf("add torrent to qbittorrent: %w", err)
+	}
+
+	if resp == nil {
+		return "", false, errors.New("qbittorrent returned an empty add response")
 	}
 
 	// success_count and pending_count both mean "accepted"; failure_count is
@@ -340,6 +349,45 @@ func (c *Client) Add(ctx context.Context, spec AddSpec) (hash string, alreadyPre
 		return "", false, err
 	}
 	return hash, false, nil
+}
+
+// addPayload downloads HTTP releases in the worker, where the indexer is reachable.
+func (c *Client) addPayload(ctx context.Context, link string, options map[string]string) (*qbittorrent.TorrentAddResponse, error) {
+	u, err := url.Parse(link)
+	if err != nil {
+		return nil, errors.New("invalid torrent URL")
+	}
+	if u.Scheme == "magnet" {
+		return c.qb.AddTorrentFromUrlCtx(ctx, link, options)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, errors.New("torrent URL must use http, https or magnet")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+	if err != nil {
+		return nil, errors.New("could not create torrent download request")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// URLs from indexers can contain API keys; do not include them in errors.
+		return nil, errors.New("download torrent file failed (network error or timeout)")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download torrent file: HTTP %d", resp.StatusCode)
+	}
+	const maxSize = 32 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
+	if err != nil {
+		return nil, errors.New("read torrent download failed")
+	}
+	if len(data) > maxSize {
+		return nil, errors.New("torrent file exceeds 32 MiB")
+	}
+	if _, err := torrentfile.Parse(data); err != nil {
+		return nil, fmt.Errorf("invalid downloaded torrent: %w", err)
+	}
+	return c.qb.AddTorrentFromMemoryCtx(ctx, data, options)
 }
 
 // waitForTag polls until a torrent carrying one of the tags appears.

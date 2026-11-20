@@ -346,7 +346,7 @@ func TestAddDiscoveryWithFakeTime(t *testing.T) {
 					}()
 				}
 				start := time.Now()
-				hash, already, err := c.Add(context.Background(), AddSpec{Link: "http://prowlarr/download", Tags: []string{tag}})
+				hash, already, err := c.Add(context.Background(), AddSpec{Link: "magnet:?xt=urn:btih:test", Tags: []string{tag}})
 				elapsed := time.Since(start)
 				if appears {
 					if err != nil || hash != "abc123" || already {
