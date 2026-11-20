@@ -875,3 +875,37 @@ func TestAddRejectsFailedTorrentDownload(t *testing.T) {
 		})
 	}
 }
+
+func TestTorrentRetryAfter(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+	}{
+		{"120", 2 * time.Minute}, {now.Add(90 * time.Second).Format(http.TimeFormat), 90 * time.Second},
+		{"", time.Minute}, {"invalid", time.Minute}, {"-1", time.Minute}, {"0", time.Minute},
+		{"9223372036854775807", time.Minute}, {now.Add(-time.Minute).Format(http.TimeFormat), time.Minute},
+	} {
+		if got := torrentRetryAfter(tc.value, now); got != tc.want {
+			t.Errorf("%q: got %s, want %s", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestAddReturnsRateLimitDelay(t *testing.T) {
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer source.Close()
+	fake := newFakeQBittorrent()
+	c := newTestClient(t, fake)
+	_, _, err := c.Add(context.Background(), AddSpec{Link: source.URL, Tags: []string{TagFor(38)}})
+	var limited *RateLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter != 2*time.Minute {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fake.addCalls) != 0 {
+		t.Fatal("rate limited download reached qBittorrent")
+	}
+}

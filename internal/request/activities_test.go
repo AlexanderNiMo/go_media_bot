@@ -2,7 +2,10 @@ package request
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/alex/mediad/internal/qbit"
+	"go.temporal.io/sdk/temporal"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -398,3 +401,34 @@ func insertRequest(t *testing.T, pool *pgxpool.Pool, workflowID string) int64 {
 // holds. The activity takes the interface, not the concrete type, so a
 // mismatch here would only show up as a runtime failure.
 var _ indexer.Indexer = (*fakeIndexer)(nil)
+
+func TestAddTorrentRateLimitSetsTemporalRetryDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/torrents/info":
+			fmt.Fprint(w, `[]`)
+		case "/download":
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{}
+	cfg.QBittorrent.URL = srv.URL
+	log := slog.New(slog.DiscardHandler)
+	acts := &Activities{cfg: cfg, qbit: qbit.New(cfg, log), log: log}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivity(acts.AddTorrent)
+	_, err := env.ExecuteActivity(acts.AddTorrent, AddTorrentInput{RequestID: 38, Release: domain.Release{DownloadURL: srv.URL + "/download"}})
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected application error: %v", err)
+	}
+	if appErr.Type() != "TorrentDownloadRateLimited" || appErr.NextRetryDelay() != 2*time.Minute || appErr.NonRetryable() {
+		t.Fatalf("unexpected retry: type=%s delay=%s nonRetryable=%t", appErr.Type(), appErr.NextRetryDelay(), appErr.NonRetryable())
+	}
+}
